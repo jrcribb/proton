@@ -22,6 +22,8 @@ This folder lists some examples to run Timeplus Proton for various use cases. Fo
 
 - [jdbc](jdbc): demonstrates how to connect to Proton via JDBC using DBeaver or Metabase.
 
+- [marimo](marimo): demonstrates how to query Kafka data with SQL and visualize the results using Marimo.
+
 - [nginx-access-logs-streaming](nginx-access-logs-streaming) analyzing Nginx access logs using Timeplus Proton
 
 - [nginx-grafana](nginx-grafana) visualizing Nginx access logs using Timeplus and Grafana
