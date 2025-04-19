@@ -169,7 +169,7 @@
             "type": "timeplus-proton-datasource",
             "uid": "c24e0faf-1490-4321-a373-7b2b07ca2e38"
           },
-          "queryText": "SELECT date_time_string, ipv4_num_to_string_class_c(nal.remote_ip) as remote_ip, nip.country_name as country, nip.country_flag_emoji as emoji, nip.loc as loc, \ngeohash_encode(to_float64(split_by_char(',', loc)[2]), to_float64(split_by_char(',', loc)[1])) as geohash \nFROM table(nginx_historical_access_log) as nal JOIN table(nginx_ipinfo) as nip ON nal.remote_ip = nip.ip WHERE NOT empty(loc) \nGROUP BY remote_ip, date_time_string, country, emoji, loc HAVING count() > 0 ORDER BY date_time_string DESC;\n",
+          "sql": "SELECT date_time_string, ipv4_num_to_string_class_c(nal.remote_ip) as remote_ip, nip.country_name as country, nip.country_flag_emoji as emoji, nip.loc as loc, \ngeohash_encode(to_float64(split_by_char(',', loc)[2]), to_float64(split_by_char(',', loc)[1])) as geohash \nFROM table(nginx_historical_access_log) as nal JOIN table(nginx_ipinfo) as nip ON nal.remote_ip = nip.ip WHERE NOT empty(loc) \nGROUP BY remote_ip, date_time_string, country, emoji, loc HAVING count() > 0 ORDER BY date_time_string DESC;\n",
           "refId": "A"
         }
       ],
@@ -219,9 +219,7 @@
         "footer": {
           "countRows": false,
           "fields": "",
-          "reducer": [
-            "sum"
-          ],
+          "reducer": ["sum"],
           "show": false
         },
         "showHeader": true
@@ -234,7 +232,7 @@
             "type": "timeplus-proton-datasource",
             "uid": "c24e0faf-1490-4321-a373-7b2b07ca2e38"
           },
-          "queryText": "SELECT date_time_string, ipv4_num_to_string_class_c(nal.remote_ip) as remote_ip, nip.country_name as country, nip.country_flag_emoji as emoji, nip.loc as loc, \ngeohash_encode(to_float64(split_by_char(',', loc)[2]), to_float64(split_by_char(',', loc)[1])) as geohash \nFROM table(nginx_historical_access_log) as nal JOIN table(nginx_ipinfo) as nip ON nal.remote_ip = nip.ip WHERE NOT empty(loc) \nGROUP BY remote_ip, date_time_string, country, emoji, loc HAVING count() > 0 ORDER BY date_time_string DESC LIMIT 50;\n",
+          "sql": "SELECT date_time_string, ipv4_num_to_string_class_c(nal.remote_ip) as remote_ip, nip.country_name as country, nip.country_flag_emoji as emoji, nip.loc as loc, \ngeohash_encode(to_float64(split_by_char(',', loc)[2]), to_float64(split_by_char(',', loc)[1])) as geohash \nFROM table(nginx_historical_access_log) as nal JOIN table(nginx_ipinfo) as nip ON nal.remote_ip = nip.ip WHERE NOT empty(loc) \nGROUP BY remote_ip, date_time_string, country, emoji, loc HAVING count() > 0 ORDER BY date_time_string DESC LIMIT 50;\n",
           "refId": "A"
         }
       ],
@@ -325,7 +323,7 @@
             "type": "timeplus-proton-datasource",
             "uid": "c24e0faf-1490-4321-a373-7b2b07ca2e38"
           },
-          "queryText": "SELECT count() as page_views, nip.country_name as country, nip.country_flag_emoji as emoji \nFROM table(nginx_historical_access_log) as nal \nJOIN table(nginx_ipinfo) as nip ON nal.remote_ip = nip.ip \nGROUP BY country, emoji HAVING count() > 0 ORDER BY page_views DESC;",
+          "sql": "SELECT count() as page_views, nip.country_name as country, nip.country_flag_emoji as emoji \nFROM table(nginx_historical_access_log) as nal \nJOIN table(nginx_ipinfo) as nip ON nal.remote_ip = nip.ip \nGROUP BY country, emoji HAVING count() > 0 ORDER BY page_views DESC;",
           "refId": "A"
         }
       ],
@@ -378,9 +376,7 @@
         "footer": {
           "countRows": false,
           "fields": "",
-          "reducer": [
-            "sum"
-          ],
+          "reducer": ["sum"],
           "show": false
         },
         "showHeader": true
@@ -393,7 +389,7 @@
             "type": "timeplus-proton-datasource",
             "uid": "c24e0faf-1490-4321-a373-7b2b07ca2e38"
           },
-          "queryText": "SELECT path, count() as request_count\nFROM table(nginx_historical_access_log)\nWHERE (path NOT LIKE '%.js%')\n    AND (path NOT LIKE '%.css%')\n    AND (path NOT LIKE '%.png%')\n    AND (path NOT LIKE '%.gif%')\n    AND (path NOT LIKE '%.jpg')\nGROUP BY path\nORDER BY count() DESC;",
+          "sql": "SELECT path, count() as request_count\nFROM table(nginx_historical_access_log)\nWHERE (path NOT LIKE '%.js%')\n    AND (path NOT LIKE '%.css%')\n    AND (path NOT LIKE '%.png%')\n    AND (path NOT LIKE '%.gif%')\n    AND (path NOT LIKE '%.jpg')\nGROUP BY path\nORDER BY count() DESC;",
           "refId": "A"
         }
       ],
@@ -484,7 +480,7 @@
             "type": "timeplus-proton-datasource",
             "uid": "c24e0faf-1490-4321-a373-7b2b07ca2e38"
           },
-          "queryText": "SELECT\n    multi_if(status >= 400, '40x - Error', status > 300, '30x - Notice', '200 - OK') AS status_code,\n    count() as frequency\nFROM table(nginx_historical_access_log)\nGROUP BY status_code;\n",
+          "sql": "SELECT\n    multi_if(status >= 400, '40x - Error', status > 300, '30x - Notice', '200 - OK') AS status_code,\n    count() as frequency\nFROM table(nginx_historical_access_log)\nGROUP BY status_code;\n",
           "refId": "A"
         }
       ],

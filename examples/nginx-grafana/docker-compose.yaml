@@ -16,7 +16,7 @@ services:
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: 1
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
-      GF_INSTALL_PLUGINS: timeplus-proton-datasource
+      GF_PLUGINS_PREINSTALL: timeplus-proton-datasource@@https://d.timeplus.com/grafana/timeplus-proton-datasource-2.1.2.zip
     volumes:
       - ./provisioning:/etc/grafana/provisioning
     depends_on:
