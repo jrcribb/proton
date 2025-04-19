@@ -5,14 +5,27 @@ services:
     pull_policy: always
     ports:
       - "3218:3218" # HTTP Streaming
-    volumes:
-      - ./initdb.d:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD", "curl", "http://localhost:3218/proton/ping"]
       interval: 5s
       timeout: 15s
       retries: 3
       start_period: 10s
+
+  init_timeplus_resources:
+    entrypoint:
+      - proton
+      - client
+      - -h
+      - proton
+      - --queries-file
+      - /script/init.sql
+    image: d.timeplus.com/timeplus-io/proton:latest
+    volumes:
+      - ./initdb.d:/script
+    depends_on:
+      proton:
+        condition: service_healthy
 
   benthos:
     image: jeffail/benthos:latest
@@ -33,3 +46,5 @@ services:
     depends_on:
       proton:
         condition: service_healthy
+      init_timeplus_resources:
+        condition: service_completed_successfully
