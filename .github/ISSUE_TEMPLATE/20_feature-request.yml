@@ -1,6 +1,6 @@
 name: Feature request
-about: Suggest an idea for Timeplus Proton
-labels: feature
+description: Suggest an idea for Timeplus Proton
+labels: ["feature"]
 body:
   - type: markdown
     attributes:
