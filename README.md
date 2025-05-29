@@ -184,6 +184,9 @@ We welcome your contributions! If you are looking for issues to work on, try loo
 
 Please see the [wiki](https://github.com/timeplus-io/proton/wiki/Contributing) for more details, and [BUILD.md](https://github.com/timeplus-io/proton/blob/develop/BUILD.md) to compile Timeplus Proton in different platforms.
 
+## Adding a Company Logo
+If you are using Timeplus Proton and would like your company logo displayed on our [Home](https://timeplus.com) page, please email [info@timeplus.com](mailto:info@timeplus.com) with your request.
+
 ## Need help?
 
 Please use [GitHub Discussions](https://github.com/timeplus-io/proton/discussions) to share your feedbacks or questions for Timeplus Proton.
