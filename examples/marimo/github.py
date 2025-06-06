@@ -23,14 +23,7 @@ def _(sqlalchemy):
 
 
 @app.cell(hide_code=True)
-def _():
-    kafka_broker="kafka-public-read-timeplus.a.aivencloud.com:28864"
-    kafka_pwd="AVNS_MUaDRshCpeePa93AQy_"
-    return kafka_broker, kafka_pwd
-
-
-@app.cell(hide_code=True)
-def _(engine, kafka_broker, kafka_pwd, mo):
+def _(engine, mo):
     _df = mo.sql(
         f"""
         CREATE EXTERNAL STREAM IF NOT EXISTS github_events(actor string,
@@ -41,12 +34,11 @@ def _(engine, kafka_broker, kafka_pwd, mo):
                   type string
                  )
         SETTINGS type='kafka',
-                 brokers='{kafka_broker}',
+                 brokers='kafka.demo.timeplus.com:9092',
                  topic='github_events',
                  security_protocol='SASL_SSL',
-                 sasl_mechanism='SCRAM-SHA-256',
-                 username='readonly',
-                 password='{kafka_pwd}',
+                 username='demo',
+                 password='demo123',
                  skip_ssl_cert_check=true,
                  data_format='JSONEachRow',
                  one_message_per_row=true
@@ -58,12 +50,11 @@ def _(engine, kafka_broker, kafka_pwd, mo):
 
 
 @app.cell(hide_code=True)
-def _(kafka_broker, mo):
+def _(mo):
     mo.md(
         f"""
         # Live GitHub Events
-        👋 This is a live notebook, built with [Timeplus](https://github.com/timeplus-io/proton) and [marimo](https://marimo.io), showing streaming data from GitHub via a public facing Kafka broker from [Aiven](https://aiven.io):
-        `{kafka_broker}`
+        👋 This is a live notebook, built with [Timeplus](https://github.com/timeplus-io/proton) and [marimo](https://marimo.io), showing streaming data from GitHub via a public facing Kafka broker from kafka.demo.timeplus.com:9092
 
         Simply run the following commands:
         ```bash
