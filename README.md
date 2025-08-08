@@ -1,8 +1,8 @@
 <p align="center">
-  <img alt="Timeplus Proton – An open-source, fast and lightweight streaming SQL engine" src="design/proton-logo-white-bg.png"/> <br/>
-  <b> A fast and lightweight streaming SQL engine, 🚀 powered by ClickHouse</b> <br/><br/>
-  📄 <a href="https://docs.timeplus.com/proton" target="_blank">Documentation</a>&nbsp;&nbsp;
-  🚀 <a href="https://demo.timeplus.cloud/" target="_blank">Live Demo</a>&nbsp;&nbsp;
+  <img alt="Timeplus Proton – A fastest SQL data pipeline engine" src="design/proton-logo-white-bg.png"/> <br/>
+  Fastest SQL pipeline engine for stream processing, analytics, observability and AI <br/><br/>
+  📄 <a href="https://docs.timeplus.com" target="_blank">Documentation</a>&nbsp;&nbsp;
+  🚀 <a href="https://https://demos.timeplus.com/" target="_blank">Live Demo</a>&nbsp;&nbsp;
   🌎 <a href="https://timeplus.com/" target="_blank">Timeplus</a> <br/><br/>
   <a href="https://github.com/timeplus-io/proton/"><img src="https://img.shields.io/github/stars/timeplus-io/proton?logo=github" /></a>&nbsp;
   <a href="https://github.com/timeplus-io/proton/pkgs/container/proton"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fjovezhong.github.io%2Fbackage%2Ftimeplus-io%2Fproton%2Fproton.json&query=%24.downloads&label=Docker%20Pull" /></a>&nbsp;
@@ -15,36 +15,52 @@
 </p>
 
 <p align="center">
-  <a href="#-why-use-timeplus-proton"><strong>Why Use Timeplus Proton</strong></a> ·
-  <a href="#how-is-it-different-from-clickhouse"><strong>How is it different from ClickHouse?</strong></a> ·
-  <a href="#-typical-use-cases"><strong>Typical Use Cases</strong></a> ·
-  <a href="#-demo-video"><strong>Demo Video</strong></a> ·
-  <a href="#-deployment"><strong>Deployment</strong></a> ·
-  <a href="#-whats-next"><strong>What's Next</strong></a> ·
-  <a href="#-integrations"><strong>Integrations</strong></a> ·
+  <a href="#why-timeplus-proton"><strong>Why Timeplus Proton</strong></a> ·
+  <a href="#how-is-it-different-from-clickhouse"><strong>How is it different from ClickHouse</strong></a> ·
+  <a href="#use-cases"><strong>Use Cases</strong></a> ·
+  <a href="#demo"><strong>Demo</strong></a> ·
+  <a href="#deployment"><strong>Deployment</strong></a> ·
+  <a href="#whats-next"><strong>What's Next</strong></a> ·
+  <a href="#integrations"><strong>Integrations</strong></a> ·
   <a href="#contributing"><strong>Contributing</strong></a> ·
   <a href="#need-help"><strong>Need help?</strong></a>
 
 </p>
 
-Timeplus Proton is a stream processing engine and database. It is a fast and lightweight alternative to ksqlDB or Apache Flink, 🚀 powered by the libraries and engines in ClickHouse. It enables developers to solve streaming data processing, multi-stream JOINs, sophisticated incremental materialized views, routing and analytics challenges from Apache Kafka, Redpanda and more sources, and send aggregated data to the downstream streaming or database systems. Timeplus Proton is the core engine of [Timeplus Enterprise](https://timeplus.com).
+## What's Timeplus Proton
 
-## 💪 Why use Timeplus Proton?
+🚀 The fastest SQL pipeline engine in a single C++ binary, for stream processing, analytics, observability and AI. A simple, fast and efficient alternative to ksqlDB and Apache Flink, powered by ClickHouse engine. 
 
-1. **[Apache Flink](https://github.com/apache/flink) or [ksqlDB](https://github.com/confluentinc/ksql) alternative.** Timeplus Proton provides powerful stream processing functionalities, such as streaming ETL, tumble/hop/session windows, watermarks, incremental materialized views maintenance, CDC and data revision processing. In contrast to pure stream processors, it also stores queryable analytical/row based materialized views within Proton itself for use in analytics dashboards and applications.
-2. **Fast.** Timeplus Proton is written in C++, with optimized performance through SIMD. [For example](https://www.timeplus.com/post/scary-fast), on an Apple MacBookPro with M2 Max, Timeplus Proton can deliver 90 million EPS, 4 millisecond end-to-end latency, and high cardinality aggregation with 1 million unique keys.
-3. **Lightweight.** Timeplus Proton is a single binary (\<500MB). No JVM or any other dependencies. You can also run it with Docker, or on an AWS t2.nano instance (1 vCPU and 0.5 GiB memory).
-4. **Powered by the fast, resource efficient and mature [ClickHouse](https://github.com/clickhouse/clickhouse).** Timeplus Proton extends the historical data, storage, and computing functionality of ClickHouse with stream processing. Thousands of SQL functions are available in Timeplus Proton. Billions of rows are queried in milliseconds.
-5. **Best streaming SQL engine for [Kafka](https://kafka.apache.org/) or [Redpanda](https://redpanda.com/).** Query the live data in Kafka or other compatible streaming data platforms, with [external streams](https://docs.timeplus.com/proton-kafka).
+🔥 SQL for everything : Native source/sink (Kafka, ClickHouse, MySQL, Postgres, S3/Iceberg etc.), Append-only or mutable stream, Multi-stream JOINs, Incremental Materialized View, Alert, Task, UDF in Python/JS etc.
 
-![Proton Architecture](design/proton-architecture.webp)
-See our [architecture](https://docs.timeplus.com/proton-architecture) doc for technical details and our [FAQ](https://docs.timeplus.com/proton-faq) for more information.
+⚡ No JVM. No ZooKeeper. Zero dependencies. Just speed, control and scale.
 
-## How is it different from ClickHouse?
+![Proton Architecture](https://docs.timeplus.com/assets/images/product_diagram_web-a2eefd92ab13ebc59c619434e2caba98.png)
+
+Get started in seconds
+```shell
+curl https://install.timeplus.com/oss | sh
+```
+
+## Why Timeplus Proton
+
+- **[Apache Flink](https://github.com/apache/flink) or [ksqlDB](https://github.com/confluentinc/ksql) alternative.** Timeplus Proton provides powerful stream processing functionalities, such as streaming ETL, tumble/hop/session windows, watermarks, incremental materialized views maintenance, CDC and data revision processing. In contrast to pure stream processors, it also stores queryable analytical/row based materialized views within Proton itself for use in analytics dashboards and applications.
+  
+- **Fast.** Timeplus Proton is written in C++, with optimized performance through SIMD. [For example](https://www.timeplus.com/post/scary-fast), on an Apple MacBookPro with M2 Max, Timeplus Proton can deliver 90 million EPS, 4 millisecond end-to-end latency, and high cardinality aggregation with 1 million unique keys.
+  
+- **Lightweight.** Timeplus Proton is a single binary (\<500MB). No JVM or any other dependencies. You can also run it with Docker, or on an AWS t2.nano instance (1 vCPU and 0.5 GiB memory).
+  
+- **Powered by the fast, resource efficient and mature [ClickHouse](https://github.com/clickhouse/clickhouse).** Timeplus Proton extends the historical data, storage, and computing functionality of ClickHouse with stream processing. Thousands of SQL functions are available in Timeplus Proton. Billions of rows are queried in milliseconds.
+  
+- **Best streaming SQL engine for [Kafka](https://kafka.apache.org/) or [Redpanda](https://redpanda.com/).** Query the live data in Kafka or other compatible streaming data platforms, with [external streams](https://docs.timeplus.com/proton-kafka).
+
+See our [architecture](https://docs.timeplus.com/architecture) doc for technical details and our [FAQ](https://docs.timeplus.com/proton-faq) for more information.
+
+## How is it different from ClickHouse
 
 ClickHouse is an extremely performant Data Warehouse built for fast analytical queries on large amounts of data. While it does support ingesting data from streaming sources such as Apache Kafka, it is itself not a stream processing engine which can transform and join streaming event data based on time-based semantics to detect patterns that need to be acted upon as soon as it happens. ClickHouse also has incremental materialized view capability but is limited to creating materialized view off of ingestion of blocks to a single table. Proton uses ClickHouse as a table store engine inside of each stream (alongside a Write Ahead Log and other data structures) and uses to unify real-time and historical data together to detect signals in the data. In addition, Proton can act as an advanced data pre-processor for ClickHouse (and similar systems) where the bulk of the data preparation and batching is done ahead of ingestion. See [Timeplus and ClickHouse](https://www.timeplus.com/timeplus-and-clickhouse) for more details on this.
 
- ## 🎯 Typical Use Cases
+ ## Use Cases
 
 Timeplus Proton empowers you to build a wide range of real-time applications and data pipelines.
 Common use cases include:
@@ -59,13 +75,13 @@ Common use cases include:
 
 *   **Log Analytics & Observability**: Process and analyze application and system logs as they are generated to gain insights into system behavior, troubleshoot issues faster, and improve overall observability.
 
-## 🎬 Demo Video
+## Demo
 
 2-minute short video👇. Check out [the full video at YouTube](https://youtu.be/vi4Yl6L4_Dw?t=283).
 
 https://github.com/timeplus-io/proton/assets/5076438/8ceca355-d992-4798-b861-1e0334fc4438
 
-## ⚡ Deployment
+## Deployment
 
 ### A single binary:
 
@@ -97,7 +113,7 @@ The [Docker Compose stack](https://github.com/timeplus-io/proton/tree/develop/ex
 Don't want to setup by yourself? Try Timeplus in [Cloud](https://demo.timeplus.cloud/)
 
 
-### 🔎 Usage
+### Usage
 SQL is the main interface. You can start a new terminal window with `proton client` to start the SQL shell.
 > [!NOTE]
 > You can also integrate Timeplus Proton with Python/Java/Go SDK, REST API, or BI plugins. Please check <a href="#-integrations"><strong>Integrations</strong></a>
@@ -158,7 +174,7 @@ You should see data like the following:
 └─────────┴─────────┴──────────────────┴──────────────────┘
 ```
 
-### ⏩ What's next?
+### What's next
 To see more examples of using Timeplus Proton, check out the [examples](https://github.com/timeplus-io/proton/tree/develop/examples) folder.
 
 To access more features, such as sources, sinks, dashboards, alerts, and data lineage, try [Timeplus Enterprise](https://www.timeplus.com/product) locally.
@@ -172,7 +188,7 @@ What features are available with Timeplus Proton versus Timeplus Enterprise?
 | **Data destinations (sinks)** | <ul><li>External streams to Apache Kafka, Apache Pulsar, Confluent Cloud, Redpanda</li><li>External streams to another Timeplus Proton or Timeplus Enterprise deployment</li><li>External tables to ClickHouse</li></ul>                                                                                                          | <ul><li>Everything in Timeplus Proton</li><li>Slack</li><li>Webhook</li><li>Hundreds of connectors from Redpanda Connect</li></ul>                                                                                                      |
 | **Support**                   | <ul><li>Community support from GitHub and Slack</li></ul>                                                                                                                              | <ul><li>Enterprise support via email, Slack, and Zoom, with a SLA</li></ul>                                                                                                                                                      |
 
-## 🧩 Integrations
+## Integrations
 The following drivers are available:
 
 * https://github.com/timeplus-io/proton-java-driver JDBC and other Java clients
