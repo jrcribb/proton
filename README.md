@@ -3,14 +3,15 @@
 [![Website](https://img.shields.io/website?up_message=TIMEPLUS&down_message=DOWN&url=https%3A%2F%2Ftimeplus.com&style=for-the-badge)](https://timeplus.com)
 [![Demo](https://img.shields.io/website?label=Demo&up_color=blue&up_message=DEMO&down_message=DOWN&url=https%3A%2F%2Fdemos.timeplus.com&style=for-the-badge)](https://demos.timeplus.com)
 [![Apache 2.0 License](https://img.shields.io/badge/license-Apache%202.0-blueviolet?style=for-the-badge)](https://www.apache.org/licenses/LICENSE-2.0)
-
+<p></p>
+<p><br></br></p>
 <picture align=center>
     <source media="(prefers-color-scheme: dark)" srcset="https://github.com/timeplus-io/docs/blob/main/static/img/timeplus-proton.svg">
     <source media="(prefers-color-scheme: light)" srcset="https://github.com/timeplus-io/docs/blob/main/static/img/timeplus-proton-light.svg">
     <img alt="The Timeplus company logo." src="https://github.com/timeplus-io/docs/blob/main/static/img/timeplus_d.png">
 </picture>
-
-<h4>Fastest SQL pipeline engine for stream processing, analytics, observability and AI</h4>
+<br>Fastest SQL pipeline engine for stream processing, analytics, observability and AI</br>
+<p><br></br></p>
 
 </div>
 
