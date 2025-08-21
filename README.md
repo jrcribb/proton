@@ -5,9 +5,9 @@
 [![Apache 2.0 License](https://img.shields.io/badge/license-Apache%202.0-blueviolet?style=for-the-badge)](https://www.apache.org/licenses/LICENSE-2.0)
 
 <picture align=center>
-    <source media="(prefers-color-scheme: dark)" srcset="https://github.com/timeplus-io/docs/blob/main/static/img/timeplus-proton-logo-repo.jpg">
-    <source media="(prefers-color-scheme: light)" srcset="https://github.com/timeplus-io/docs/blob/main/static/img/timeplus-proton-logo-bg-light.jpg">
-    <img alt="The Timeplus company logo." src="https://github.com/ClickHouse/clickhouse-docs/assets/9611008/b001dc7b-5a45-4dcd-9275-e03beb7f9177">
+    <source media="(prefers-color-scheme: dark)" srcset="https://github.com/timeplus-io/docs/blob/main/static/img/timeplus-proton.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://github.com/timeplus-io/docs/blob/main/static/img/timeplus-proton-light.svg">
+    <img alt="The Timeplus company logo." src="https://github.com/timeplus-io/docs/blob/main/static/img/timeplus_d.png">
 </picture>
 
 <h4>Fastest SQL pipeline engine for stream processing, analytics, observability and AI</h4>
