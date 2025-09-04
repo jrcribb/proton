@@ -381,6 +381,11 @@ public:
         detail::Adder<T, Data>::add(this->data(place), columns, num_args, row_num);
     }
 
+    void ALWAYS_INLINE negate(AggregateDataPtr __restrict place, const IColumn ** columns, size_t row_num, Arena *) const override
+    {
+        detail::Adder<T, Data>::negate(this->data(place), columns, num_args, row_num);
+    }
+
     void ALWAYS_INLINE addBatchSinglePlace(
         size_t row_begin,
         size_t row_end,
@@ -518,6 +523,11 @@ public:
     void add(AggregateDataPtr __restrict place, const IColumn ** columns, size_t row_num, Arena *) const override
     {
         detail::Adder<T, Data>::add(this->data(place), columns, num_args, row_num);
+    }
+
+    void negate(AggregateDataPtr __restrict place, const IColumn ** columns, size_t row_num, Arena *) const override
+    {
+        detail::Adder<T, Data>::negate(this->data(place), columns, num_args, row_num);
     }
 
     void addBatchSinglePlace(
