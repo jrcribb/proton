@@ -2713,10 +2713,10 @@ void MergeTreeData::dropAllData()
         if (disk->exists(fs::path(relative_data_path) / MOVING_DIR_NAME))
             disk->removeRecursive(fs::path(relative_data_path) / MOVING_DIR_NAME);
 
-        MergeTreeWriteAheadLog::dropAllWriteAheadLogs(disk, relative_data_path);
-
         try
         {
+            MergeTreeWriteAheadLog::dropAllWriteAheadLogs(disk, relative_data_path);
+
             if (!disk->isDirectoryEmpty(relative_data_path) &&
                 supportsReplication() && disk->supportZeroCopyReplication()
                 && settings_ptr->allow_remote_fs_zero_copy_replication)
