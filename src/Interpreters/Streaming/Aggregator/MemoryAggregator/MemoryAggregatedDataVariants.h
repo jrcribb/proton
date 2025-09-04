@@ -613,7 +613,7 @@ SERDE struct MemoryAggregatedDataVariants final : public IAggregatedDataVariants
 
     /// Existed versions:
     ///   STATE V3 - REVISION 14 (Add updates tracking state)
-    ///   STATE V4 - REVISION 130 (Track updates for retract state)
+    ///   STATE V4 - REVISION 140 (Track updates for retract state)
     static constexpr VersionType version = 4;
 };
 
