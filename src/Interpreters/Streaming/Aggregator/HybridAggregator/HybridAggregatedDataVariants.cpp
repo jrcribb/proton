@@ -169,11 +169,16 @@ void HybridAggregatedDataVariants::deserialize(ReadBuffer & rb, const IAggregato
     hybrid_aggregator.initStates(*this);
 
     /// [aggregates_size] was added in state V3
+    size_t recovered_aggregates_size = hybrid_aggregator.getParams()->aggregates_size;
     if (recovered_version >= 3)
     {
-        size_t recovered_aggregates_size = 0;
         readVarUInt(recovered_aggregates_size, rb);
-        /// TODO: supports for adding aggregates
+        if (recovered_aggregates_size > hybrid_aggregator.getParams()->aggregates_size)
+            throw Exception(
+                ErrorCodes::RECOVER_CHECKPOINT_FAILED,
+                "Failed to recover aggregation checkpoint. Number of aggregation functions are not compatible, checkpointed={}, current={}",
+                recovered_aggregates_size,
+                hybrid_aggregator.getParams()->aggregates_size);
     }
 
     bool is_without_key_type = false;
@@ -330,11 +335,21 @@ void HybridAggregatedDataVariants::read(RocksHandlerPtr handler, const IAggregat
     chassert(empty());
     hybrid_aggregator.initStates(*this);
 
+    std::optional<size_t> old_aggregates_size;
     if (recovered_version >= 3)
     {
         size_t recovered_aggregates_size = 0;
         handler->get("aggregates_size", recovered_aggregates_size);
-        /// TODO: supports for adding aggregates
+        if (recovered_aggregates_size > hybrid_aggregator.getParams()->aggregates_size)
+            throw Exception(
+                ErrorCodes::RECOVER_CHECKPOINT_FAILED,
+                "Failed to recover aggregation checkpoint. Number of aggregation functions are not compatible, checkpointed={}, current={}",
+                recovered_aggregates_size,
+                hybrid_aggregator.getParams()->aggregates_size);
+
+        /// Supports adding new aggregates
+        if (recovered_aggregates_size < hybrid_aggregator.getParams()->aggregates_size)
+            old_aggregates_size = recovered_aggregates_size;
     }
 
     std::string_view without_key_state;
@@ -347,7 +362,7 @@ void HybridAggregatedDataVariants::read(RocksHandlerPtr handler, const IAggregat
                 type());
 
         ReadBufferFromString rb(without_key_state);
-        hybrid_aggregator.deserializeAggregateStates(without_key.get(), rb, recovered_version);
+        hybrid_aggregator.deserializeAggregateStates(without_key.get(), rb, recovered_version, old_aggregates_size);
 
         std::string_view without_key_retracts_state;
         if (handler->tryGet("without_key_retracts", without_key_retracts_state))
@@ -356,7 +371,7 @@ void HybridAggregatedDataVariants::read(RocksHandlerPtr handler, const IAggregat
                 initWithoutKeyRetractStates(hybrid_aggregator.totalSizeOfAggregatedStates(), hybrid_aggregator.alignOfAggregatedStates());
 
             ReadBufferFromString rb2(without_key_retracts_state);
-            hybrid_aggregator.deserializeAggregateStates(without_key_retracts.get(), rb2, recovered_version);
+            hybrid_aggregator.deserializeAggregateStates(without_key_retracts.get(), rb2, recovered_version, old_aggregates_size);
         }
     }
     else
@@ -389,9 +404,10 @@ void HybridAggregatedDataVariants::read(RocksHandlerPtr handler, const IAggregat
         }
 
         std::function<int(void *, ReadBuffer &)> old_value_deserializer;
-        if (recovered_version <= 2)
-            old_value_deserializer = [&hybrid_aggregator, recovered_version](void * data, ReadBuffer & rb) {
-                hybrid_aggregator.deserializeAggregateStates(reinterpret_cast<AggregateDataPtr>(data), rb, recovered_version);
+        /// Deserialize old aggregate states
+        if (recovered_version <= 2 || old_aggregates_size)
+            old_value_deserializer = [&hybrid_aggregator, recovered_version, old_aggregates_size](void * data, ReadBuffer & rb) {
+                hybrid_aggregator.deserializeAggregateStates(reinterpret_cast<AggregateDataPtr>(data), rb, recovered_version, old_aggregates_size);
                 return ErrorCodes::OK;
             };
 

@@ -137,7 +137,7 @@ void HybridAggregator::serializeAggregateStates(ConstAggregateDataPtr place, DB:
         aggregate_functions[i]->serialize(place + offsets_of_aggregate_states[i], wb);
 }
 
-void HybridAggregator::deserializeAggregateStates(AggregateDataPtr place, ReadBuffer & rb, VersionType version) const
+void HybridAggregator::deserializeAggregateStates(AggregateDataPtr place, ReadBuffer & rb, VersionType version, std::optional<size_t> old_aggregates_size) const
 {
     chassert(place);
 
@@ -154,7 +154,9 @@ void HybridAggregator::deserializeAggregateStates(AggregateDataPtr place, ReadBu
     if (trackingStateTime())
         TrackingTime::deserialize(place + tracking_time_offset, rb);
 
-    for (size_t i = 0; i < params->aggregates_size; ++i)
+    auto aggregates_size = old_aggregates_size.value_or(params->aggregates_size);
+    chassert(aggregates_size <= params->aggregates_size);
+    for (size_t i = 0; i < aggregates_size; ++i)
         aggregate_functions[i]->deserialize(place + offsets_of_aggregate_states[i], rb, std::nullopt, /*arena=*/nullptr); /// FIXME, arena
 }
 }

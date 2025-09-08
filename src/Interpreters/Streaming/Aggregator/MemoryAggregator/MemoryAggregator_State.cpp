@@ -29,11 +29,13 @@ void MemoryAggregator::serializeAggregateStates(const AggregateDataPtr & place, 
         aggregate_functions[i]->serialize(place + offsets_of_aggregate_states[i], wb);
 }
 
-void MemoryAggregator::deserializeAggregateStates(AggregateDataPtr & place, ReadBuffer & rb, Arena * arena) const
+void MemoryAggregator::deserializeAggregateStates(AggregateDataPtr & place, ReadBuffer & rb, Arena * arena, std::optional<size_t> old_aggregates_size) const
 {
     chassert(place);
 
-    for (size_t i = 0; i < params->aggregates_size; ++i)
+    auto aggregates_size = old_aggregates_size.value_or(params->aggregates_size);
+    chassert(aggregates_size <= params->aggregates_size);
+    for (size_t i = 0; i < aggregates_size; ++i)
         aggregate_functions[i]->deserialize(place + offsets_of_aggregate_states[i], rb, std::nullopt, arena);
 }
 

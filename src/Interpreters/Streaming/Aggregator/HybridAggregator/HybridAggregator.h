@@ -197,7 +197,13 @@ private:
     void createAggregateStates(AggregateDataPtr aggregate_data) const;
     void destroyAggregateStates(AggregateDataPtr aggregate_data) const;
     void serializeAggregateStates(ConstAggregateDataPtr place, WriteBuffer & wb) const;
-    void deserializeAggregateStates(AggregateDataPtr place, ReadBuffer & rb, VersionType version = HybridAggregatedDataVariants::version) const;
+
+    /// \param version and \param old_aggregates_size are used for deserialization of old aggregate states
+    void deserializeAggregateStates(
+        AggregateDataPtr place,
+        ReadBuffer & rb,
+        VersionType version = HybridAggregatedDataVariants::version,
+        std::optional<size_t> old_aggregates_size = {}) const;
 
     void saveAggregateStatesToRetract(AggregateDataPtr place) const;
 
