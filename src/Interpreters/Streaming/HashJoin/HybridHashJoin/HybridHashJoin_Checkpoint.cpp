@@ -16,7 +16,7 @@ RocksPtr HybridHashJoin::getOrCreateRocks()
     /// Initialize rocks on first use
     if (!rocks)
         rocks = Rocks::createOrLoadIfExists(
-            base_config.getRocksOptions(), base_config.spill_dir_path, base_config.cleanup_on_disk_data, logger);
+            base_config.getRocksOptions(), base_config.spill_dir_path, base_config.ttl, base_config.cleanup_on_disk_data, logger);
 
     return rocks;
 }
@@ -30,10 +30,11 @@ void HybridHashJoin::shutdownRocks()
     }
 }
 
-void HybridHashJoin::installRocks(const String & spill_dir_, size_t max_hot_key_count_)
+void HybridHashJoin::installRocks(const String & spill_dir_, size_t max_hot_key_count_, Int64 ttl_)
 {
     base_config.spill_dir_path = spill_dir_;
     base_config.max_hot_key_count = max_hot_key_count_;
+    base_config.ttl = ttl_;
     base_config.cleanup_on_disk_data = true;
     base_config.rocks_handler_getter = [this](const std::string & id) { return getOrCreateRocks()->getOrCreateHandler(id); };
 }
@@ -43,8 +44,8 @@ void HybridHashJoin::reinstallRocks()
     if (rocks && !rocks->isShutdown())
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Rocks is already installed");
 
-    rocks
-        = Rocks::createOrLoadIfExists(base_config.getRocksOptions(), base_config.spill_dir_path, base_config.cleanup_on_disk_data, logger);
+    rocks = Rocks::createOrLoadIfExists(
+        base_config.getRocksOptions(), base_config.spill_dir_path, base_config.ttl, base_config.cleanup_on_disk_data, logger);
 }
 
 void HybridHashJoin::serialize(WriteBuffer & wb, VersionType version) const

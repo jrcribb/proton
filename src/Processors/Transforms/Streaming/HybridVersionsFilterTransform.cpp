@@ -199,7 +199,6 @@ void HybridVersionsFilterTransform::doFilter(
         }
         else
         {
-
             const Field & latest_version = *static_cast<const Field *>(result.getMapped());
             if (current_version == latest_version)
             {
@@ -285,7 +284,8 @@ RocksPtr HybridVersionsFilterTransform::getOrCreateRocks()
 {
     /// Initialize rocks on first use
     if (!rocks)
-        rocks = Rocks::createOrLoadIfExists(config.getRocksOptions(), config.spill_dir_path, config.cleanup_on_disk_data, logger);
+        rocks
+            = Rocks::createOrLoadIfExists(config.getRocksOptions(), config.spill_dir_path, /*ttl=*/0, config.cleanup_on_disk_data, logger);
 
     return rocks;
 }
@@ -347,7 +347,8 @@ void HybridVersionsFilterTransform::recover(CheckpointContextPtr ckpt_ctx)
             rocks_ckpt->recover(config.spill_dir_path);
 
             /// Reinstall recovered rocks
-            rocks = Rocks::createOrLoadIfExists(config.getRocksOptions(), config.spill_dir_path, config.cleanup_on_disk_data, logger);
+            rocks = Rocks::createOrLoadIfExists(
+                config.getRocksOptions(), config.spill_dir_path, /*ttl=*/0, config.cleanup_on_disk_data, logger);
             rocks->getOrCreateHandler()->get("__late_rows", late_rows);
             latest_version_map.reload();
             break;

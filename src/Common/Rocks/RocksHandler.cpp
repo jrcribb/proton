@@ -2,6 +2,8 @@
 #include <Common/Rocks/RocksHandler.h>
 #include <Common/logger_useful.h>
 
+#include <rocksdb/utilities/db_ttl.h>
+
 #include <filesystem>
 
 namespace DB
@@ -26,10 +28,12 @@ Rocks::~Rocks()
     }
 }
 
-RocksPtr Rocks::createOrLoadIfExists(const rocksdb::Options & options, const std::string & path, bool cleanup_, LoggerPtr logger)
+RocksPtr Rocks::createOrLoadIfExists(const rocksdb::Options & options, const std::string & path, Int32 ttl, bool cleanup_, LoggerPtr logger)
 {
     if (!logger)
         logger = getLogger("Rocks");
+
+    SCOPE_EXIT({ LOG_INFO(logger, "Init rocks with ttl={} path={} cleanup={}", ttl, path, cleanup_); });
 
     if (std::filesystem::exists(path))
     {
@@ -46,8 +50,22 @@ RocksPtr Rocks::createOrLoadIfExists(const rocksdb::Options & options, const std
 
         std::vector<rocksdb::ColumnFamilyHandle *> cf_handles;
         cf_handles.reserve(cf_descriptors.size());
-        rocksdb::DB * db;
-        status = rocksdb::DB::Open(options, path, cf_descriptors, &cf_handles, &db);
+        rocksdb::DB * db = nullptr;
+
+        if (ttl > 0)
+        {
+            rocksdb::DBWithTTL * ttl_db = nullptr;
+
+            std::vector<Int32> ttls(cf_descriptors.size(), ttl);
+
+            status = rocksdb::DBWithTTL::Open(options, path, cf_descriptors, &cf_handles, &ttl_db, ttls);
+            db = ttl_db;
+        }
+        else
+        {
+            status = rocksdb::DB::Open(options, path, cf_descriptors, &cf_handles, &db);
+        }
+
         if (!status.ok())
             throw DB::Exception(ErrorCodes::ROCKSDB_ERROR, "Failed to open rocksdb: {}", status.ToString());
 
@@ -55,8 +73,20 @@ RocksPtr Rocks::createOrLoadIfExists(const rocksdb::Options & options, const std
     }
     else
     {
-        rocksdb::DB * db;
-        auto status = rocksdb::DB::Open(options, path, &db);
+        rocksdb::DB * db = nullptr;
+        rocksdb::Status status;
+
+        if (ttl > 0)
+        {
+            rocksdb::DBWithTTL * ttl_db = nullptr;
+            status = rocksdb::DBWithTTL::Open(options, path, &ttl_db, ttl);
+            db = ttl_db;
+        }
+        else
+        {
+            status = rocksdb::DB::Open(options, path, &db);
+        }
+
         if (!status.ok())
             throw DB::Exception(ErrorCodes::ROCKSDB_ERROR, "Failed to open rocksdb: {}", status.ToString());
 

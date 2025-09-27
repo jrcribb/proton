@@ -255,7 +255,8 @@ std::shared_ptr<Streaming::HashJoin> initHashJoin(
             std::move(left_join_stream_desc),
             std::move(right_join_stream_desc),
             context->getSpillDirForCurrentQuery("join"),
-            settings.max_hot_keys);
+            settings.max_hot_keys,
+            /*ttl_=*/0);
     else
         join = std::make_shared<Streaming::MemoryHashJoin>(table_join, std::move(left_join_stream_desc), std::move(right_join_stream_desc));
 

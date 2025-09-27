@@ -1100,6 +1100,13 @@ private:
 
         rocks = std::make_shared<Rocks>(db, std::vector<rocksdb::ColumnFamilyHandle *>{}, config.cleanup_on_disk_data, logger);
         rocks_handler = rocks->getOrCreateHandler(config.handle_id);
+
+        LOG_INFO(
+            logger,
+            "Init hybrid hash table with ttl={} path={} use_hash_index={}",
+            config.ttl,
+            config.spill_dir_path,
+            config.use_hash_index);
     }
 
     HybridFindResults doFindKeys(std::vector<K>::const_iterator keys_start, std::vector<K>::const_iterator keys_end)

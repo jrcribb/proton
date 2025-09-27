@@ -34,7 +34,7 @@ TEST(RocksHandler, Basic)
     rocksdb::Options options;
     options.create_if_missing = true;
     options.create_missing_column_families = true;
-    auto rocks = Rocks::createOrLoadIfExists(options, "test_rocks");
+    auto rocks = Rocks::createOrLoadIfExists(options, "test_rocks", /*ttl=*/0);
     auto handler = rocks->getOrCreateHandler();
     ASSERT_TRUE(handler->getHandleID().empty());
 
@@ -86,7 +86,7 @@ TEST(RocksHandler, Complex)
     options.create_if_missing = true;
     options.create_missing_column_families = true;
     {
-        auto rocks = Rocks::createOrLoadIfExists(options, "test_rocks2", /*cleanup=*/false);
+        auto rocks = Rocks::createOrLoadIfExists(options, "test_rocks2", /*ttl=*/0, /*cleanup=*/false);
         auto default_handler = rocks->getOrCreateHandler();
         ASSERT_EQ(default_handler->getHandleID(), "");
         default_handler->put(key_sv, value_struct);
@@ -106,6 +106,7 @@ TEST(RocksHandler, Complex)
     auto rocks = Rocks::createOrLoadIfExists(
         options,
         "test_rocks2",
+        /*ttl=*/0,
         /*cleanup=*/true,
         getLogger("RocksHandler"));
 

@@ -50,7 +50,7 @@ TEST(RocksCheckpoint, Basic)
         auto recovered_ckpt = local_fs_ckpt_storage.recover("key", ckpt_ctx);
         ASSERT_EQ(recovered_ckpt->type(), CheckpointType::Rocks);
         std::static_pointer_cast<RocksCheckpoint>(recovered_ckpt)->recover(recovered_rocks_path);
-        rocks = Rocks::createOrLoadIfExists(options, recovered_rocks_path);
+        rocks = Rocks::createOrLoadIfExists(options, recovered_rocks_path, /*ttl=*/0);
         rocks_handler = rocks->getOrCreateHandler();
         rocks_handler2 = rocks->getOrCreateHandler("another");
 
@@ -98,7 +98,7 @@ TEST(RocksCheckpoint, Incremental)
     rocksdb::Options options;
     options.create_if_missing = true;
     options.create_missing_column_families = true;
-    auto rocks = Rocks::createOrLoadIfExists(options, base_dir / "rocks");
+    auto rocks = Rocks::createOrLoadIfExists(options, base_dir / "rocks", /*ttl=*/0);
     auto rocks_handler = rocks->getOrCreateHandler();
     auto rocks_handler2 = rocks->getOrCreateHandler("another");
 
@@ -124,7 +124,7 @@ TEST(RocksCheckpoint, Incremental)
         auto recovered_ckpt = local_fs_ckpt_storage.recover("key", ckpt_ctx);
         ASSERT_EQ(recovered_ckpt->type(), CheckpointType::Rocks);
         std::static_pointer_cast<RocksCheckpoint>(recovered_ckpt)->recover(recovered_rocks_path);
-        rocks = Rocks::createOrLoadIfExists(options, recovered_rocks_path);
+        rocks = Rocks::createOrLoadIfExists(options, recovered_rocks_path, /*ttl=*/0);
         rocks_handler = rocks->getOrCreateHandler();
         rocks_handler2 = rocks->getOrCreateHandler("another");
 

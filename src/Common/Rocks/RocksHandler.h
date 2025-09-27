@@ -30,8 +30,8 @@ public:
     Rocks(rocksdb::DB * db_, const std::vector<rocksdb::ColumnFamilyHandle *> & cf_handles_, bool cleanup_, LoggerPtr logger_);
     ~Rocks();
 
-    static RocksPtr
-    createOrLoadIfExists(const rocksdb::Options & options, const std::string & path, bool cleanup_ = true, LoggerPtr logger = nullptr);
+    static RocksPtr createOrLoadIfExists(
+        const rocksdb::Options & options, const std::string & path, Int32 ttl, bool cleanup_ = true, LoggerPtr logger = nullptr);
 
     void shutdown(bool cleanup_);
 

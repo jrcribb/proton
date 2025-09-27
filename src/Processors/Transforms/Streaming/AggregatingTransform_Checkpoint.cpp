@@ -29,7 +29,7 @@ void AggregatingTransform::installRocks()
     config.max_hot_key_count = hybrid_params->max_hot_key_count;
     config.cleanup_on_disk_data = true;
     config.rocks_handler_getter = [this](const std::string & id) { return getOrCreateRocks()->getOrCreateHandler(id); };
-
+    config.ttl = hybrid_params->aggregate_state_ttl;
     std::static_pointer_cast<HybridAggregator>(params->aggregator)->setSharedHybridHashTableConfig(variants.getID(), std::move(config));
 }
 
@@ -41,7 +41,9 @@ RocksPtr AggregatingTransform::getOrCreateRocks()
         /// Initialize rocks on first use
         const auto & config
             = std::static_pointer_cast<HybridAggregator>(params->aggregator)->getSharedHybridHashTableConfig(variants.getID());
-        rocks_holder = Rocks::createOrLoadIfExists(config.getRocksOptions(), config.spill_dir_path, config.cleanup_on_disk_data, logger);
+
+        rocks_holder
+            = Rocks::createOrLoadIfExists(config.getRocksOptions(), config.spill_dir_path, config.ttl, config.cleanup_on_disk_data, logger);
     }
 
     return rocks_holder;
@@ -237,7 +239,7 @@ void AggregatingTransform::recoverRocksCheckpoint(CheckpointPtr ckpt)
     rocks_ckpt->recover(config.spill_dir_path);
 
     /// Reinstall recovered rocks
-    rocks = Rocks::createOrLoadIfExists(config.getRocksOptions(), config.spill_dir_path, config.cleanup_on_disk_data, logger);
+    rocks = Rocks::createOrLoadIfExists(config.getRocksOptions(), config.spill_dir_path, config.ttl, config.cleanup_on_disk_data, logger);
     variants.reset();
 
     auto handler = rocks->getOrCreateHandler();

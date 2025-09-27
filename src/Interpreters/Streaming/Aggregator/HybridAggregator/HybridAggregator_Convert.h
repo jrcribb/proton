@@ -223,7 +223,7 @@ BlocksList HybridAggregator::convertToBlocksForAll(Table & table) const
         table.forBatchValue(
             max_block_size,
             [&](const KeyGetter::KeyType & key, auto value, bool flush) {
-                auto mapped = static_cast<ConstAggregateDataPtr>(value.getMapped());
+                const auto * mapped = static_cast<ConstAggregateDataPtr>(value.getMapped());
                 /// for non-UDA or UDA without emit strategy, 'should_emit' is always true.
                 /// For UDA with emit strategy, it is true only if the group should emit.
                 assert(aggregate_functions.size() == 1);
@@ -281,19 +281,36 @@ BlocksList HybridAggregator::convertToBlocksForUpdates(Table & table, Table * up
 
     BlocksList blocks;
 
+    size_t ttl_gc = 0;
+
     auto insert_columns = [&](const KeyGetter::KeyType & key) {
         auto find_result = table.findKey(key, /*disable_spill=*/true);
         if (find_result.hasError())
             throw Exception::createRuntime(find_result.errcode, find_result.errorString());
 
-        auto place = static_cast<ConstAggregateDataPtr>(find_result.getMapped());
+        const auto * place = static_cast<ConstAggregateDataPtr>(find_result.getMapped());
+        if (place == nullptr)
+        {
+            if (hybrid_params->aggregate_state_ttl > 0)
+            {
+                /// If TTL is enabled, it is possible the key was GCed from `table`
+                /// if TTL is not set correctly for `EMIT ON UPDATE WITH TIMEOUT 5m SETTING aggregate_state_ttl=3m`
+                /// Ignore this key
+                ++ttl_gc;
+                return;
+            }
+            else
+            {
+                throw Exception(ErrorCodes::LOGICAL_ERROR, "Key was updated but was not found in source aggregation hybrid hash table");
+            }
+        }
 
         /// Regular row
         KeyGetter::insertKeyIntoColumns(key, out_cols.raw_key_columns, key_sizes_ref);
         places.push_back(place);
 
         /// If reached max block size, finalize the block and start a new one
-        if (out_cols.key_columns[0]->size() >= max_block_size)
+        if (places.size() >= max_block_size)
         {
             blocks.emplace_back(insertResultsIntoColumns(places, std::move(out_cols), /*arena=*/nullptr));
             table.spillIfNecessary(places.size());
@@ -306,7 +323,22 @@ BlocksList HybridAggregator::convertToBlocksForUpdates(Table & table, Table * up
         if (find_result.hasError())
             throw Exception::createRuntime(find_result.errcode, find_result.errorString());
 
-        auto place = static_cast<ConstAggregateDataPtr>(find_result.getMapped());
+        const auto * place = static_cast<ConstAggregateDataPtr>(find_result.getMapped());
+        if (place == nullptr)
+        {
+            if (hybrid_params->aggregate_state_ttl > 0)
+            {
+                /// If TTL is enabled, it is possible the key was GCed from `table`
+                /// if TTL is not set correctly for `EMIT ON UPDATE WITH TIMEOUT 5m SETTING aggregate_state_ttl=3m`
+                /// Ignore this key
+                ++ttl_gc;
+                return;
+            }
+            else
+            {
+                throw Exception(ErrorCodes::LOGICAL_ERROR, "Key was updated but was not found in source aggregation hybrid hash table");
+            }
+        }
 
         /// for non-UDA or UDA without emit strategy, 'should_emit' is always true.
         /// For UDA with emit strategy, it is true only if the group should emit.
@@ -323,7 +355,7 @@ BlocksList HybridAggregator::convertToBlocksForUpdates(Table & table, Table * up
         }
 
         /// If reached max block size, finalize the block and start a new one
-        if (out_cols.key_columns[0]->size() >= max_block_size)
+        if (places.size() >= max_block_size)
         {
             blocks.emplace_back(insertResultsIntoColumns(places, std::move(out_cols), /*arena=*/nullptr));
             table.spillIfNecessary(places.size());
@@ -339,6 +371,9 @@ BlocksList HybridAggregator::convertToBlocksForUpdates(Table & table, Table * up
 
     if (errcode != ErrorCodes::OK)
         throw Exception(errcode, "Failed to convert aggregate states to blocks, error_message'{}'", ErrorCodes::getName(errcode));
+
+    if (ttl_gc > 0)
+        LOG_WARNING(logger, "Found total_keys={} are garbage collected because of reaching TTL={} seconds", ttl_gc, hybrid_params->aggregate_state_ttl);
 
     if (!places.empty())
     {

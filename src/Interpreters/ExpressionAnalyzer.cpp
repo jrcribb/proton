@@ -2789,7 +2789,8 @@ std::shared_ptr<IJoin> SelectQueryExpressionAnalyzer::chooseJoinAlgorithmStreami
                 std::move(left_join_stream_desc),
                 std::move(right_join_stream_desc),
                 getContext()->getSpillDirForCurrentQuery("join"),
-                settings.max_hot_keys);
+                settings.max_hot_keys,
+                settings.join_state_ttl_sec);
         else
             return std::make_shared<Streaming::ConcurrentHashJoin>(
                 analyzed_join, max_threads, std::move(left_join_stream_desc), std::move(right_join_stream_desc));
@@ -2802,7 +2803,8 @@ std::shared_ptr<IJoin> SelectQueryExpressionAnalyzer::chooseJoinAlgorithmStreami
                 std::move(left_join_stream_desc),
                 std::move(right_join_stream_desc),
                 getContext()->getSpillDirForCurrentQuery("join"),
-                settings.max_hot_keys);
+                settings.max_hot_keys,
+                settings.join_state_ttl_sec);
         else
             return std::make_shared<Streaming::MemoryHashJoin>(
                 analyzed_join, std::move(left_join_stream_desc), std::move(right_join_stream_desc));
