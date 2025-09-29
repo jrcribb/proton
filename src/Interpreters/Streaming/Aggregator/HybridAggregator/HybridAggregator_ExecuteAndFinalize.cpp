@@ -29,7 +29,8 @@ Block NO_INLINE HybridAggregator::executeAndFinalizePerRowImpl(
     size_t row_begin,
     size_t row_end,
     AggregateFunctionInstruction * aggregate_instructions,
-    bool new_keys) const
+    bool new_keys,
+    std::string_view variants_id) const
 {
     constexpr bool final = true;
     OutputBlockColumns out_cols = prepareOutputBlockColumns(getHeader(final), /*aggregates_pools=*/{}, final, row_end - row_begin + 1);
@@ -54,6 +55,8 @@ Block NO_INLINE HybridAggregator::executeAndFinalizePerRowImpl(
         /// Add and insert aggregates into columns.
         addAndInsertAggregatesIntoColumns(aggregate_data, aggregate_instructions, out_cols.final_aggregate_columns, i, /*arena=*/nullptr);
     }
+
+    table.logMetrics(/*throttling_sec=*/30, "aggr-per-row", variants_id);
 
     return finalizeBlock(getHeader(final), std::move(out_cols), final, row_end - row_begin);
 }
@@ -100,13 +103,13 @@ Block HybridAggregator::executeAndFinalizePerRow(
         { \
             HybridKeyGetter<HybridHashType::NAME, /*nullable=*/true> key_getter{key_columns, key_sizes}; \
             return executeAndFinalizePerRowImpl( \
-                *result.table.NAME, key_getter, row_begin, row_end, aggregate_functions_instructions.data(), new_keys); \
+                *result.table.NAME, key_getter, row_begin, row_end, aggregate_functions_instructions.data(), new_keys, result.getID()); \
         } \
         else \
         { \
             HybridKeyGetter<HybridHashType::NAME, /*nullable=*/false> key_getter{key_columns, key_sizes}; \
             return executeAndFinalizePerRowImpl( \
-                *result.table.NAME, key_getter, row_begin, row_end, aggregate_functions_instructions.data(), new_keys); \
+                *result.table.NAME, key_getter, row_begin, row_end, aggregate_functions_instructions.data(), new_keys, result.getID()); \
         } \
     }
             APPLY_FOR_HASH_KEY_VARIANTS_HYBRID(M)
@@ -163,7 +166,8 @@ Block HybridAggregator::executeAndFinalizeAfterKeyExpire(
                 row_begin, \
                 row_end, \
                 aggregate_functions_instructions.data(), \
-                new_keys); \
+                new_keys, \
+                result.getID()); \
         } \
         else \
         { \
@@ -176,7 +180,8 @@ Block HybridAggregator::executeAndFinalizeAfterKeyExpire(
                 row_begin, \
                 row_end, \
                 aggregate_functions_instructions.data(), \
-                new_keys); \
+                new_keys, \
+                result.getID()); \
         } \
         break; \
     }
@@ -197,7 +202,8 @@ template <typename Table, typename KeyList, typename KeyGetter>
     size_t row_begin,
     size_t row_end,
     AggregateFunctionInstruction * aggregate_instructions,
-    bool new_keys) const
+    bool new_keys,
+    std::string_view variants_id) const
 {
     /// NOTE: only row_end-row_start is required, but:
     /// - this affects only optimize_aggregation_in_order,
@@ -379,6 +385,8 @@ template <typename Table, typename KeyList, typename KeyGetter>
                 throw Exception(errcode, "Failed to add keys to HybridKeyList");
         }
     }
+
+    table.logMetrics(/*throttling_sec=*/30, "aggr-after-key-expire", variants_id);
 
     auto block_rows = block.rows();
     auto block2_rows = block2.rows();

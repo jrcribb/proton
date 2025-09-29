@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Cluster/Common/LogTrack.h>
 #include <IO/ReadBuffer.h>
 #include <IO/ReadBufferFromString.h>
 #include <IO/ReadHelpers.h>
@@ -20,13 +21,14 @@
 #include <absl/container/flat_hash_map.h>
 #include <absl/container/flat_hash_set.h>
 #include <fmt/format.h>
+#include <rocksdb/convenience.h>
 #include <rocksdb/db.h>
 #include <rocksdb/slice_transform.h>
 #include <rocksdb/statistics.h>
 #include <rocksdb/utilities/db_ttl.h>
+#include <rocksdb/utilities/memory_util.h>
 
 #include <ranges>
-#include <fmt/format.h>
 
 namespace DB
 {
@@ -67,8 +69,8 @@ struct HybridHashTableConfig
         /// Please note when value_object_size is zero, std::malloc(0) still returns a valid address,
         /// we actually need this unique address for tracking etc purposes
         value_object_size = 0;
-        value_constructor = ([](void * /*data*/) { });
-        value_destructor = ([](void * /*data*/) { });
+        value_constructor = ([](void * /*data*/) {});
+        value_destructor = ([](void * /*data*/) {});
         value_serializer = ([](const void * /*data*/, WriteBuffer &) { return DB::ErrorCodes::OK; });
         value_deserializer = ([](void * /*data*/, ReadBuffer &) { return DB::ErrorCodes::OK; });
     }
@@ -982,6 +984,63 @@ public:
         return bulkSpill(max_keys_to_spill);
     }
 
+    void logMetrics(int64_t throttling_sec, std::string_view ht_name, std::string_view ht_id)
+    {
+        if (auto [should_log, _] = cluster::shouldLog(tracked_logs, /*log_key=*/1, throttling_sec); !should_log)
+            return;
+
+        if (persistentPartInited())
+        {
+            uint64_t rocksdb_size_all_mem_tables = 0;
+            uint64_t rocksdb_cur_size_all_mem_tables = 0;
+            uint64_t rocksdb_estimate_table_readers_mem = 0;
+            uint64_t rocksdb_block_cache_usage = 0;
+            uint64_t rocksdb_block_cache_pinned_usage = 0;
+            uint64_t rocksdb_memory_usage = 0;
+
+            rocks_handler->db->GetIntProperty("rocksdb.size-all-mem-tables", &rocksdb_size_all_mem_tables); // ~kMemTableTotal
+            rocks_handler->db->GetIntProperty(
+                "rocksdb.cur-size-all-mem-tables", &rocksdb_cur_size_all_mem_tables); // ~kMemTableTotal (current snapshot)
+            rocks_handler->db->GetIntProperty(
+                "rocksdb.estimate-table-readers-mem", &rocksdb_estimate_table_readers_mem); // ~kTableReadersTotal
+            rocks_handler->db->GetIntProperty("rocksdb.block-cache-usage", &rocksdb_block_cache_usage); // ~kCacheTotal
+            rocks_handler->db->GetIntProperty(
+                "rocksdb.block-cache-pinned-usage", &rocksdb_block_cache_pinned_usage); // pinned part of kCacheTotal
+            rocks_handler->db->GetIntProperty("rocksdb.memory-usage", &rocksdb_memory_usage); // total aggregate
+
+            LOG_INFO(
+                logger,
+                "HybridHashTable: {}-{} hot_keys={} recent_keys={} approx_keys={} disk_size={} {} rocksdb_size_all_mem_tables={} "
+                "rocksdb_cur_size_all_mem_tables={} rocksdb_estimate_table_readers_mem={} rocksdb_block_cache_usage={} "
+                "rocksdb_block_cache_pinned_usage={} rocksdb_memory_usage={}",
+                ht_name,
+                ht_id,
+                hot_key_values.size(),
+                recent_keys.size(),
+                approximateCount(),
+                getDiskSize(),
+                metrics.string(),
+                rocksdb_size_all_mem_tables,
+                rocksdb_cur_size_all_mem_tables,
+                rocksdb_estimate_table_readers_mem,
+                rocksdb_block_cache_usage,
+                rocksdb_block_cache_pinned_usage,
+                rocksdb_memory_usage);
+        }
+        else
+        {
+            LOG_INFO(
+                logger,
+                "HybridHashTable: {} hot_keys={} recent_keys={} approx_keys={} disk_size={}, {}",
+                ht_name,
+                hot_key_values.size(),
+                recent_keys.size(),
+                approximateCount(),
+                getDiskSize(),
+                metrics.string());
+        }
+    }
+
     /// For testing
     auto & hotKeyValues() noexcept { return hot_key_values; }
     const auto & recentKeys() const noexcept { return recent_keys; }
@@ -1317,35 +1376,41 @@ private:
 
         size_t approx_batch_size = 0;
 
-        std::vector<std::vector<char>> keys_data;
+        /// using MemoryTrackedCharVector = std::vector<char, AllocatorWithMemoryTracking<char>>;
+        /// using MemoryTrackedVectorVector = std::vector<MemoryTrackedCharVector, AllocatorWithMemoryTracking<MemoryTrackedCharVector>>;
+
+        using MemoryTrackedCharVector = std::vector<char>;
+        using MemoryTrackedVectorVector = std::vector<MemoryTrackedCharVector>;
+
+        MemoryTrackedVectorVector keys_data;
         keys_data.reserve(keys.size());
         for (const auto * key : keys)
         {
             keys_data.emplace_back();
             auto & key_data = keys_data.back();
             {
-                WriteBufferFromVector<std::vector<char>> wb(key_data);
+                WriteBufferFromVector<MemoryTrackedCharVector> wb(key_data);
                 if (auto errcode = key_serializer(*key, wb); errcode != ErrorCodes::OK)
                     return errcode;
             }
             approx_batch_size += key_data.size();
         }
 
-        std::vector<std::vector<char>> values_data;
+        MemoryTrackedVectorVector values_data;
         values_data.reserve(keys.size());
         for (auto * entry : entries)
         {
             values_data.emplace_back();
             auto & value_data = values_data.back();
             {
-                WriteBufferFromVector<std::vector<char>> wb(value_data);
+                WriteBufferFromVector<MemoryTrackedCharVector> wb(value_data);
                 if (auto errcode = config.value_serializer(entry->data, wb); errcode != ErrorCodes::OK)
                     return errcode;
             }
             approx_batch_size += value_data.size();
         }
 
-        rocksdb::WriteBatch batch{static_cast<size_t>(approx_batch_size * 1.2)};
+        rocksdb::WriteBatch batch{static_cast<size_t>(approx_batch_size * 1.5)};
         for (size_t i = 0, size = keys.size(); i < size; ++i)
         {
             auto status = batch.Put(
@@ -1393,6 +1458,7 @@ private:
     {
         /// NOTE: If value_destructor throws, there may be memory leak
         config.value_destructor(value);
+        /// allocator.free(value, config.value_object_size + sizeof(HybridMappedValue::ControlBits));
         std::free(value);
     }
 
@@ -1400,6 +1466,8 @@ private:
     {
         /// Allocate memory for value object: value_object_size + control_bits(1 byte)
         auto value_ptr = alignedAllocate(config.value_object_size + sizeof(HybridMappedValue::ControlBits), config.align_value_object_size);
+        /// std::unique_ptr<void, decltype(&std::free)> value_ptr{
+        ///    allocator.alloc(config.value_object_size + sizeof(HybridMappedValue::ControlBits), config.align_value_object_size), &std::free};
         config.value_constructor(value_ptr.get());
         auto deleter = [this](void * ptr) { destructValue(ptr); };
         return std::unique_ptr<void, decltype(deleter)>(value_ptr.release(), std::move(deleter));
@@ -1421,6 +1489,7 @@ private:
     HybridHashTableConfig config;
     KeySerializer key_serializer;
     KeyDeserializer key_deserializer;
+    /// Allocator</*clear_memory_=*/false, /*populate=*/false, /*track=*/true> allocator;
 
     InmemoryHashMap hot_key_values;
     std::list<K> recent_keys;
@@ -1433,6 +1502,8 @@ private:
 
     rocksdb::WriteOptions write_options;
     rocksdb::ReadOptions read_options;
+
+    cluster::LogTrackContainer tracked_logs;
 
     LoggerPtr logger;
 };

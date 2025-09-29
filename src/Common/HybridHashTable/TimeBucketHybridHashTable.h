@@ -222,6 +222,12 @@ public:
         return ErrorCodes::OK;
     }
 
+    void logMetrics(int64_t throttling_sec, std::string_view ht_name, std::string_view ht_id)
+    {
+        for (const auto & [_, impl] : bucket_tables)
+            impl->logMetrics(throttling_sec, ht_name, ht_id);
+    }
+
     void flush()
     {
         for (const auto & [_, impl] : bucket_tables)

@@ -91,7 +91,8 @@ std::pair<bool, bool> HybridAggregator::doExecuteOnBlock(
                 row_begin, \
                 row_end, \
                 aggregate_functions_instructions.data(), \
-                new_keys); \
+                new_keys, \
+                result.getID()); \
         } \
         else \
         { \
@@ -104,7 +105,8 @@ std::pair<bool, bool> HybridAggregator::doExecuteOnBlock(
                 row_begin, \
                 row_end, \
                 aggregate_functions_instructions.data(), \
-                new_keys); \
+                new_keys, \
+                result.getID()); \
         } \
         break; \
     }
@@ -127,7 +129,8 @@ template <typename Table, typename KeyGetter>
     size_t row_begin,
     size_t row_end,
     AggregateFunctionInstruction * aggregate_instructions,
-    bool new_keys) const
+    bool new_keys,
+    std::string_view variants_id) const
 {
 #if USE_EMBEDDED_COMPILER
     auto use_compiled_functions = compiled_aggregate_functions_holder && !hasSparseArguments(aggregate_instructions);
@@ -167,7 +170,7 @@ template <typename Table, typename KeyGetter>
             chassert(retracts_emplace_results.results.size() == rows);
             for (size_t row = row_begin; auto & retracts_emplace_result : retracts_emplace_results.results)
             {
-                auto * src_place = static_cast<ConstAggregateDataPtr>(places[row++]);
+                const auto * src_place = static_cast<ConstAggregateDataPtr>(places[row++]);
                 /// retracts doesn't have the saved aggregation states yet
                 /// Save the current aggregate states before mutating them below
                 if (retracts_emplace_result.isInserted() && !TrackingCount::empty(src_place + tracking_count_offset))
@@ -263,6 +266,14 @@ template <typename Table, typename KeyGetter>
             aggregate_instructions ? aggregate_instructions->delta_column : nullptr);
 
     table.spillIfNecessary();
+
+    table.logMetrics(/*throttling_sec=*/30, "aggr", variants_id);
+
+    if (updates)
+        updates->logMetrics(/*throttling_sec=*/30, "aggr-updates", variants_id);
+
+    if (retracts)
+        updates->logMetrics(/*throttling_sec=*/30, "aggr-retracts", variants_id);
 
     return need_finalization;
 }

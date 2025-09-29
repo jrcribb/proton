@@ -2,6 +2,7 @@
 
 #include <Interpreters/Streaming/Aggregator/AggregatedDataMetrics.h>
 #include <Interpreters/Streaming/Aggregator/AggregatorType.h>
+
 #include <Common/Arena.h>
 
 namespace DB

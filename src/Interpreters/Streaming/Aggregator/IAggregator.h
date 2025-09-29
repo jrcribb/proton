@@ -129,7 +129,10 @@ protected:
     /// For some streaming queries with `emit on update` or `emit changelog`, need tracking updates (with retract)
     bool needTrackUpdates() const noexcept { return params->tracking_updates_type != TrackingUpdatesType::None; }
 
-    bool trackingStateCount() const noexcept { return params->delta_col_pos >= 0 || params->tracking_updates_type == TrackingUpdatesType::UpdatesWithRetract; }
+    bool trackingStateCount() const noexcept
+    {
+        return params->delta_col_pos >= 0 || params->tracking_updates_type == TrackingUpdatesType::UpdatesWithRetract;
+    }
     bool trackingStateTime() const noexcept { return params->emit_key_params.has_value(); }
 
     void prepareAggregateInstructions(

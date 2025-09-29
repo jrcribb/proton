@@ -106,7 +106,8 @@ private:
         size_t row_begin,
         size_t row_end,
         AggregateFunctionInstruction * aggregate_instructions,
-        bool new_keys) const;
+        bool new_keys,
+        std::string_view variants_id) const;
 
     Block executeAndFinalizeWithoutKeyPerRowImpl(
         AggregateDataPtr aggregate_data, size_t row_begin, size_t row_end, AggregateFunctionInstruction * aggregate_instructions) const;
@@ -121,7 +122,8 @@ private:
         size_t row_begin,
         size_t row_end,
         AggregateFunctionInstruction * aggregate_instructions,
-        bool new_keys) const;
+        bool new_keys,
+        std::string_view variants_id) const;
 
     /// Process one data block, aggregate the data into a hash table and return fianlized aggregated states for expired keys.
     template <typename Table, typename KeyList, typename KeyGetter>
@@ -133,7 +135,8 @@ private:
         size_t row_begin,
         size_t row_end,
         AggregateFunctionInstruction * aggregate_instructions,
-        bool new_keys) const;
+        bool new_keys,
+        std::string_view variants_id) const;
 
     template <typename KeyGetter, typename Table>
     BlocksList convertToBlocksMerged(Table & table, Table * retracts) const;
