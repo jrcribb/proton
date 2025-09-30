@@ -13,7 +13,6 @@
 #include <Common/HybridHashTable/HybridMappedValue.h>
 #include <Common/MemoryHelpers.h>
 /// #include <Common/MemoryTrackerBlockerInThread.h>
-#include <Common/HybridConfig.h>
 #include <Common/Rocks/RocksHandler.h>
 #include <Common/Stopwatch.h>
 #include <Common/logger_useful.h>
@@ -746,7 +745,7 @@ public:
                 keys_data.push_back(std::move(key_data));
             }
 
-            rocksdb::WriteBatch batch{static_cast<size_t>(approx_keys_size * 1.2)};
+            rocksdb::WriteBatch batch{static_cast<size_t>(approx_keys_size * 1.5)};
             for (const auto & key_data : keys_data)
             {
                 auto status = batch.Delete(rocks_handler->cf_handle, {key_data.data(), key_data.size()});
@@ -1376,34 +1375,31 @@ private:
 
         size_t approx_batch_size = 0;
 
-        /// using MemoryTrackedCharVector = std::vector<char, AllocatorWithMemoryTracking<char>>;
-        /// using MemoryTrackedVectorVector = std::vector<MemoryTrackedCharVector, AllocatorWithMemoryTracking<MemoryTrackedCharVector>>;
+        using CharVector = std::vector<char>;
+        using VectorOfCharVector = std::vector<CharVector>;
 
-        using MemoryTrackedCharVector = std::vector<char>;
-        using MemoryTrackedVectorVector = std::vector<MemoryTrackedCharVector>;
-
-        MemoryTrackedVectorVector keys_data;
+        VectorOfCharVector keys_data;
         keys_data.reserve(keys.size());
         for (const auto * key : keys)
         {
             keys_data.emplace_back();
             auto & key_data = keys_data.back();
             {
-                WriteBufferFromVector<MemoryTrackedCharVector> wb(key_data);
+                WriteBufferFromVector<CharVector> wb(key_data);
                 if (auto errcode = key_serializer(*key, wb); errcode != ErrorCodes::OK)
                     return errcode;
             }
             approx_batch_size += key_data.size();
         }
 
-        MemoryTrackedVectorVector values_data;
+        VectorOfCharVector values_data;
         values_data.reserve(keys.size());
         for (auto * entry : entries)
         {
             values_data.emplace_back();
             auto & value_data = values_data.back();
             {
-                WriteBufferFromVector<MemoryTrackedCharVector> wb(value_data);
+                WriteBufferFromVector<CharVector> wb(value_data);
                 if (auto errcode = config.value_serializer(entry->data, wb); errcode != ErrorCodes::OK)
                     return errcode;
             }
@@ -1421,6 +1417,11 @@ private:
                 return ErrorCodes::ROCKSDB_ERROR;
             }
         }
+
+        /// The data in batch can be moved to other thread when db->Write(...)
+        /// which caused the tracking inaccuracy
+        /// https://github.com/timeplus-io/proton-enterprise/issues/10675
+        CurrentMemoryTracker::free(batch.GetDataSize());
 
         if (auto status = rocks_handler->db->Write(write_options, &batch); status.ok())
         {
@@ -1458,16 +1459,16 @@ private:
     {
         /// NOTE: If value_destructor throws, there may be memory leak
         config.value_destructor(value);
-        /// allocator.free(value, config.value_object_size + sizeof(HybridMappedValue::ControlBits));
-        std::free(value);
+        /// std::free(value);
+        allocator.free(value, config.value_object_size + sizeof(HybridMappedValue::ControlBits));
     }
 
     ALWAYS_INLINE auto constructValue() const
     {
         /// Allocate memory for value object: value_object_size + control_bits(1 byte)
-        auto value_ptr = alignedAllocate(config.value_object_size + sizeof(HybridMappedValue::ControlBits), config.align_value_object_size);
-        /// std::unique_ptr<void, decltype(&std::free)> value_ptr{
-        ///    allocator.alloc(config.value_object_size + sizeof(HybridMappedValue::ControlBits), config.align_value_object_size), &std::free};
+        /// auto value_ptr = alignedAllocate(config.value_object_size + sizeof(HybridMappedValue::ControlBits), config.align_value_object_size);
+        std::unique_ptr<void, decltype(&std::free)> value_ptr{
+            allocator.alloc(config.value_object_size + sizeof(HybridMappedValue::ControlBits), config.align_value_object_size), &std::free};
         config.value_constructor(value_ptr.get());
         auto deleter = [this](void * ptr) { destructValue(ptr); };
         return std::unique_ptr<void, decltype(deleter)>(value_ptr.release(), std::move(deleter));
@@ -1489,7 +1490,7 @@ private:
     HybridHashTableConfig config;
     KeySerializer key_serializer;
     KeyDeserializer key_deserializer;
-    /// Allocator</*clear_memory_=*/false, /*populate=*/false, /*track=*/true> allocator;
+    mutable Allocator</*clear_memory_=*/false, /*populate=*/false, /*track=*/true> allocator;
 
     InmemoryHashMap hot_key_values;
     std::list<K> recent_keys;
