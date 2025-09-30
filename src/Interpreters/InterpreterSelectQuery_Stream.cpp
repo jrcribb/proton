@@ -576,7 +576,7 @@ void InterpreterSelectQuery::executeStreamingAggregation(
                 aggregates,
                 context->getSpillDirForCurrentQuery("aggr"),
                 settings.max_hot_keys,
-                settings.aggregate_state_ttl_sec,
+                static_cast<int32_t>(settings.aggregate_state_ttl_sec),
                 settings.max_block_size,
                 settings.max_threads,
                 settings.compile_aggregate_expressions,

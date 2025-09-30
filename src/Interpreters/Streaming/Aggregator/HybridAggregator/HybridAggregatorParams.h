@@ -12,7 +12,7 @@ struct HybridAggregatorParams final : public IAggregatorParams
         const AggregateDescriptions & aggregates_,
         String spill_dir_path_,
         size_t max_hot_keys_count_,
-        Int64 aggregate_state_ttl_,
+        int32_t aggregate_state_ttl_,
         size_t max_block_size_,
         size_t max_threads_,
         bool compile_aggregate_expressions_,
@@ -50,7 +50,7 @@ struct HybridAggregatorParams final : public IAggregatorParams
 
     String spill_dir_path;
     size_t max_hot_key_count;
-    Int64 aggregate_state_ttl;
+    int32_t aggregate_state_ttl;
 };
 
 using HybridAggregatorParamsPtr = std::shared_ptr<HybridAggregatorParams>;
