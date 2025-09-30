@@ -62,7 +62,7 @@ ConcurrentHashJoin::ConcurrentHashJoin(
     JoinStreamDescriptionPtr right_join_stream_desc_,
     String spill_path_,
     size_t max_hot_keys_,
-    Int64 ttl_)
+    int32_t ttl_)
     : table_join(table_join_)
     , left_join_stream_desc(std::move(left_join_stream_desc_))
     , right_join_stream_desc(std::move(right_join_stream_desc_))

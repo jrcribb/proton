@@ -24,7 +24,7 @@ public:
         JoinStreamDescriptionPtr right_join_stream_desc_,
         const String & spill_dir_,
         size_t max_hot_key_count_,
-        Int64 ttl_);
+        int32_t ttl_);
 
     ~HybridHashJoin() noexcept override;
 
@@ -88,7 +88,7 @@ private:
         SERDE HashIndexPtr index;
     };
 
-    void installRocks(const String & spill_dir_, size_t max_hot_key_count_, Int64 ttl_);
+    void installRocks(const String & spill_dir_, size_t max_hot_key_count_, int32_t ttl_);
 
     void chooseHashMethod();
     void checkLimits() const;

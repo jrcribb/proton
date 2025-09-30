@@ -30,7 +30,7 @@ void HybridHashJoin::shutdownRocks()
     }
 }
 
-void HybridHashJoin::installRocks(const String & spill_dir_, size_t max_hot_key_count_, Int64 ttl_)
+void HybridHashJoin::installRocks(const String & spill_dir_, size_t max_hot_key_count_, int32_t ttl_)
 {
     base_config.spill_dir_path = spill_dir_;
     base_config.max_hot_key_count = max_hot_key_count_;
