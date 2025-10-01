@@ -23,6 +23,7 @@ public:
         const std::string & version_column_name,
         std::string spill_dir,
         size_t max_hot_key_count,
+        const std::string & kv_options,
         bool backfill_key_unique_);
 
     ~HybridChangelogConvertTransform() override = default;
@@ -39,7 +40,8 @@ public:
     static Block transformOutputHeader(const Block & output_header);
 
 private:
-    void createHashTable(const DataTypes & key_column_types, std::string spill_dir, size_t max_hot_key_count);
+    void
+    createHashTable(const DataTypes & key_column_types, std::string spill_dir, size_t max_hot_key_count, const std::string & kv_options);
 
     void transformEmptyChunk();
 

@@ -22,12 +22,13 @@ HybridHashJoin::HybridHashJoin(
     JoinStreamDescriptionPtr right_join_stream_desc_,
     const String & spill_dir_,
     size_t max_hot_key_count_,
-    int32_t ttl_)
+    Int32 ttl_,
+    const String & kv_options_)
     : HashJoin(std::move(table_join_), std::move(left_join_stream_desc_), std::move(right_join_stream_desc_), "HybridHashJoin")
     , right_data(right_join_ctx)
     , left_data(left_join_ctx)
 {
-    installRocks(spill_dir_, max_hot_key_count_, ttl_);
+    installRocks(spill_dir_, max_hot_key_count_, ttl_, kv_options_);
 
     /// If right stream is key-value data stream semantic and our query plan pushes down the changelog transform
     /// initRightPrimaryKeyHashTable();

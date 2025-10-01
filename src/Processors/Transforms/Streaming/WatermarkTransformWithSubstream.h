@@ -23,7 +23,8 @@ public:
         bool skip_stamping_for_backfill_data_,
         HashTableType hash_table_type,
         const String & spill_dir,
-        size_t max_hot_key_count);
+        size_t max_hot_key_count,
+        const String & kv_options);
 
     ~WatermarkTransformWithSubstream() override = default;
 
@@ -39,7 +40,7 @@ private:
     inline WatermarkStamper & getOrCreateSubstreamWatermark(const SubstreamID & id);
     inline bool removeSubstreamWatermark(const SubstreamID & id);
 
-    void initSubstreamHashMap(HashTableType hash_table_type, const String & spill_dir, size_t max_hot_key_count);
+    void initSubstreamHashMap(HashTableType hash_table_type, const String & spill_dir, size_t max_hot_key_count, const String & kv_options);
 
     Chunk input_chunk;
     /// We always push output_chunks first, so we can assume no output_chunks when received request checkpoint

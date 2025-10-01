@@ -24,7 +24,8 @@ public:
         JoinStreamDescriptionPtr right_join_stream_desc_,
         const String & spill_dir_,
         size_t max_hot_key_count_,
-        int32_t ttl_);
+        Int32 ttl_,
+        const String & kv_options_);
 
     ~HybridHashJoin() noexcept override;
 
@@ -75,7 +76,7 @@ public:
 
     RocksPtr getOrCreateRocks();
     void shutdownRocks();
-    const String & getRocksDir() const { return base_config.spill_dir_path; }
+    const String & getRocksDir() const { return base_config.base_conf.spill_dir_path; }
 
     void reinstallRocks();
 
@@ -88,7 +89,7 @@ private:
         SERDE HashIndexPtr index;
     };
 
-    void installRocks(const String & spill_dir_, size_t max_hot_key_count_, int32_t ttl_);
+    void installRocks(const String & spill_dir_, size_t max_hot_key_count_, Int32 ttl_, const String & kv_options_);
 
     void chooseHashMethod();
     void checkLimits() const;

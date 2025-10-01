@@ -2765,6 +2765,7 @@ void InterpreterSelectQuery::executeExpression(QueryPlan & query_plan, const Act
         settings.default_hash_table,
         context->getSpillDirForCurrentQuery("expression"),
         settings.max_hot_keys,
+        settings.kv_options,
         preserves_substream);
     /// proton: ends.
 

@@ -11,18 +11,18 @@
 #include <Common/Exception.h>
 #include <Common/HybridHashTable/HybridMappedValue.h>
 #include <Common/MemoryHelpers.h>
+/// #include <Common/MemoryTrackerBlockerInThread.h>
+#include <Common/HybridConfig.h>
 #include <Common/Rocks/RocksHandler.h>
 #include <Common/Stopwatch.h>
 #include <Common/logger_useful.h>
 
 #include <absl/container/flat_hash_map.h>
 #include <absl/container/flat_hash_set.h>
-#include <rocksdb/convenience.h>
+#include <fmt/format.h>
 #include <rocksdb/db.h>
-#include <rocksdb/filter_policy.h>
 #include <rocksdb/slice_transform.h>
 #include <rocksdb/statistics.h>
-#include <rocksdb/table.h>
 #include <rocksdb/utilities/db_ttl.h>
 
 #include <ranges>
@@ -47,11 +47,7 @@ struct HybridHashTableConfig
 {
     void validate()
     {
-        if (spill_dir_path.empty())
-            throw DB::Exception(ErrorCodes::INVALID_CONFIG_PARAMETER, "HybridHashTable: spill to disk folder is not configured");
-
-        if (max_hot_key_count == 0)
-            max_hot_key_count = std::numeric_limits<size_t>::max();
+        base_conf.validate();
 
         if (!value_constructor)
             throw DB::Exception(ErrorCodes::INVALID_CONFIG_PARAMETER, "HybridHashTable: value constructor is not setup");
@@ -77,39 +73,7 @@ struct HybridHashTableConfig
         value_deserializer = ([](void * /*data*/, ReadBuffer &) { return DB::ErrorCodes::OK; });
     }
 
-    rocksdb::Options getRocksOptions() const
-    {
-        rocksdb::Options options;
-        options.atomic_flush = true;
-        /// options.num_levels = 3;
-        options.create_if_missing = true;
-        options.create_missing_column_families = true;
-        options.statistics = rocksdb::CreateDBStatistics();
-        options.info_log_level = rocksdb::ERROR_LEVEL;
-
-        options.compression = rocksdb::CompressionType::kLZ4Compression;
-
-        rocksdb::Options merged_options;
-        if (auto status = rocksdb::GetDBOptionsFromString(rocksdb::ConfigOptions{}, options, db_options, &merged_options); !status.ok())
-            merged_options = options;
-
-        rocksdb::BlockBasedTableOptions table_options;
-
-        if (use_hash_index)
-        {
-            table_options.data_block_hash_table_util_ratio = 0.75;
-            table_options.data_block_index_type = rocksdb::BlockBasedTableOptions::DataBlockIndexType::kDataBlockBinaryAndHash;
-        }
-        else
-        {
-            table_options.data_block_index_type = rocksdb::BlockBasedTableOptions::DataBlockIndexType::kDataBlockBinarySearch;
-        }
-
-        table_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, false));
-        merged_options.table_factory.reset(rocksdb::NewBlockBasedTableFactory(table_options));
-
-        return merged_options;
-    }
+    rocksdb::Options getRocksOptions() const { return base_conf.getRocksOptions(); }
 
     HybridHashTableConfig getSubConfig(std::string_view sub_id, bool unshared = false) const
     {
@@ -117,45 +81,26 @@ struct HybridHashTableConfig
         HybridHashTableConfig new_config = *this;
 
         /// If `rocks_handler_getter` is set, use a sub-handler with `sub_id`; otherwise, use a new one with `spill_dir_path`.
-        if (new_config.rocks_handler_getter)
+        if (new_config.base_conf.rocks_handler_getter)
         {
-            new_config.handle_id = handle_id.empty() ? sub_id : fmt::format("{}-{}", handle_id, sub_id);
+            new_config.base_conf.handle_id = base_conf.handle_id.empty() ? sub_id : fmt::format("{}-{}", base_conf.handle_id, sub_id);
 
             if (unshared)
             {
-                new_config.spill_dir_path = fmt::format("{}-{}", spill_dir_path, new_config.handle_id);
-                new_config.handle_id = "";
-                new_config.rocks_handler_getter = nullptr;
+                new_config.base_conf.spill_dir_path = fmt::format("{}-{}", base_conf.spill_dir_path, new_config.base_conf.handle_id);
+                new_config.base_conf.handle_id = "";
+                new_config.base_conf.rocks_handler_getter = nullptr;
             }
         }
         else
         {
-            new_config.spill_dir_path = fmt::format("{}-{}", spill_dir_path, sub_id);
+            new_config.base_conf.spill_dir_path = fmt::format("{}-{}", base_conf.spill_dir_path, sub_id);
         }
 
         return new_config;
     }
 
-    /// spill_dir_path_ file system path which holds for spill-to-disk key / values
-    std::string spill_dir_path;
-    /// db_options_ spill-to-disk (rocks) db options
-    std::string db_options;
-
-    /// If `rocks_handler_getter` is set, we will get rocks handler by it
-    std::string handle_id{};
-    std::function<RocksHandlerPtr(const std::string & id)> rocks_handler_getter{};
-
-    /// When ttl <= 0, it means infinity
-    int32_t ttl = -1;
-
-    /// If \use_hash_index is true, Binary & hash index will be used, otherwise only binary search will be used.
-    /// Hash index usually have better point query perf but will occupy more space
-    bool use_hash_index = false;
-
-    /// When in-memory keys count exceed this threshold, spill to disk
-    size_t max_hot_key_count = 10'000;
-    /// cleanup_on_disk_data_ if true, during dtor, cleanup spill-to-disk data, otherwise keep it around
-    bool cleanup_on_disk_data = true;
+    HybridConfig base_conf;
 
     /// Value object size is used to allocate enough memory to hold the object
     size_t value_object_size = 0;
@@ -343,8 +288,8 @@ public:
         , logger(logger_)
     {
         chassert(key_serializer && key_deserializer);
-        if (std::filesystem::exists(config.spill_dir_path)
-            && !config.rocks_handler_getter) /// If unshared rocks directory already exists, init rocks eagerly, otherwise in a lazy way
+        if (std::filesystem::exists(config.base_conf.spill_dir_path) && !config.base_conf.rocks_handler_getter)
+            /// If unshared rocks directory already exists, init rocks eagerly, otherwise in a lazy way
             reload();
     }
 
@@ -376,7 +321,7 @@ public:
             return;
 
         /// For shared rocks, we just destroy current handler and column family
-        if (!rocks && rocks_handler && config.cleanup_on_disk_data)
+        if (!rocks && rocks_handler && config.base_conf.cleanup_on_disk_data)
             rocks_handler->destroy();
 
         rocks_handler.reset();
@@ -387,7 +332,7 @@ public:
 
     void clear()
     {
-        if (!config.cleanup_on_disk_data)
+        if (!config.base_conf.cleanup_on_disk_data)
             /// If we like to retain the data around, flush them to disk
             bulkSpill(recent_keys.size());
         else
@@ -848,7 +793,7 @@ public:
         /// Layout: version, cleanup_on_disk_data, batch_size1, key1, value1, key2, value2, batch_size2, ..., empty_batch_size(end), metrics
         writeBinary(version, wb);
 
-        writeBinary<bool>(config.cleanup_on_disk_data, wb);
+        writeBinary<bool>(config.base_conf.cleanup_on_disk_data, wb);
 
         if (persistentPartInited() && !full_cached)
         {
@@ -940,10 +885,10 @@ public:
 
                 insert(key, std::move(value_ptr));
 
-                if (hot_key_values.size() >= config.max_hot_key_count)
+                if (hot_key_values.size() >= config.base_conf.max_hot_key_count)
                 {
                     size_t remaining_num_keys = batch_num - i - 1;
-                    bulkSpill(std::min(config.max_hot_key_count, remaining_num_keys));
+                    bulkSpill(std::min(config.base_conf.max_hot_key_count, remaining_num_keys));
                 }
             }
         } while (batch_num > 0);
@@ -982,7 +927,7 @@ public:
 
     size_t getBufferSizeInCells() const noexcept { return hot_key_values.capacity(); }
 
-    int spillIfNecessary() { return spillIfNecessary(config.max_hot_key_count); }
+    int spillIfNecessary() { return spillIfNecessary(config.base_conf.max_hot_key_count); }
 
     void flush()
     {
@@ -1014,7 +959,7 @@ public:
             /// NOTE: If \old_value_deserializer exists, it means the stored value is in the old format,
             /// and we always reload all old key values ​​and then store them in the current value format.
             const auto * value_deserializer = old_value_deserializer ? &old_value_deserializer : &config.value_deserializer;
-            if (old_value_deserializer || approximateCount() <= config.max_hot_key_count)
+            if (old_value_deserializer || approximateCount() <= config.base_conf.max_hot_key_count)
             {
                 auto scan_options = read_options;
                 scan_options.fill_cache = false;
@@ -1042,7 +987,7 @@ public:
     int spillIfNecessary(size_t current_batch_size)
     {
         auto hot_keys_size = recent_keys.size();
-        if (hot_keys_size <= config.max_hot_key_count || hot_keys_size <= current_batch_size)
+        if (hot_keys_size <= config.base_conf.max_hot_key_count || hot_keys_size <= current_batch_size)
             return ErrorCodes::OK;
 
         /// After emplaceKey(s), this current batch of keys will be hot (moved to the tail of recent_keys)
@@ -1050,7 +995,7 @@ public:
         /// the hot keys in the current batch won't be spilled since they are keys clients like to manipulate.
         /// So the maximum keys to spill is `hot_key_values.size() - current_batch_size`.
         /// It also indicates the total hot keys in memory sometimes can exceed config.max_hot_key_count
-        auto max_keys_to_spill = std::min(hot_keys_size - current_batch_size, hot_keys_size - config.max_hot_key_count);
+        auto max_keys_to_spill = std::min(hot_keys_size - current_batch_size, hot_keys_size - config.base_conf.max_hot_key_count);
         return bulkSpill(max_keys_to_spill);
     }
 
@@ -1062,7 +1007,7 @@ public:
 private:
     void initRocks()
     {
-        write_options.disableWAL = config.cleanup_on_disk_data;
+        write_options.disableWAL = config.base_conf.cleanup_on_disk_data;
 
         /// 1) Shared rocks case: if rocks_handler_getter is provided, get rocks handler from external rocksdb instance
         /// For example, `Rocks` has 3 column families : [cf1, cf2, cf3] and one `db`
@@ -1070,9 +1015,9 @@ private:
         /// HybridHashTable-1 -> cf1, db
         /// HybridHashTable-2 -> cf2, db
         /// HybridHashTable-3 -> cf3, db
-        if (config.rocks_handler_getter)
+        if (config.base_conf.rocks_handler_getter)
         {
-            rocks_handler = config.rocks_handler_getter(config.handle_id);
+            rocks_handler = config.base_conf.rocks_handler_getter(config.base_conf.handle_id);
             return;
         }
 
@@ -1081,15 +1026,15 @@ private:
         rocksdb::Status status;
         rocksdb::DB * db = nullptr;
 
-        if (config.ttl > 0)
+        if (config.base_conf.ttl > 0)
         {
             rocksdb::DBWithTTL * ttl_db = nullptr;
-            status = rocksdb::DBWithTTL::Open(options, config.spill_dir_path, &ttl_db, config.ttl);
+            status = rocksdb::DBWithTTL::Open(options, config.base_conf.spill_dir_path, &ttl_db, config.base_conf.ttl);
             db = ttl_db;
         }
         else
         {
-            status = rocksdb::DB::Open(options, config.spill_dir_path, &db);
+            status = rocksdb::DB::Open(options, config.base_conf.spill_dir_path, &db);
         }
 
         if (!status.ok())
@@ -1098,15 +1043,16 @@ private:
             throw DB::Exception(ErrorCodes::CANNOT_OPEN_DATABASE, "Failed to open on disk hash table, {}", status.ToString());
         }
 
-        rocks = std::make_shared<Rocks>(db, std::vector<rocksdb::ColumnFamilyHandle *>{}, config.cleanup_on_disk_data, logger);
-        rocks_handler = rocks->getOrCreateHandler(config.handle_id);
+        rocks = std::make_shared<Rocks>(db, std::vector<rocksdb::ColumnFamilyHandle *>{}, config.base_conf.cleanup_on_disk_data, logger);
+        rocks_handler = rocks->getOrCreateHandler(config.base_conf.handle_id);
 
         LOG_INFO(
             logger,
-            "Init hybrid hash table with ttl={} path={} use_hash_index={}",
-            config.ttl,
-            config.spill_dir_path,
-            config.use_hash_index);
+            "Init hybrid hash table with ttl={} path={} kv_options={} use_hash_index={}",
+            config.base_conf.ttl,
+            config.base_conf.spill_dir_path,
+            config.base_conf.kv_options,
+            config.base_conf.use_hash_index);
     }
 
     HybridFindResults doFindKeys(std::vector<K>::const_iterator keys_start, std::vector<K>::const_iterator keys_end)

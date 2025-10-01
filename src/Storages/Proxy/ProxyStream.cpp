@@ -425,6 +425,7 @@ void ProxyStream::processChangelogStep(QueryPlan & query_plan, const Names & req
         settings_ref.default_hash_table.value,
         context_->getSpillDirForCurrentQuery("changelog"),
         settings_ref.max_hot_keys.value,
+        settings_ref.kv_options.value,
         /*backfill_key_unique=*/false));
 }
 
@@ -439,7 +440,8 @@ void ProxyStream::processDedupStep(QueryPlan & query_plan, const Names & require
         output_header,
         table_func_desc,
         context_->getSettingsRef().default_hash_table.value,
-        context_->getSpillDirForCurrentQuery("dedup")));
+        context_->getSpillDirForCurrentQuery("dedup"),
+        context_->getSettingsRef().kv_options.value));
 }
 
 void ProxyStream::processRowifyStep(QueryPlan & query_plan, [[maybe_unused]] const ContextPtr & context_) const

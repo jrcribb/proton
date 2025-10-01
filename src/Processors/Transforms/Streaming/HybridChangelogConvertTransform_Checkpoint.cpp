@@ -18,8 +18,8 @@ RocksPtr HybridChangelogConvertTransform::getOrCreateRocks()
 {
     /// Initialize rocks on first use
     if (!rocks)
-        rocks
-            = Rocks::createOrLoadIfExists(config.getRocksOptions(), config.spill_dir_path, /*ttl=*/0, config.cleanup_on_disk_data, logger);
+        rocks = Rocks::createOrLoadIfExists(
+            config.getRocksOptions(), config.base_conf.spill_dir_path, /*ttl=*/0, config.base_conf.cleanup_on_disk_data, logger);
 
     return rocks;
 }
@@ -78,11 +78,11 @@ void HybridChangelogConvertTransform::recover(CheckpointContextPtr ckpt_ctx)
                 rocks.reset();
             }
 
-            rocks_ckpt->recover(config.spill_dir_path);
+            rocks_ckpt->recover(config.base_conf.spill_dir_path);
 
             /// Reinstall recovered rocks
             rocks = Rocks::createOrLoadIfExists(
-                config.getRocksOptions(), config.spill_dir_path, /*ttl=*/0, config.cleanup_on_disk_data, logger);
+                config.getRocksOptions(), config.base_conf.spill_dir_path, /*ttl=*/0, config.base_conf.cleanup_on_disk_data, logger);
             rocks->getOrCreateHandler()->get("late_rows", late_rows);
             index.reload();
             break;

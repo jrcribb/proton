@@ -29,11 +29,13 @@ DedupTransformStep::DedupTransformStep(
     Block output_header,
     TableFunctionDescriptionPtr dedup_func_desc_,
     HashTableType hash_table_type_,
-    const String & spill_dir_)
+    const String & spill_dir_,
+    const String & kv_options_)
     : ITransformingStep(input_stream_, std::move(output_header), getTraits())
     , dedup_func_desc(std::move(dedup_func_desc_))
     , hash_table_type(hash_table_type_)
     , spill_dir(spill_dir_)
+    , kv_options(kv_options_)
 {
 }
 
@@ -46,7 +48,7 @@ void DedupTransformStep::transformPipeline(QueryPipelineBuilder & pipeline, cons
             return std::make_shared<DedupTransform>(header, getOutputStream().header, dedup_func_desc);
         else
             return std::make_shared<HybridDedupTransform>(
-                header, getOutputStream().header, dedup_func_desc, fmt::format("{}-{}", spill_dir, id++));
+                header, getOutputStream().header, dedup_func_desc, fmt::format("{}-{}", spill_dir, id++), kv_options);
     });
 }
 

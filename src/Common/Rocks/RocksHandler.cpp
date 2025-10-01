@@ -1,5 +1,6 @@
 #include <base/scope_guard.h>
 #include <Common/Rocks/RocksHandler.h>
+/// #include <Common/Rocks/RocksLogger.h>
 #include <Common/logger_useful.h>
 
 #include <rocksdb/utilities/db_ttl.h>
@@ -33,7 +34,19 @@ RocksPtr Rocks::createOrLoadIfExists(const rocksdb::Options & options, const std
     if (!logger)
         logger = getLogger("Rocks");
 
-    SCOPE_EXIT({ LOG_INFO(logger, "Init rocks with ttl={} path={} cleanup={}", ttl, path, cleanup_); });
+    {
+        LOG_INFO(
+            logger,
+            "Init rocks with ttl={} path={} cleanup={} max_background_jobs={} max_write_buffer_number={} enable_blob_files={}",
+            ttl,
+            path,
+            cleanup_,
+            options.max_background_jobs,
+            options.max_write_buffer_number,
+            options.enable_blob_files);
+        /// RocksLogger rlogger{rocksdb::InfoLogLevel::INFO_LEVEL, logger};
+        /// options.Dump(&rlogger);
+    }
 
     if (std::filesystem::exists(path))
     {

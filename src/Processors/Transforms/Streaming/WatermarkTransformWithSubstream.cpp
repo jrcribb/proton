@@ -21,7 +21,8 @@ WatermarkTransformWithSubstream::WatermarkTransformWithSubstream(
     bool skip_stamping_for_backfill_data_,
     HashTableType hash_table_type,
     const String & spill_dir,
-    size_t max_hot_key_count)
+    size_t max_hot_key_count,
+    const String & kv_options)
     : IProcessor({header}, {header}, ProcessorID::WatermarkTransformWithSubstreamID)
     , params(std::move(params_))
     , skip_stamping_for_backfill_data(skip_stamping_for_backfill_data_)
@@ -33,11 +34,11 @@ WatermarkTransformWithSubstream::WatermarkTransformWithSubstream(
     assert(watermark_template);
     watermark_template->preProcess(header);
 
-    initSubstreamHashMap(hash_table_type, spill_dir, max_hot_key_count);
+    initSubstreamHashMap(hash_table_type, spill_dir, max_hot_key_count, kv_options);
 }
 
 void WatermarkTransformWithSubstream::initSubstreamHashMap(
-    HashTableType hash_table_type, const String & spill_dir, size_t max_hot_key_count)
+    HashTableType hash_table_type, const String & spill_dir, size_t max_hot_key_count, const String & kv_options)
 {
     auto value_serializer = [](const void * value, WriteBuffer & wb) {
         const auto & watermark = *reinterpret_cast<const ValueType *>(value);
@@ -63,7 +64,13 @@ void WatermarkTransformWithSubstream::initSubstreamHashMap(
         case HashTableType::Hybrid:
         {
             substream_watermarks = std::make_unique<HybridSubstreamHashMap<ValueType>>(
-                spill_dir + "_substream", max_hot_key_count, std::move(value_serializer), std::move(value_deserializer), logger);
+                spill_dir + "_substream",
+                max_hot_key_count,
+                /*ttl=*/0,
+                kv_options,
+                std::move(value_serializer),
+                std::move(value_deserializer),
+                logger);
             return;
         }
     }

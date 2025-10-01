@@ -1108,6 +1108,7 @@ Possible values: non-negative numbers. Note that if the value is too small or to
     M(UInt64, substreams, 0, "For shuffle by, number of target shards after shuffling. 0 means system will automatically pick a number", 0) \
     M(Int64, aggregate_state_ttl_sec, 0, "TTL in seconds for aggregation states for hybrid hash aggregation. If <= 0, no TTL", 0) \
     M(Int64, join_state_ttl_sec, 0, "TTL in seconds for join state for hybrid hash table join. If <= 0, no TTL", 0) \
+    M(String, kv_options, "", "RocksDB fine tune options for hybrid hash join and aggregation", 0) \
     /** proton: ends. */
 // End of FORMAT_FACTORY_SETTINGS
 // Please add settings non-related to formats into the COMMON_SETTINGS above.

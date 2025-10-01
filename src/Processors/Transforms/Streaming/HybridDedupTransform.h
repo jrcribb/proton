@@ -16,7 +16,11 @@ class HybridDedupTransform final : public ISimpleTransform
 {
 public:
     HybridDedupTransform(
-        const Block & input_header, const Block & output_header, TableFunctionDescriptionPtr dedup_func_desc_, const String & spill_dir);
+        const Block & input_header,
+        const Block & output_header,
+        TableFunctionDescriptionPtr dedup_func_desc_,
+        const String & spill_dir,
+        const String & kv_options);
 
     ~HybridDedupTransform() override = default;
 
@@ -30,8 +34,8 @@ public:
 
 private:
     /// Calculate the positions of columns required by timestamp expr
-    void init(const Block & input_header, const Block & output_header, const String & spill_dir);
-    void initKeySet(const String & spill_dir);
+    void init(const Block & input_header, const Block & output_header, const String & spill_dir, const String & kv_options);
+    void initKeySet(const String & spill_dir, const String & kv_options);
     IColumn::Filter populateKeySetsAndCalculateResults(const ColumnsWithTypeAndName & arguments, size_t & rows);
 
 private:

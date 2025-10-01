@@ -25,11 +25,12 @@ void AggregatingTransform::installRocks()
 {
     HybridHashTableConfig config;
     auto hybrid_params = std::static_pointer_cast<HybridAggregatorParams>(params->params);
-    config.spill_dir_path = fmt::format("{}_{}", hybrid_params->spill_dir_path, variants.getID());
-    config.max_hot_key_count = hybrid_params->max_hot_key_count;
-    config.cleanup_on_disk_data = true;
-    config.rocks_handler_getter = [this](const std::string & id) { return getOrCreateRocks()->getOrCreateHandler(id); };
-    config.ttl = hybrid_params->aggregate_state_ttl;
+    config.base_conf.spill_dir_path = fmt::format("{}_{}", hybrid_params->spill_dir_path, variants.getID());
+    config.base_conf.max_hot_key_count = hybrid_params->max_hot_key_count;
+    config.base_conf.cleanup_on_disk_data = true;
+    config.base_conf.rocks_handler_getter = [this](const std::string & id) { return getOrCreateRocks()->getOrCreateHandler(id); };
+    config.base_conf.ttl = hybrid_params->aggregate_state_ttl;
+    config.base_conf.kv_options = hybrid_params->kv_options;
     std::static_pointer_cast<HybridAggregator>(params->aggregator)->setSharedHybridHashTableConfig(variants.getID(), std::move(config));
 }
 
@@ -42,8 +43,8 @@ RocksPtr AggregatingTransform::getOrCreateRocks()
         const auto & config
             = std::static_pointer_cast<HybridAggregator>(params->aggregator)->getSharedHybridHashTableConfig(variants.getID());
 
-        rocks_holder
-            = Rocks::createOrLoadIfExists(config.getRocksOptions(), config.spill_dir_path, config.ttl, config.cleanup_on_disk_data, logger);
+        rocks_holder = Rocks::createOrLoadIfExists(
+            config.getRocksOptions(), config.base_conf.spill_dir_path, config.base_conf.ttl, config.base_conf.cleanup_on_disk_data, logger);
     }
 
     return rocks_holder;
@@ -236,10 +237,11 @@ void AggregatingTransform::recoverRocksCheckpoint(CheckpointPtr ckpt)
     }
 
     const auto & config = std::static_pointer_cast<HybridAggregator>(params->aggregator)->getSharedHybridHashTableConfig(variants.getID());
-    rocks_ckpt->recover(config.spill_dir_path);
+    rocks_ckpt->recover(config.base_conf.spill_dir_path);
 
     /// Reinstall recovered rocks
-    rocks = Rocks::createOrLoadIfExists(config.getRocksOptions(), config.spill_dir_path, config.ttl, config.cleanup_on_disk_data, logger);
+    rocks = Rocks::createOrLoadIfExists(
+        config.getRocksOptions(), config.base_conf.spill_dir_path, config.base_conf.ttl, config.base_conf.cleanup_on_disk_data, logger);
     variants.reset();
 
     auto handler = rocks->getOrCreateHandler();

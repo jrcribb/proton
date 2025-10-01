@@ -32,9 +32,10 @@ public:
         size_t slots_,
         JoinStreamDescriptionPtr left_join_stream_desc_,
         JoinStreamDescriptionPtr right_join_stream_desc_,
-        String spill_path_,
+        const String & spill_path_,
         size_t max_hot_keys_,
-        int32_t ttl_);
+        Int32 ttl_,
+        const String & kv_options_);
 
     ~ConcurrentHashJoin() override = default;
 
@@ -132,6 +133,7 @@ private:
     JoinStreamDescriptionPtr right_join_stream_desc;
     size_t slots;
     String spill_path;
+    String kv_options;
     size_t max_hot_keys = 0;
     int32_t ttl = 0;
     std::vector<std::shared_ptr<InternalHashJoin>> hash_joins;

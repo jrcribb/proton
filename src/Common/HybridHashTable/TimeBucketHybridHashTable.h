@@ -209,7 +209,7 @@ public:
         return ErrorCodes::OK;
     }
 
-    int spillIfNecessary() { return spillIfNecessary(config.max_hot_key_count); }
+    int spillIfNecessary() { return spillIfNecessary(config.base_conf.max_hot_key_count); }
 
     int spillIfNecessary(size_t current_batch_size)
     {

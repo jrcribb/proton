@@ -14,7 +14,8 @@ public:
         Block output_header,
         TableFunctionDescriptionPtr dedup_func_desc_,
         HashTableType hash_table_type_,
-        const String & spill_dir_);
+        const String & spill_dir_,
+        const String & kv_options_);
 
     ~DedupTransformStep() override = default;
 
@@ -28,6 +29,7 @@ private:
     TableFunctionDescriptionPtr dedup_func_desc;
     HashTableType hash_table_type;
     String spill_dir;
+    String kv_options;
     size_t id = 0;
 };
 

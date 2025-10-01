@@ -576,7 +576,8 @@ void InterpreterSelectQuery::executeStreamingAggregation(
                 aggregates,
                 context->getSpillDirForCurrentQuery("aggr"),
                 settings.max_hot_keys,
-                static_cast<int32_t>(settings.aggregate_state_ttl_sec),
+                static_cast<Int32>(settings.aggregate_state_ttl_sec),
+                settings.kv_options,
                 settings.max_block_size,
                 settings.max_threads,
                 settings.compile_aggregate_expressions,
@@ -868,7 +869,8 @@ void InterpreterSelectQuery::buildWatermarkQueryPlan(QueryPlan & query_plan)
             skip_stamping_for_backfill_data,
             settings.default_hash_table,
             context->getSpillDirForCurrentQuery("watermark"),
-            settings.max_hot_keys));
+            settings.max_hot_keys,
+            settings.kv_options));
     else
         query_plan.addStep(std::make_unique<Streaming::WatermarkStep>(
             query_plan.getCurrentDataStream(), emit_params_copy, skip_stamping_for_backfill_data));

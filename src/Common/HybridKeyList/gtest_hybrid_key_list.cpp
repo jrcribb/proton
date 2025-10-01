@@ -5,9 +5,9 @@
 
 TEST(HybridKeyList, Ops)
 {
-    DB::HybridKeyListConfig config{
+    DB::HybridConfig config{
         .spill_dir_path = "/tmp/hybrid_key_list_ops",
-        .db_options = "",
+        .kv_options = "",
         .max_hot_key_count = 3,
     };
 

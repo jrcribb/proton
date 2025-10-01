@@ -25,6 +25,7 @@ public:
         const std::string & version_column_name,
         std::string spill_dir,
         size_t max_hot_key_count,
+        const std::string & kv_options,
         bool backfill_key_unique_);
 
     ~HybridVersionsFilterTransform() override = default;
@@ -36,7 +37,8 @@ public:
     void recover(CheckpointContextPtr ckpt_ctx) override;
 
 private:
-    void createHashTable(const DataTypes & key_column_types, std::string spill_dir, size_t max_hot_key_count);
+    void
+    createHashTable(const DataTypes & key_column_types, std::string spill_dir, size_t max_hot_key_count, const std::string & kv_options);
 
     void transform(Chunk & chunk) override;
 

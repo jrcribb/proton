@@ -447,6 +447,7 @@ void StorageStream::doReadChangelog(
             settings_ref.default_hash_table.value,
             context_->getSpillDirForCurrentQuery("changelog"),
             settings_ref.max_hot_keys.value,
+            settings_ref.kv_options.value,
             /*backfill_key_unique=*/true));
     }
     else

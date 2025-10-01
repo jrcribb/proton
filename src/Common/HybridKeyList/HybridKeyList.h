@@ -2,25 +2,17 @@
 
 #include <IO/PrefixTreeEncode.h>
 #include <base/ClockUtils.h>
-#include <Common/Rocks/RocksHandler.h>
+#include <Common/HybridConfig.h>
 #include <Common/logger_useful.h>
 
 #include <absl/container/flat_hash_set.h>
-#include <rocksdb/convenience.h>
 #include <rocksdb/db.h>
-#include <rocksdb/filter_policy.h>
 #include <rocksdb/slice_transform.h>
 #include <rocksdb/statistics.h>
-#include <rocksdb/table.h>
 #include <rocksdb/utilities/db_ttl.h>
 
 #include <filesystem>
 #include <list>
-
-namespace rocksdb
-{
-class DB;
-}
 
 namespace DB
 {
@@ -28,79 +20,11 @@ namespace DB
 namespace ErrorCodes
 {
 extern const int CANNOT_OPEN_DATABASE;
-extern const int INVALID_CONFIG_PARAMETER;
 extern const int OK;
 }
 
 /// HybridKeyList is an ascending sorted list by timestamp and the key
 /// It doesn't check the existence / duplication of the keys when inserting
-struct HybridKeyListConfig
-{
-    void validate()
-    {
-        if (spill_dir_path.empty())
-            throw DB::Exception(ErrorCodes::INVALID_CONFIG_PARAMETER, "HybridHashTable: spill to disk folder is not configured");
-
-        if (max_hot_key_count == 0)
-            max_hot_key_count = std::numeric_limits<size_t>::max();
-    }
-
-    rocksdb::Options getRocksOptions() const
-    {
-        rocksdb::Options options;
-        options.atomic_flush = true;
-        /// options.num_levels = 3;
-        options.create_if_missing = true;
-        options.create_missing_column_families = true;
-        options.statistics = rocksdb::CreateDBStatistics();
-        options.info_log_level = rocksdb::ERROR_LEVEL;
-
-        options.compression = rocksdb::CompressionType::kLZ4Compression;
-
-        rocksdb::Options merged_options;
-        if (auto status = rocksdb::GetDBOptionsFromString(rocksdb::ConfigOptions{}, options, db_options, &merged_options); !status.ok())
-            merged_options = options;
-
-        rocksdb::BlockBasedTableOptions table_options;
-
-        if (use_hash_index)
-        {
-            table_options.data_block_hash_table_util_ratio = 0.75;
-            table_options.data_block_index_type = rocksdb::BlockBasedTableOptions::DataBlockIndexType::kDataBlockBinaryAndHash;
-        }
-        else
-        {
-            table_options.data_block_index_type = rocksdb::BlockBasedTableOptions::DataBlockIndexType::kDataBlockBinarySearch;
-        }
-
-        table_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, false));
-        merged_options.table_factory.reset(rocksdb::NewBlockBasedTableFactory(table_options));
-
-        return merged_options;
-    }
-
-    /// spill_dir_path_ file system path which holds for spill-to-disk key / values
-    std::string spill_dir_path;
-    /// db_options_ spill-to-disk (rocks) db options
-    std::string db_options;
-
-    /// When ttl <= 0, it means infinity
-    int32_t ttl = -1;
-
-    /// If \use_hash_index is true, Binary & hash index will be used, otherwise only binary search will be used.
-    /// Hash index usually have better point query perf but will occupy more space
-    bool use_hash_index = false;
-
-    /// When in-memory keys count exceed this threshold, spill to disk
-    size_t max_hot_key_count = 10'000;
-    /// cleanup_on_disk_data_ if true, during dtor, cleanup spill-to-disk data, otherwise keep it around
-    bool cleanup_on_disk_data = true;
-
-    /// If `rocks_handler_getter` is set, we will get rocks handler by it
-    std::string handle_id{};
-    std::function<RocksHandlerPtr(const std::string & id)> rocks_handler_getter{};
-};
-
 template <typename K>
 struct HybridKeyList
 {
@@ -121,7 +45,7 @@ public:
         int64_t ts;
     };
 
-    HybridKeyList(HybridKeyListConfig config_, KeySerializer key_serializer_, KeyDeserializer key_deserializer_, LoggerPtr logger_)
+    HybridKeyList(HybridConfig config_, KeySerializer key_serializer_, KeyDeserializer key_deserializer_, LoggerPtr logger_)
         : config(std::move(config_))
         , key_serializer(std::move(key_serializer_))
         , key_deserializer(std::move(key_deserializer_))
@@ -165,7 +89,8 @@ public:
             if (encode_result.second != ErrorCodes::OK)
                 return encode_result.second;
 
-            if (auto status = rocks_handler->db->Put(write_options, rocks_handler->cf_handle, encode_result.first, rocksdb::Slice{}); status.ok())
+            if (auto status = rocks_handler->db->Put(write_options, rocks_handler->cf_handle, encode_result.first, rocksdb::Slice{});
+                status.ok())
             {
                 return ErrorCodes::OK;
             }
@@ -615,7 +540,7 @@ private:
         std::list<KeyWithTimestamp> keys;
     };
 
-    HybridKeyListConfig config;
+    HybridConfig config;
     KeySerializer key_serializer;
     KeyDeserializer key_deserializer;
 
@@ -629,4 +554,5 @@ private:
 
     LoggerPtr logger;
 };
+
 }

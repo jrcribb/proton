@@ -31,6 +31,7 @@ HybridVersionsFilterTransform::HybridVersionsFilterTransform(
     const std::string & version_column_name,
     std::string spill_dir,
     size_t max_hot_key_count,
+    const std::string & kv_options,
     bool backfill_key_unique_)
     : ISimpleTransform(input_header, output_header, false, ProcessorID::HybridVersionsFilterTransformID)
     , backfill_key_unique(backfill_key_unique_)
@@ -58,7 +59,7 @@ HybridVersionsFilterTransform::HybridVersionsFilterTransform(
     version_column_position = input_header.getPositionByName(version_column_name);
     version_column_serialization = input_header.getByPosition(version_column_position).type->getDefaultSerialization();
 
-    createHashTable(key_column_types, std::move(spill_dir), max_hot_key_count);
+    createHashTable(key_column_types, std::move(spill_dir), max_hot_key_count, kv_options);
 
     LOG_INFO(
         logger,
@@ -248,14 +249,15 @@ void HybridVersionsFilterTransform::transformToOutputColumns(Columns & columns) 
     columns.swap(output_columns);
 }
 
-void HybridVersionsFilterTransform::createHashTable(const DataTypes & key_column_types, std::string spill_dir, size_t max_hot_key_count)
+void HybridVersionsFilterTransform::createHashTable(
+    const DataTypes & key_column_types, std::string spill_dir, size_t max_hot_key_count, const std::string & kv_options)
 {
     /// init latest_version_map hash table
     auto hash_method = chooseHybridHashMethod(key_column_types, /*needs_time_bucket=*/false);
     has_nullable_key = hash_method.has_nullable_key;
 
-    config.spill_dir_path.swap(spill_dir);
-    config.max_hot_key_count = max_hot_key_count;
+    config.base_conf.spill_dir_path.swap(spill_dir);
+    config.base_conf.max_hot_key_count = max_hot_key_count;
     config.value_object_size = sizeof(Field);
     config.align_value_object_size = alignof(Field);
     config.value_constructor = [](void * data) { new (data) Field; };
@@ -275,7 +277,7 @@ void HybridVersionsFilterTransform::createHashTable(const DataTypes & key_column
     };
 
     /// Install rocks handler getter
-    config.rocks_handler_getter = [this](const std::string & id) { return getOrCreateRocks()->getOrCreateHandler(id); };
+    config.base_conf.rocks_handler_getter = [this](const std::string & id) { return getOrCreateRocks()->getOrCreateHandler(id); };
     latest_version_map.init(hash_method.type, config, hash_method.key_sizes, logger);
     key_sizes.swap(hash_method.key_sizes);
 }
@@ -284,8 +286,8 @@ RocksPtr HybridVersionsFilterTransform::getOrCreateRocks()
 {
     /// Initialize rocks on first use
     if (!rocks)
-        rocks
-            = Rocks::createOrLoadIfExists(config.getRocksOptions(), config.spill_dir_path, /*ttl=*/0, config.cleanup_on_disk_data, logger);
+        rocks = Rocks::createOrLoadIfExists(
+            config.getRocksOptions(), config.base_conf.spill_dir_path, /*ttl=*/0, config.base_conf.cleanup_on_disk_data, logger);
 
     return rocks;
 }
@@ -344,11 +346,11 @@ void HybridVersionsFilterTransform::recover(CheckpointContextPtr ckpt_ctx)
                 rocks.reset();
             }
 
-            rocks_ckpt->recover(config.spill_dir_path);
+            rocks_ckpt->recover(config.base_conf.spill_dir_path);
 
             /// Reinstall recovered rocks
             rocks = Rocks::createOrLoadIfExists(
-                config.getRocksOptions(), config.spill_dir_path, /*ttl=*/0, config.cleanup_on_disk_data, logger);
+                config.getRocksOptions(), config.base_conf.spill_dir_path, /*ttl=*/0, config.base_conf.cleanup_on_disk_data, logger);
             rocks->getOrCreateHandler()->get("__late_rows", late_rows);
             latest_version_map.reload();
             break;

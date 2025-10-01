@@ -177,7 +177,7 @@ BlocksList HybridAggregator::convertToBlocksForAll(Table & table) const
         if (trackingStateCount())
         {
             table.forBatchValue(
-                std::min(max_block_size, table.getConfig().max_hot_key_count),
+                std::min(max_block_size, table.getConfig().base_conf.max_hot_key_count),
                 [&](const KeyGetter::KeyType & key, auto value, bool flush) {
                     auto mapped = static_cast<ConstAggregateDataPtr>(value.getMapped());
                     if (!TrackingCount::empty(mapped))
@@ -198,7 +198,7 @@ BlocksList HybridAggregator::convertToBlocksForAll(Table & table) const
         else
         {
             table.forBatchValue(
-                std::min(max_block_size, table.getConfig().max_hot_key_count),
+                std::min(max_block_size, table.getConfig().base_conf.max_hot_key_count),
                 [&](const KeyGetter::KeyType & key, auto value, bool flush) {
                     KeyGetter::insertKeyIntoColumns(key, out_cols.raw_key_columns, key_sizes_ref);
                     places.emplace_back(static_cast<ConstAggregateDataPtr>(value.getMapped()));

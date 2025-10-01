@@ -56,9 +56,11 @@ std::unique_ptr<DB::HybridHashTable<K>> createHashTable(CalledCounts & counts, s
     std::filesystem::remove_all("/tmp/hybrid-ht");
 
     DB::HybridHashTableConfig config{
-        .spill_dir_path = "/tmp/hybrid-ht",
-        .db_options = "",
-        .max_hot_key_count = max_hot_key_count,
+        .base_conf = {
+            .spill_dir_path = "/tmp/hybrid-ht",
+            .kv_options = "",
+            .max_hot_key_count = max_hot_key_count,
+        },
         .value_object_size = sizeof(V),
         .align_value_object_size = alignof(V),
         .value_constructor =
@@ -72,7 +74,9 @@ std::unique_ptr<DB::HybridHashTable<K>> createHashTable(CalledCounts & counts, s
                 reinterpret_cast<V *>(p)->~V();
             },
         .value_serializer = std::move(value_ser),
-        .value_deserializer = std::move(value_des)};
+        .value_deserializer = std::move(value_des),
+    };
+
 
     config.validate();
 
@@ -874,9 +878,8 @@ TEST(HybridHashTable, Serde)
     ASSERT_TRUE(recovered_table->contains("k4"));
     ASSERT_TRUE(recovered_table->contains("k5"));
 
-    recovered_table->forEachKeyValue([](const auto & key, auto value) {
-        ASSERT_EQ(key, *reinterpret_cast<const std::string *>(value.getMapped()));
-    });
+    recovered_table->forEachKeyValue(
+        [](const auto & key, auto value) { ASSERT_EQ(key, *reinterpret_cast<const std::string *>(value.getMapped())); });
 
     /// Serialize and deserialize again
     DB::WriteBufferFromOwnString wb2;
@@ -893,9 +896,8 @@ TEST(HybridHashTable, Serde)
     ASSERT_TRUE(recovered_table2->contains("k4"));
     ASSERT_TRUE(recovered_table2->contains("k5"));
 
-    recovered_table2->forEachKeyValue([](const auto & key, auto value) {
-        ASSERT_EQ(key, *reinterpret_cast<const std::string *>(value.getMapped()));
-    });
+    recovered_table2->forEachKeyValue(
+        [](const auto & key, auto value) { ASSERT_EQ(key, *reinterpret_cast<const std::string *>(value.getMapped())); });
 }
 
 TEST(HybridHashTable, Flush)

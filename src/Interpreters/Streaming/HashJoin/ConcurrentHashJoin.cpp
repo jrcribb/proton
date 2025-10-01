@@ -60,14 +60,16 @@ ConcurrentHashJoin::ConcurrentHashJoin(
     size_t slots_,
     JoinStreamDescriptionPtr left_join_stream_desc_,
     JoinStreamDescriptionPtr right_join_stream_desc_,
-    String spill_path_,
+    const String & spill_path_,
     size_t max_hot_keys_,
-    int32_t ttl_)
+    Int32 ttl_,
+    const String & kv_options_)
     : table_join(table_join_)
     , left_join_stream_desc(std::move(left_join_stream_desc_))
     , right_join_stream_desc(std::move(right_join_stream_desc_))
     , slots(getSlots(slots_))
-    , spill_path(std::move(spill_path_))
+    , spill_path(spill_path_)
+    , kv_options(kv_options_)
     , max_hot_keys(max_hot_keys_)
     , ttl(ttl_)
     , num_used_hash_joins(slots_)
@@ -77,7 +79,7 @@ ConcurrentHashJoin::ConcurrentHashJoin(
     {
         auto inner_hash_join = std::make_shared<InternalHashJoin>();
         inner_hash_join->data = std::make_unique<HybridHashJoin>(
-            table_join, left_join_stream_desc, right_join_stream_desc, fmt::format("{}-{}", spill_path, i), max_hot_keys, ttl);
+            table_join, left_join_stream_desc, right_join_stream_desc, fmt::format("{}-{}", spill_path, i), max_hot_keys, ttl, kv_options);
         hash_joins.emplace_back(std::move(inner_hash_join));
     }
 }
@@ -115,7 +117,8 @@ void ConcurrentHashJoin::rescale(size_t slots_)
                         right_join_stream_desc,
                         fmt::format("{}-{}", spill_path, slots),
                         max_hot_keys,
-                        ttl);
+                        ttl,
+                        kv_options);
                     break;
             }
             hash_joins.emplace_back(std::move(inner_hash_join));

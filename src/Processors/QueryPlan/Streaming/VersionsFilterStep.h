@@ -18,6 +18,7 @@ public:
         HashTableType hash_table_type_,
         const std::string & spill_dir_,
         size_t max_hot_keys_,
+        const std::string & kv_options_,
         bool backfill_key_unique_);
 
     String getName() const override;
@@ -31,6 +32,7 @@ private:
     std::string version_column_name;
     HashTableType hash_table_type;
     std::string spill_dir;
+    std::string kv_options;
     size_t max_hot_keys;
     bool backfill_key_unique;
 };

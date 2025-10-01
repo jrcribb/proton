@@ -12,7 +12,8 @@ struct HybridAggregatorParams final : public IAggregatorParams
         const AggregateDescriptions & aggregates_,
         String spill_dir_path_,
         size_t max_hot_keys_count_,
-        int32_t aggregate_state_ttl_,
+        Int32 aggregate_state_ttl_,
+        String kv_options_,
         size_t max_block_size_,
         size_t max_threads_,
         bool compile_aggregate_expressions_,
@@ -40,7 +41,8 @@ struct HybridAggregatorParams final : public IAggregatorParams
               emit_key_params_,
               compile_aggregate_expressions_,
               min_count_to_compile_aggregate_expression_)
-        , spill_dir_path(spill_dir_path_)
+        , spill_dir_path(std::move(spill_dir_path_))
+        , kv_options(std::move(kv_options_))
         , max_hot_key_count(max_hot_keys_count_)
         , aggregate_state_ttl(aggregate_state_ttl_)
     {
@@ -49,8 +51,9 @@ struct HybridAggregatorParams final : public IAggregatorParams
     AggregatorType aggregatorType() const noexcept override { return AggregatorType::Hybrid; }
 
     String spill_dir_path;
+    String kv_options;
     size_t max_hot_key_count;
-    int32_t aggregate_state_ttl;
+    Int32 aggregate_state_ttl;
 };
 
 using HybridAggregatorParamsPtr = std::shared_ptr<HybridAggregatorParams>;

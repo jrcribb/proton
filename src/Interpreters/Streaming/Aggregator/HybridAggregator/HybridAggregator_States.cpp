@@ -71,15 +71,15 @@ void HybridAggregator::initStates(HybridAggregatedDataVariants & result) const
         {
             auto table_config = getSubConfig(result.getID(), "list");
 
-            HybridKeyListConfig list_config;
-            list_config.spill_dir_path.swap(table_config.spill_dir_path);
-            list_config.db_options.swap(table_config.db_options);
-            list_config.ttl = table_config.ttl;
-            list_config.use_hash_index = table_config.use_hash_index;
-            list_config.max_hot_key_count = table_config.max_hot_key_count;
-            list_config.cleanup_on_disk_data = table_config.cleanup_on_disk_data;
-            list_config.handle_id.swap(table_config.handle_id);
-            list_config.rocks_handler_getter.swap(table_config.rocks_handler_getter);
+            HybridConfig list_config;
+            list_config.spill_dir_path.swap(table_config.base_conf.spill_dir_path);
+            list_config.kv_options.swap(table_config.base_conf.kv_options);
+            list_config.ttl = table_config.base_conf.ttl;
+            list_config.use_hash_index = table_config.base_conf.use_hash_index;
+            list_config.max_hot_key_count = table_config.base_conf.max_hot_key_count;
+            list_config.cleanup_on_disk_data = table_config.base_conf.cleanup_on_disk_data;
+            list_config.handle_id.swap(table_config.base_conf.handle_id);
+            list_config.rocks_handler_getter.swap(table_config.base_conf.rocks_handler_getter);
 
             list_config.validate();
 
@@ -140,7 +140,8 @@ void HybridAggregator::serializeAggregateStates(ConstAggregateDataPtr place, DB:
         aggregate_functions[i]->serialize(place + offsets_of_aggregate_states[i], wb);
 }
 
-void HybridAggregator::deserializeAggregateStates(AggregateDataPtr place, ReadBuffer & rb, VersionType version, std::optional<size_t> old_aggregates_size) const
+void HybridAggregator::deserializeAggregateStates(
+    AggregateDataPtr place, ReadBuffer & rb, VersionType version, std::optional<size_t> old_aggregates_size) const
 {
     chassert(place);
 

@@ -23,7 +23,8 @@ public:
         ExpressionActionsPtr expression_,
         HashTableType hash_table_type,
         const String & spill_dir,
-        size_t max_hot_key_count);
+        size_t max_hot_key_count,
+        const String & kv_options);
 
     String getName() const override { return "ExpressionTransformWithSubstream"; }
 
@@ -39,7 +40,7 @@ protected:
 private:
     ExpressionActionsPtr getOrCreateSubstreamExpression(const Streaming::SubstreamID & substream_id);
 
-    void initSubstreamHashMap(HashTableType hash_table_type, const String & spill_dir, size_t max_hot_key_count);
+    void initSubstreamHashMap(HashTableType hash_table_type, const String & spill_dir, size_t max_hot_key_count, const String & kv_options);
 
     Chunk output_chunk_header;
 
