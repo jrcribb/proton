@@ -27,6 +27,32 @@ struct HybridConfig
             max_hot_key_count = std::numeric_limits<size_t>::max();
     }
 
+    HybridConfig getSubConfig(std::string_view sub_id, bool unshared = false) const
+    {
+        chassert(!sub_id.empty());
+
+        HybridConfig new_config = *this;
+
+        /// If `rocks_handler_getter` is set, use a sub-handler with `sub_id`; otherwise, use a new one with `spill_dir_path`.
+        if (rocks_handler_getter)
+        {
+            new_config.handle_id = handle_id.empty() ? sub_id : fmt::format("{}-{}", handle_id, sub_id);
+
+            if (unshared)
+            {
+                new_config.spill_dir_path = fmt::format("{}-{}", spill_dir_path, new_config.handle_id);
+                new_config.handle_id = "";
+                new_config.rocks_handler_getter = nullptr;
+            }
+        }
+        else
+        {
+            new_config.spill_dir_path = fmt::format("{}-{}", spill_dir_path, sub_id);
+        }
+
+        return new_config;
+    }
+
     rocksdb::Options getRocksOptions() const
     {
         rocksdb::DBOptions merged_db_options;

@@ -76,7 +76,7 @@ public:
 
     RocksPtr getOrCreateRocks();
     void shutdownRocks();
-    const String & getRocksDir() const { return base_config.base_conf.spill_dir_path; }
+    const String & getRocksDir() const { return base_config.spill_dir_path; }
 
     void reinstallRocks();
 
@@ -166,7 +166,7 @@ private:
 private:
     friend struct HashIndex;
 
-    HybridHashTableConfig base_config;
+    HybridConfig base_config;
     RocksPtr rocks;
 
     /// Note: when left block joins right hashtable, use `right_data`

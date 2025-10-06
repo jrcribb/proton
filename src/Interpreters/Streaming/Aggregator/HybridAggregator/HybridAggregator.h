@@ -19,13 +19,6 @@ public:
     std::string_view getName() const noexcept override { return "HybridAggregator"; }
     AggregatorType type() const noexcept override { return AggregatorType::Hybrid; }
 
-    /// Should be called before execution
-    void setSharedHybridHashTableConfig(std::string_view id, HybridHashTableConfig && config_)
-    {
-        shared_configs.emplace(id, std::move(config_));
-    }
-    const HybridHashTableConfig & getSharedHybridHashTableConfig(std::string_view id) const { return shared_configs.at(id); }
-
     /// Executing to aggregate states
     std::pair<bool, bool> executeOnBlock(
         Columns columns,
@@ -83,8 +76,6 @@ public:
     void resetUpdatedForBuckets(IAggregatedDataVariants & data_variants, const std::vector<Int64> & gcd_buckets) const override;
 
 private:
-    HybridHashTableConfig getSubConfig(std::string_view id, std::string_view sub_name) const;
-
     std::pair<bool, bool> doExecuteOnBlock(
         Columns columns,
         size_t row_begin,
@@ -234,7 +225,6 @@ private:
     friend struct HybridAggregatedDataVariants;
 
     HybridAggregatorParamsPtr hybrid_params;
-    absl::flat_hash_map<String, HybridHashTableConfig> shared_configs;
 
     HybridHashType method_chosen = HybridHashType::Empty;
     mutable std::optional<size_t> bucket_key_offset;

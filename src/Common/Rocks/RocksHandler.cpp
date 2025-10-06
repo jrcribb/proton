@@ -9,6 +9,7 @@
 
 namespace DB
 {
+
 Rocks::Rocks(rocksdb::DB * db_, const std::vector<rocksdb::ColumnFamilyHandle *> & cf_handles_, bool cleanup_, LoggerPtr logger_)
     : db(db_), cleanup(cleanup_), logger(logger_)
 {

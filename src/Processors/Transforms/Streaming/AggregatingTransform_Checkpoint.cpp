@@ -23,15 +23,19 @@ namespace Streaming
 {
 void AggregatingTransform::installRocks()
 {
-    HybridHashTableConfig config;
+    chassert(variants.aggregatorType() == AggregatorType::Hybrid);
+    auto & hybrid_variants = static_cast<HybridAggregatedDataVariants &>(variants);
     auto hybrid_params = std::static_pointer_cast<HybridAggregatorParams>(params->params);
-    config.base_conf.spill_dir_path = fmt::format("{}_{}", hybrid_params->spill_dir_path, variants.getID());
-    config.base_conf.max_hot_key_count = hybrid_params->max_hot_key_count;
-    config.base_conf.cleanup_on_disk_data = true;
-    config.base_conf.rocks_handler_getter = [this](const std::string & id) { return getOrCreateRocks()->getOrCreateHandler(id); };
-    config.base_conf.ttl = hybrid_params->aggregate_state_ttl;
-    config.base_conf.kv_options = hybrid_params->kv_options;
-    std::static_pointer_cast<HybridAggregator>(params->aggregator)->setSharedHybridHashTableConfig(variants.getID(), std::move(config));
+
+    /// Init the base config according to HybridAggregatorParams
+    hybrid_variants.config.spill_dir_path = fmt::format("{}_{}", hybrid_params->spill_dir_path, hybrid_variants.getID());
+    hybrid_variants.config.max_hot_key_count = hybrid_params->max_hot_key_count;
+    hybrid_variants.config.cleanup_on_disk_data = true;
+    hybrid_variants.config.ttl = hybrid_params->aggregate_state_ttl;
+    hybrid_variants.config.kv_options = hybrid_params->kv_options;
+
+    /// This is the callback when HybridHashTable needs init its rocks part
+    hybrid_variants.config.rocks_handler_getter = [this](const std::string & id) { return getOrCreateRocks()->getOrCreateHandler(id); };
 }
 
 RocksPtr AggregatingTransform::getOrCreateRocks()
@@ -40,11 +44,11 @@ RocksPtr AggregatingTransform::getOrCreateRocks()
     if (!rocks_holder)
     {
         /// Initialize rocks on first use
-        const auto & config
-            = std::static_pointer_cast<HybridAggregator>(params->aggregator)->getSharedHybridHashTableConfig(variants.getID());
 
-        rocks_holder = Rocks::createOrLoadIfExists(
-            config.getRocksOptions(), config.base_conf.spill_dir_path, config.base_conf.ttl, config.base_conf.cleanup_on_disk_data, logger);
+        chassert(variants.aggregatorType() == AggregatorType::Hybrid);
+        const auto & config = static_cast<const HybridAggregatedDataVariants &>(variants).config;
+        rocks_holder
+            = Rocks::createOrLoadIfExists(config.getRocksOptions(), config.spill_dir_path, config.ttl, config.cleanup_on_disk_data, logger);
     }
 
     return rocks_holder;
@@ -236,12 +240,14 @@ void AggregatingTransform::recoverRocksCheckpoint(CheckpointPtr ckpt)
         rocks.reset();
     }
 
-    const auto & config = std::static_pointer_cast<HybridAggregator>(params->aggregator)->getSharedHybridHashTableConfig(variants.getID());
-    rocks_ckpt->recover(config.base_conf.spill_dir_path);
+    chassert(variants.aggregatorType() == AggregatorType::Hybrid);
+    const auto & hybrid_variants = static_cast<const HybridAggregatedDataVariants &>(variants);
+    const auto & config = hybrid_variants.config;
+
+    rocks_ckpt->recover(config.spill_dir_path);
 
     /// Reinstall recovered rocks
-    rocks = Rocks::createOrLoadIfExists(
-        config.getRocksOptions(), config.base_conf.spill_dir_path, config.base_conf.ttl, config.base_conf.cleanup_on_disk_data, logger);
+    rocks = Rocks::createOrLoadIfExists(config.getRocksOptions(), config.spill_dir_path, config.ttl, config.cleanup_on_disk_data, logger);
     variants.reset();
 
     auto handler = rocks->getOrCreateHandler();

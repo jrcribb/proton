@@ -41,6 +41,8 @@ SERDE struct HybridAggregatedDataVariants final : public IAggregatedDataVariants
     void reset() override;
     void resetRetractWithoutKey();
 
+    HybridConfig getSubConfig(std::string_view sub_name, bool unshared) const { return config.getSubConfig(sub_name, unshared); }
+
     SERDE std::string id;
     NO_SERDE const HybridAggregator * aggregator = nullptr;
 
@@ -87,6 +89,8 @@ SERDE struct HybridAggregatedDataVariants final : public IAggregatedDataVariants
     DataUniqPtr without_key_retracts;
     NO_SERDE std::function<void(AggregateDataPtr)> without_key_states_constructor;
     NO_SERDE std::function<void(AggregateDataPtr)> without_key_states_destructor;
+
+    HybridConfig config;
 
     HybridHashTableTemplate table;
     /// \changes is used to tracking changes since last emit

@@ -77,26 +77,8 @@ struct HybridHashTableConfig
 
     HybridHashTableConfig getSubConfig(std::string_view sub_id, bool unshared = false) const
     {
-        chassert(!sub_id.empty());
         HybridHashTableConfig new_config = *this;
-
-        /// If `rocks_handler_getter` is set, use a sub-handler with `sub_id`; otherwise, use a new one with `spill_dir_path`.
-        if (new_config.base_conf.rocks_handler_getter)
-        {
-            new_config.base_conf.handle_id = base_conf.handle_id.empty() ? sub_id : fmt::format("{}-{}", base_conf.handle_id, sub_id);
-
-            if (unshared)
-            {
-                new_config.base_conf.spill_dir_path = fmt::format("{}-{}", base_conf.spill_dir_path, new_config.base_conf.handle_id);
-                new_config.base_conf.handle_id = "";
-                new_config.base_conf.rocks_handler_getter = nullptr;
-            }
-        }
-        else
-        {
-            new_config.base_conf.spill_dir_path = fmt::format("{}-{}", base_conf.spill_dir_path, sub_id);
-        }
-
+        new_config.base_conf = base_conf.getSubConfig(sub_id, unshared);
         return new_config;
     }
 
@@ -187,6 +169,7 @@ struct HybridFindResult
     bool hasError() const noexcept { return errcode != ErrorCodes::OK; }
     std::string errorString() const noexcept { return fmt::format("errcode={} message={}", errcode, ErrorCodes::getName(errcode)); }
     bool isFound() const noexcept { return value.isValid(); }
+    bool isNotFound() const noexcept { return !value.isValid(); }
 
     HybridMappedValue value;
     int errcode = ErrorCodes::OK;
@@ -1201,7 +1184,8 @@ private:
         }
 
         std::string rvalue;
-        if (auto status = rocks_handler->db->Get(read_options, rocks_handler->cf_handle, {key_data.data(), key_data.size()}, &rvalue);
+        if (auto status
+            = rocks_handler->db->Get(read_options, rocks_handler->cf_handle, rocksdb::Slice{key_data.data(), key_data.size()}, &rvalue);
             status.ok())
         {
             ++metrics.read_persistent;

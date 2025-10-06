@@ -4,15 +4,6 @@
 
 namespace DB::Streaming
 {
-HybridHashTableConfig HybridAggregator::getSubConfig(std::string_view id, std::string_view sub_name) const
-{
-    chassert(!shared_configs.empty());
-    auto it = shared_configs.find(id);
-    if (it != shared_configs.end())
-        return it->second.getSubConfig(sub_name);
-    else
-        return shared_configs.begin()->second.getSubConfig(sub_name, /*unshared=*/true);
-}
 
 void HybridAggregator::initStates(HybridAggregatedDataVariants & result) const
 {
@@ -20,8 +11,13 @@ void HybridAggregator::initStates(HybridAggregatedDataVariants & result) const
     {
         result.key_sizes = key_sizes;
 
-        auto init_table = [&](HybridHashTableTemplate & table, std::string_view name) {
-            auto config = getSubConfig(result.getID(), name);
+        auto init_table = [&](HybridHashTableTemplate & table, std::string_view name, bool honor_ttl) {
+            HybridHashTableConfig config;
+            config.base_conf = result.getSubConfig(name, /*unshared=*/false);
+
+            if (!honor_ttl)
+                config.base_conf.ttl = 0;
+
             config.value_object_size = total_size_of_aggregate_states;
             config.align_value_object_size = align_aggregate_states;
             config.value_constructor = [this](void * data) { createAggregateStates(reinterpret_cast<AggregateDataPtr>(data)); };
@@ -46,15 +42,19 @@ void HybridAggregator::initStates(HybridAggregatedDataVariants & result) const
         {
             case TrackingUpdatesType::UpdatesWithRetract:
             {
-                init_table(result.table, "main");
-                init_table(result.retracts, "retracts");
+                init_table(result.table, "main", /*honor_ttl=*/true);
+                /// Disable ttl for updates hybrid hash table
+                init_table(result.retracts, "retracts", /*honor_ttl=*/false);
                 break;
             }
             case TrackingUpdatesType::Updates:
             {
-                init_table(result.table, "main");
-
-                auto config = getSubConfig(result.getID(), "changes");
+                init_table(result.table, "main", /*honor_ttl=*/true);
+                
+                HybridHashTableConfig config;
+                config.base_conf = result.getSubConfig("changes", /*unshared=*/false);
+                /// Disable ttl for updates hybrid hash table
+                config.base_conf.ttl = 0;
                 config.installNoOpCallbacks();
                 config.validate();
                 result.updates.init(method_chosen, std::move(config), result.key_sizes, logger, bucket_key_offset);
@@ -62,27 +62,18 @@ void HybridAggregator::initStates(HybridAggregatedDataVariants & result) const
             }
             case TrackingUpdatesType::None:
             {
-                init_table(result.table, "main");
+                init_table(result.table, "main", /*honor_ttl=*/true);
                 break;
             }
         }
 
-        if (params->emit_key_params)
+        if (params->emit_session_params)
         {
-            auto table_config = getSubConfig(result.getID(), "list");
-
-            HybridConfig list_config;
-            list_config.spill_dir_path.swap(table_config.base_conf.spill_dir_path);
-            list_config.kv_options.swap(table_config.base_conf.kv_options);
-            list_config.ttl = table_config.base_conf.ttl;
-            list_config.use_hash_index = table_config.base_conf.use_hash_index;
-            list_config.max_hot_key_count = table_config.base_conf.max_hot_key_count;
-            list_config.cleanup_on_disk_data = table_config.base_conf.cleanup_on_disk_data;
-            list_config.handle_id.swap(table_config.base_conf.handle_id);
-            list_config.rocks_handler_getter.swap(table_config.base_conf.rocks_handler_getter);
-
+            auto list_config = result.getSubConfig("list", /*unshared=*/false);
             list_config.validate();
 
+            /// Disable ttl for hybrid key list
+            list_config.ttl = 0;
             result.outstanding_keys.init(method_chosen, std::move(list_config), result.key_sizes, logger);
         }
     }

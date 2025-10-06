@@ -336,7 +336,9 @@ BlocksList HybridAggregator::convertToBlocksForUpdates(Table & table, Table * up
             }
             else
             {
-                throw Exception(ErrorCodes::LOGICAL_ERROR, "Key was updated but was not found in source aggregation hybrid hash table");
+                throw Exception(
+                    ErrorCodes::LOGICAL_ERROR,
+                    "Key was updated and tracked in update hybrid hash table but was not found in main aggregation hybrid hash table");
             }
         }
 
@@ -373,7 +375,11 @@ BlocksList HybridAggregator::convertToBlocksForUpdates(Table & table, Table * up
         throw Exception(errcode, "Failed to convert aggregate states to blocks, error_message'{}'", ErrorCodes::getName(errcode));
 
     if (ttl_gc > 0)
-        LOG_WARNING(logger, "Found total_keys={} are garbage collected because of reaching TTL={} seconds", ttl_gc, hybrid_params->aggregate_state_ttl);
+        LOG_WARNING(
+            logger,
+            "Found total_keys={} are garbage collected because of reaching TTL={} seconds",
+            ttl_gc,
+            hybrid_params->aggregate_state_ttl);
 
     if (!places.empty())
     {
@@ -444,7 +450,7 @@ BlocksList HybridAggregator::convertToBlocksForRetracts(Table & table, Table * r
             throw Exception::createRuntime(find_result.errcode, find_result.errorString());
 
         if (!find_result.isFound())
-            throw Exception(ErrorCodes::LOGICAL_ERROR, "Updated key is not found in source hash table");
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "Updated key is not found in main hybrid hash table");
 
         auto retract = static_cast<ConstAggregateDataPtr>(retract_value.getMapped());
         if (!TrackingCount::empty(retract + tracking_count_offset)) [[likely]]
@@ -803,8 +809,8 @@ void HybridAggregator::mergeUpdates(
             if (find_result.hasError())
                 throw Exception::createRuntime(find_result.errcode, find_result.errorString());
 
-            if (!find_result.isFound())
-                throw Exception(ErrorCodes::LOGICAL_ERROR, "Key is not found in source table");
+            if (find_result.isNotFound())
+                throw Exception(ErrorCodes::LOGICAL_ERROR, "Key is not found in main hybrid hash table");
 
             auto emplace_result = dst.emplaceKey(key, /*disable_spill=*/false);
             if (emplace_result.hasError())
@@ -817,11 +823,14 @@ void HybridAggregator::mergeUpdates(
     }
 }
 
+
 template <typename KeyGetter, typename Table>
 void HybridAggregator::mergeRetracts(
     Table & dst, Table * dst_retracts, const std::vector<Table *> & srcs, const std::vector<Table *> & src_retracts, Arena & arena) const
 {
     chassert(dst_retracts);
+    chassert(trackingStateCount());
+
     /// First, collect all retracted keys (including new keys) to dst_retracts
     /// For example:
     ///                 (thread)        (thread-2)      (thread-3)

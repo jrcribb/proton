@@ -23,7 +23,7 @@ using RocksHandlerPtr = std::shared_ptr<RocksHandler>;
 class Rocks;
 using RocksPtr = std::shared_ptr<Rocks>;
 
-/// Rocks is a simple wrapper of RocksDB and the column families. It owns the their lifecycles.
+/// Rocks is a simple wrapper of RocksDB and the column families. It owns their lifecycles.
 class Rocks final : public std::enable_shared_from_this<Rocks>
 {
 public:
@@ -38,6 +38,7 @@ public:
     bool isShutdown() const { return shutdown_flag.test(); }
 
     /// If handle_id is empty, return default handler
+    /// A RocksHandler is a wrap of separate column family which share the s ame RocksDB (Rocks here)
     RocksHandlerPtr getOrCreateHandler(const std::string & handle_id = {}, std::optional<rocksdb::ColumnFamilyOptions> cf_options = {});
 
     void destroy(const std::string & handle_id);
@@ -57,7 +58,7 @@ private:
 };
 using RocksPtr = std::shared_ptr<Rocks>;
 
-/// RocksColumnFamilyHandler is a simple wrapper of RocksDB column family handle and
+/// RocksHandler is a simple wrapper of RocksDB column family handle and
 /// provide put / get / remove operations for the column family.
 /// It doesn't own the lifecycle of the RocksDB nor the column family underlying.
 /// Actually it `borrows` the column family handler from `Rocks` object.

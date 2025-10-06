@@ -132,7 +132,9 @@ void HybridHashJoin::initHashMaps(HybridHashJoinMapsVariants & maps_variants, co
                   using HashTableTagged = std::decay_t<decltype(hash_table_template_tagged)>;
                   using TaggedType = typename HashTableTagged::TaggedType;
 
-                  auto config = base_config.getSubConfig(fmt::format("{}_{}", table_id, i));
+                  HybridHashTableConfig config;
+                  config.base_conf = base_config.getSubConfig(fmt::format("{}_{}", table_id, i));
+
                   size_t row_size = sample_block_to_save.columns();
                   if (row_size == 0)
                   {
