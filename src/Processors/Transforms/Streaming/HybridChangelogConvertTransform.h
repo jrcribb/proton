@@ -50,7 +50,8 @@ private:
 
     bool backfillingNewKeys() const noexcept { return backfill_key_unique && backfill_started && !backfill_done; }
 
-    RocksDBPtr getOrCreateRocksDB();
+    RocksDBPtr getOrCreateRocksDB(const HybridConfig & hybrid_config);
+    RocksDBPtr getOrCreateRocksDB() { return getOrCreateRocksDB(config.base_conf); }
 
 private:
     std::vector<size_t> key_column_positions;

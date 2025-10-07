@@ -547,8 +547,9 @@ void HybridChangelogConvertTransform::createHashTable(
     }
 
     /// Install rocks handler getter
-    config.base_conf.rocks_cf_handler_getter
-        = [this](const std::string & cf_handle_id) { return getOrCreateRocksDB()->getOrCreateColumnFamilyHandler(cf_handle_id); };
+    config.base_conf.rocks_cf_handler_getter = [this](const HybridConfig & hybrid_config) {
+        return getOrCreateRocksDB(hybrid_config)->getOrCreateColumnFamilyHandler(hybrid_config.cf_handle_id);
+    };
 
     /// Use another cf handler of rocks, different from the default rocks cf handler
     index.init(hash_method.type, config.getSubConfig("index"), hash_method.key_sizes, logger);

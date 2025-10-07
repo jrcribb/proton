@@ -51,7 +51,8 @@ private:
 
     void transformToOutputColumns(Columns & columns) const;
 
-    RocksDBPtr getOrCreateRocksDB();
+    RocksDBPtr getOrCreateRocksDB(const HybridConfig & config);
+    RocksDBPtr getOrCreateRocksDB() { return getOrCreateRocksDB(config.base_conf); }
 
 private:
     std::vector<size_t> output_column_positions;

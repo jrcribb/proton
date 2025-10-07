@@ -123,7 +123,7 @@ struct HybridConfig
 
     /// If `rocks_cf_handler_getter` is set, we will get rocks cf handler by it
     std::string cf_handle_id;
-    std::function<RocksDBColumnFamilyHandlerPtr(const std::string & id)> rocks_cf_handler_getter;
+    std::function<RocksDBColumnFamilyHandlerPtr(const HybridConfig & /*config*/)> rocks_cf_handler_getter;
 };
 
 }

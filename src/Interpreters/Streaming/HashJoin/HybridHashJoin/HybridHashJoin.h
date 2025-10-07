@@ -74,7 +74,8 @@ public:
 
     bool alwaysReturnsEmptySet() const override;
 
-    RocksDBPtr getOrCreateRocksDB();
+    RocksDBPtr getOrCreateRocksDB(const HybridConfig & config);
+    RocksDBPtr getOrCreateRocksDB() { return getOrCreateRocksDB(base_config); }
     void shutdownRocks();
     const String & getRocksDir() const { return base_config.spill_dir_path; }
 

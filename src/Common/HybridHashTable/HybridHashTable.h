@@ -1059,7 +1059,7 @@ private:
         /// HybridHashTable-3 -> cf3, db
         if (config.base_conf.rocks_cf_handler_getter)
         {
-            cf_handler = config.base_conf.rocks_cf_handler_getter(config.base_conf.cf_handle_id);
+            cf_handler = config.base_conf.rocks_cf_handler_getter(config.base_conf);
             return;
         }
 

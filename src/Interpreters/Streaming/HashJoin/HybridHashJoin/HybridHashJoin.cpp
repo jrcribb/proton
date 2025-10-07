@@ -132,6 +132,8 @@ void HybridHashJoin::initHashMaps(HybridHashJoinMapsVariants & maps_variants, co
                   using HashTableTagged = std::decay_t<decltype(hash_table_template_tagged)>;
                   using TaggedType = typename HashTableTagged::TaggedType;
 
+                  /// Left hash table and right hash table are in different column families of the same RocksDB.
+                  /// Differentiate by cf handle id
                   HybridHashTableConfig config;
                   config.base_conf = base_config.getSubConfig(fmt::format("{}_{}", table_id, i));
 

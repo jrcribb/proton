@@ -11,12 +11,13 @@ extern const int RECOVER_CHECKPOINT_FAILED;
 
 namespace Streaming
 {
-RocksDBPtr HybridHashJoin::getOrCreateRocksDB()
+
+RocksDBPtr HybridHashJoin::getOrCreateRocksDB(const HybridConfig & config)
 {
     /// Initialize rocks on first use
     if (!rocks)
         rocks = RocksDB::createOrLoadIfExists(
-            base_config.getRocksOptions(), base_config.spill_dir_path, base_config.ttl, base_config.cleanup_on_disk_data, logger);
+            config.getRocksOptions(), config.spill_dir_path, config.ttl, config.cleanup_on_disk_data, logger);
 
     return rocks;
 }
@@ -38,7 +39,7 @@ void HybridHashJoin::initRocksDBConfig(const String & spill_dir_, size_t max_hot
     base_config.kv_options = kv_options_;
     base_config.cleanup_on_disk_data = true;
     base_config.rocks_cf_handler_getter
-        = [this](const std::string & cf_handle_id) { return getOrCreateRocksDB()->getOrCreateColumnFamilyHandler(cf_handle_id); };
+        = [this](const HybridConfig & config) { return getOrCreateRocksDB(config)->getOrCreateColumnFamilyHandler(config.cf_handle_id); };
 }
 
 void HybridHashJoin::reinstallRocksDB()

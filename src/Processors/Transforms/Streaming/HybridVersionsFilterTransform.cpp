@@ -276,18 +276,19 @@ void HybridVersionsFilterTransform::createHashTable(
     };
 
     /// Install rocks handler getter
-    config.base_conf.rocks_cf_handler_getter
-        = [this](const std::string & id) { return getOrCreateRocksDB()->getOrCreateColumnFamilyHandler(id); };
+    config.base_conf.rocks_cf_handler_getter = [this](const HybridConfig & hybrid_config) {
+        return getOrCreateRocksDB(hybrid_config)->getOrCreateColumnFamilyHandler(hybrid_config.cf_handle_id);
+    };
     latest_version_map.init(hash_method.type, config, hash_method.key_sizes, logger);
     key_sizes.swap(hash_method.key_sizes);
 }
 
-RocksDBPtr HybridVersionsFilterTransform::getOrCreateRocksDB()
+RocksDBPtr HybridVersionsFilterTransform::getOrCreateRocksDB(const HybridConfig & hybrid_config)
 {
     /// Initialize rocks on first use
     if (!rocks)
         rocks = RocksDB::createOrLoadIfExists(
-            config.getRocksOptions(), config.base_conf.spill_dir_path, /*ttl=*/0, config.base_conf.cleanup_on_disk_data, logger);
+            hybrid_config.getRocksOptions(), hybrid_config.spill_dir_path, /*ttl=*/0, hybrid_config.cleanup_on_disk_data, logger);
 
     return rocks;
 }

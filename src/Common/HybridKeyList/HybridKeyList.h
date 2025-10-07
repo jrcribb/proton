@@ -416,7 +416,7 @@ private:
         /// HybridHashTable-3 -> cf3, db
         if (config.rocks_cf_handler_getter)
         {
-            cf_handler = config.rocks_cf_handler_getter(config.cf_handle_id);
+            cf_handler = config.rocks_cf_handler_getter(config);
             return;
         }
 

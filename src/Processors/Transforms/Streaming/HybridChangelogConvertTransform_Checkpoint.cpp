@@ -14,12 +14,12 @@ extern const int RECOVER_CHECKPOINT_FAILED;
 
 namespace Streaming
 {
-RocksDBPtr HybridChangelogConvertTransform::getOrCreateRocksDB()
+RocksDBPtr HybridChangelogConvertTransform::getOrCreateRocksDB(const HybridConfig & hybrid_config)
 {
     /// Initialize rocks on first use
     if (!rocks)
         rocks = RocksDB::createOrLoadIfExists(
-            config.getRocksOptions(), config.base_conf.spill_dir_path, /*ttl=*/0, config.base_conf.cleanup_on_disk_data, logger);
+            hybrid_config.getRocksOptions(), hybrid_config.spill_dir_path, /*ttl=*/0, hybrid_config.cleanup_on_disk_data, logger);
 
     return rocks;
 }

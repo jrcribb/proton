@@ -35,21 +35,16 @@ void AggregatingTransform::initRocksDBConfig()
 
     /// This is the callback when HybridHashTable needs init its rocks part
     hybrid_variants.config.rocks_cf_handler_getter
-        = [this](const std::string & id) { return getOrCreateRocksDB()->getOrCreateColumnFamilyHandler(id); };
+        = [this](const HybridConfig & config) { return getOrCreateRocksDB(config)->getOrCreateColumnFamilyHandler(config.cf_handle_id); };
 }
 
-RocksDBPtr AggregatingTransform::getOrCreateRocksDB()
+RocksDBPtr AggregatingTransform::getOrCreateRocksDB(const HybridConfig & config)
 {
     auto & rocks = many_data->rocks[current_variant];
     if (!rocks)
-    {
         /// Initialize rocks on first use
-
-        chassert(variants.aggregatorType() == AggregatorType::Hybrid);
-        const auto & config = static_cast<const HybridAggregatedDataVariants &>(variants).config;
         rocks = RocksDB::createOrLoadIfExists(
             config.getRocksOptions(), config.spill_dir_path, config.ttl, config.cleanup_on_disk_data, logger);
-    }
 
     return rocks;
 }
@@ -188,7 +183,12 @@ void AggregatingTransform::recoverFileCheckpoint(CheckpointPtr ckpt)
 
 CheckpointPtr AggregatingTransform::createRocksCheckpoint()
 {
-    auto rocks = getOrCreateRocksDB();
+    chassert(variants.aggregatorType() == AggregatorType::Hybrid);
+    HybridConfig config_copy = static_cast<const HybridAggregatedDataVariants &>(variants).config;
+    /// Disable TTL
+    config_copy.ttl = 0;
+
+    auto rocks = getOrCreateRocksDB(config_copy);
     auto cf_handler = rocks->getOrCreateColumnFamilyHandler();
 
     bool is_last_checkpointing_transform = (this == many_data->last_checkpointing_transform.load());
