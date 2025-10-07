@@ -28,7 +28,7 @@ HybridHashJoin::HybridHashJoin(
     , right_data(right_join_ctx)
     , left_data(left_join_ctx)
 {
-    installRocks(spill_dir_, max_hot_key_count_, ttl_, kv_options_);
+    initRocksDBConfig(spill_dir_, max_hot_key_count_, ttl_, kv_options_);
 
     /// If right stream is key-value data stream semantic and our query plan pushes down the changelog transform
     /// initRightPrimaryKeyHashTable();

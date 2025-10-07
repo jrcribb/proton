@@ -1,5 +1,5 @@
 #include <base/scope_guard.h>
-#include <Common/Rocks/RocksHandler.h>
+#include <Common/Rocks/RocksDB.h>
 /// #include <Common/Rocks/RocksLogger.h>
 #include <Common/logger_useful.h>
 
@@ -10,15 +10,15 @@
 namespace DB
 {
 
-Rocks::Rocks(rocksdb::DB * db_, const std::vector<rocksdb::ColumnFamilyHandle *> & cf_handles_, bool cleanup_, LoggerPtr logger_)
+RocksDB::RocksDB(rocksdb::DB * db_, const std::vector<rocksdb::ColumnFamilyHandle *> & cf_handles_, bool cleanup_, LoggerPtr logger_)
     : db(db_), cleanup(cleanup_), logger(logger_)
 {
     chassert(db && logger);
     for (auto * cf_handle : cf_handles_)
-        handles.emplace(cf_handle->GetName(), cf_handle);
+        cf_handles.emplace(cf_handle->GetName(), cf_handle);
 }
 
-Rocks::~Rocks()
+RocksDB::~RocksDB()
 {
     try
     {
@@ -30,7 +30,8 @@ Rocks::~Rocks()
     }
 }
 
-RocksPtr Rocks::createOrLoadIfExists(const rocksdb::Options & options, const std::string & path, Int32 ttl, bool cleanup_, LoggerPtr logger)
+RocksDBPtr
+RocksDB::createOrLoadIfExists(const rocksdb::Options & options, const std::string & path, Int32 ttl, bool cleanup_, LoggerPtr logger)
 {
     if (!logger)
         logger = getLogger("Rocks");
@@ -83,7 +84,7 @@ RocksPtr Rocks::createOrLoadIfExists(const rocksdb::Options & options, const std
         if (!status.ok())
             throw DB::Exception(ErrorCodes::ROCKSDB_ERROR, "Failed to open rocksdb: {}", status.ToString());
 
-        return std::make_shared<Rocks>(db, cf_handles, cleanup_, logger);
+        return std::make_shared<RocksDB>(db, cf_handles, cleanup_, logger);
     }
     else
     {
@@ -104,22 +105,22 @@ RocksPtr Rocks::createOrLoadIfExists(const rocksdb::Options & options, const std
         if (!status.ok())
             throw DB::Exception(ErrorCodes::ROCKSDB_ERROR, "Failed to open rocksdb: {}", status.ToString());
 
-        return std::make_shared<Rocks>(db, std::vector<rocksdb::ColumnFamilyHandle *>{}, cleanup_, logger);
+        return std::make_shared<RocksDB>(db, std::vector<rocksdb::ColumnFamilyHandle *>{}, cleanup_, logger);
     }
 }
 
-void Rocks::shutdown(bool cleanup_)
+void RocksDB::shutdown(bool cleanup_)
 {
     if (shutdown_flag.test_and_set())
         return;
 
-    for (auto & [_, cf_handle] : handles)
+    for (auto & [_, cf_handle] : cf_handles)
     {
         auto status = db->DestroyColumnFamilyHandle(cf_handle);
         if (!status.ok())
             LOG_ERROR(logger, "Failed to destroy column family handle: {}", status.ToString());
     }
-    handles.clear();
+    cf_handles.clear();
 
     auto status = db->Close();
     if (!status.ok())
@@ -135,29 +136,31 @@ void Rocks::shutdown(bool cleanup_)
     db.reset();
 }
 
-RocksHandlerPtr Rocks::getOrCreateHandler(const std::string & handle_id, std::optional<rocksdb::ColumnFamilyOptions> cf_options)
+RocksDBColumnFamilyHandlerPtr
+RocksDB::getOrCreateColumnFamilyHandler(const std::string & cf_handle_id, std::optional<rocksdb::ColumnFamilyOptions> cf_options)
 {
-    if (isShutdown()) [[unlikely]]
+    if (isShutdown())
         throw DB::Exception(ErrorCodes::LOGICAL_ERROR, "RocksDB is already shutdown");
 
-    if (handle_id.empty())
-        return std::make_shared<RocksHandler>(shared_from_this());
+    if (cf_handle_id.empty())
+        return std::make_shared<RocksDBColumnFamilyHandler>(shared_from_this());
 
     std::lock_guard lock(handles_mutex);
-    auto it = handles.find(handle_id);
-    if (it != handles.end())
-        return std::make_shared<RocksHandler>(shared_from_this(), it->second);
+    auto it = cf_handles.find(cf_handle_id);
+    if (it != cf_handles.end())
+        return std::make_shared<RocksDBColumnFamilyHandler>(shared_from_this(), it->second);
 
     rocksdb::ColumnFamilyHandle * cf_handle = nullptr;
-    auto status = db->CreateColumnFamily(cf_options ? *cf_options : rocksdb::ColumnFamilyOptions(db->GetOptions()), handle_id, &cf_handle);
+    auto status
+        = db->CreateColumnFamily(cf_options ? *cf_options : rocksdb::ColumnFamilyOptions(db->GetOptions()), cf_handle_id, &cf_handle);
     if (!status.ok())
         throw DB::Exception(ErrorCodes::ROCKSDB_ERROR, "Failed to get create column family: {}", status.ToString());
 
-    handles.emplace(handle_id, cf_handle);
-    return std::make_shared<RocksHandler>(shared_from_this(), cf_handle);
+    cf_handles.emplace(cf_handle_id, cf_handle);
+    return std::make_shared<RocksDBColumnFamilyHandler>(shared_from_this(), cf_handle);
 }
 
-void Rocks::destroy(const std::string & handle_id)
+void RocksDB::destroy(const std::string & handle_id)
 {
     if (isShutdown()) [[unlikely]]
         throw DB::Exception(ErrorCodes::LOGICAL_ERROR, "RocksDB is already shutdown");
@@ -168,12 +171,12 @@ void Rocks::destroy(const std::string & handle_id)
     rocksdb::ColumnFamilyHandle * cf_handle = nullptr;
     {
         std::lock_guard lock(handles_mutex);
-        auto it = handles.find(handle_id);
-        if (it == handles.end())
+        auto it = cf_handles.find(handle_id);
+        if (it == cf_handles.end())
             return;
 
         cf_handle = it->second;
-        handles.erase(it);
+        cf_handles.erase(it);
     }
 
     auto status = db->DropColumnFamily(cf_handle);
@@ -187,7 +190,7 @@ void Rocks::destroy(const std::string & handle_id)
         throw DB::Exception(ErrorCodes::ROCKSDB_ERROR, "Failed to destroy column family handle: {}", status.ToString());
 }
 
-RocksHandler::RocksHandler(RocksPtr rocks_, rocksdb::ColumnFamilyHandle * cf_handle_)
+RocksDBColumnFamilyHandler::RocksDBColumnFamilyHandler(RocksDBPtr rocks_, rocksdb::ColumnFamilyHandle * cf_handle_)
     : db(rocks_->db.get()), cf_handle(cf_handle_), rocks(rocks_)
 {
     chassert(db);
@@ -197,7 +200,7 @@ RocksHandler::RocksHandler(RocksPtr rocks_, rocksdb::ColumnFamilyHandle * cf_han
     write_options.disableWAL = rocks_->cleanup;
 }
 
-void RocksHandler::destroy()
+void RocksDBColumnFamilyHandler::destroy()
 {
     SCOPE_EXIT({
         db = nullptr;
@@ -209,9 +212,9 @@ void RocksHandler::destroy()
     if (cf_handle == db->DefaultColumnFamily())
         return;
 
-    auto rocks_holder = getRocksHolder();
-    if (rocks_holder)
-        rocks_holder->destroy(cf_handle->GetName());
+    auto rocks_locked = getRocksDB();
+    if (rocks_locked)
+        rocks_locked->destroy(cf_handle->GetName());
 }
 
 }

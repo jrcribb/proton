@@ -36,39 +36,39 @@ void JoinTransformWithAlignment::checkpoint(CheckpointContextPtr ckpt_ctx)
     CheckpointPtr ckpt;
     if (ckpt_type == CheckpointType::Rocks)
     {
-        RocksPtr rocks;
+        RocksDBPtr rocks;
 
         /// Serializing join algorithm state
         if (auto concurrent_join = std::dynamic_pointer_cast<ConcurrentHashJoin>(join))
         {
             concurrent_join->write(getVersion());
             auto * hybrid_hash_join = static_cast<HybridHashJoin *>(concurrent_join->getInternalHashJoin(transform_id)->data.get());
-            rocks = hybrid_hash_join->getOrCreateRocks();
+            rocks = hybrid_hash_join->getOrCreateRocksDB();
         }
         else if (auto hybrid_join = std::dynamic_pointer_cast<HybridHashJoin>(join))
         {
             hybrid_join->write(getVersion());
-            rocks = hybrid_join->getOrCreateRocks();
+            rocks = hybrid_join->getOrCreateRocksDB();
         }
         else
         {
             throw Exception(ErrorCodes::CREATE_CHECKPOINT_FAILED, "Unknown join type {}", typeid(join).name());
         }
 
-        /// Reuse the default rocks handler to avoid creating a new one (must gurantee don't overwrite the same key)
-        auto rocks_handler = rocks->getOrCreateHandler();
+        /// Reuse the default rocks handler to avoid creating a new one (must guarantee it doesn't overwrite the same key)
+        auto cf_handler = rocks->getOrCreateColumnFamilyHandler();
         /// Serializing left_input state
         {
             WriteBufferFromOwnString wb;
             left_input.serialize(wb);
-            rocks_handler->put("_left_input", wb.str());
+            cf_handler->put("_left_input", wb.str());
         }
 
         /// Serializing right_input state
         {
             WriteBufferFromOwnString wb;
             right_input.serialize(wb);
-            rocks_handler->put("_right_input", wb.str());
+            cf_handler->put("_right_input", wb.str());
         }
 
         ckpt = std::make_shared<RocksCheckpoint>(getVersion(), rocks);
@@ -118,16 +118,16 @@ void JoinTransformWithAlignment::recover(CheckpointContextPtr ckpt_ctx)
             rocks_ckpt->recover(hybrid_join->getRocksDir());
 
             /// Reinstall recovered rocks
-            hybrid_join->reinstallRocks();
+            hybrid_join->reinstallRocksDB();
 
             /// Deserializing join algorithm state
             hybrid_join->read(rocks_ckpt->getVersion());
 
-            auto rocks_handler = hybrid_join->getOrCreateRocks()->getOrCreateHandler();
+            auto cf_handler = hybrid_join->getOrCreateRocksDB()->getOrCreateColumnFamilyHandler();
             /// Deserializing left_input state
             {
                 String left_input_str;
-                rocks_handler->get("_left_input", left_input_str);
+                cf_handler->get("_left_input", left_input_str);
                 ReadBufferFromString rb(left_input_str);
                 left_input.deserialize(rb);
             }
@@ -135,7 +135,7 @@ void JoinTransformWithAlignment::recover(CheckpointContextPtr ckpt_ctx)
             /// Deserializing right_input state
             {
                 String right_input_str;
-                rocks_handler->get("_right_input", right_input_str);
+                cf_handler->get("_right_input", right_input_str);
                 ReadBufferFromString rb(right_input_str);
                 right_input.deserialize(rb);
             }

@@ -9,6 +9,8 @@ TEST(HybridKeyList, Ops)
         .spill_dir_path = "/tmp/hybrid_key_list_ops",
         .kv_options = "",
         .max_hot_key_count = 3,
+        .cf_handle_id = "",
+        .rocks_cf_handler_getter = {},
     };
 
     auto key_serializer = [](const std::string & k, DB::WriteBuffer & wb) {

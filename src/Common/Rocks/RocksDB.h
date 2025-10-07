@@ -17,36 +17,37 @@ extern const int ROCKSDB_ERROR;
 extern const int LOGICAL_ERROR;
 }
 
-class RocksHandler;
-using RocksHandlerPtr = std::shared_ptr<RocksHandler>;
+class RocksDBColumnFamilyHandler;
+using RocksDBColumnFamilyHandlerPtr = std::shared_ptr<RocksDBColumnFamilyHandler>;
 
-class Rocks;
-using RocksPtr = std::shared_ptr<Rocks>;
+class RocksDB;
+using RocksDBPtr = std::shared_ptr<RocksDB>;
 
-/// Rocks is a simple wrapper of RocksDB and the column families. It owns their lifecycles.
-class Rocks final : public std::enable_shared_from_this<Rocks>
+/// RocksDB is a simple wrapper of rocksdb::DB and the column families. It owns their lifecycles.
+class RocksDB final : public std::enable_shared_from_this<RocksDB>
 {
 public:
-    Rocks(rocksdb::DB * db_, const std::vector<rocksdb::ColumnFamilyHandle *> & cf_handles_, bool cleanup_, LoggerPtr logger_);
-    ~Rocks();
+    RocksDB(rocksdb::DB * db_, const std::vector<rocksdb::ColumnFamilyHandle *> & cf_handles_, bool cleanup_, LoggerPtr logger_);
+    ~RocksDB();
 
-    static RocksPtr createOrLoadIfExists(
+    static RocksDBPtr createOrLoadIfExists(
         const rocksdb::Options & options, const std::string & path, Int32 ttl, bool cleanup_ = true, LoggerPtr logger = nullptr);
 
     void shutdown(bool cleanup_);
 
     bool isShutdown() const { return shutdown_flag.test(); }
 
-    /// If handle_id is empty, return default handler
+    /// If cf_handle_id is empty, return default handler
     /// A RocksHandler is a wrap of separate column family which share the s ame RocksDB (Rocks here)
-    RocksHandlerPtr getOrCreateHandler(const std::string & handle_id = {}, std::optional<rocksdb::ColumnFamilyOptions> cf_options = {});
+    RocksDBColumnFamilyHandlerPtr
+    getOrCreateColumnFamilyHandler(const std::string & cf_handle_id = {}, std::optional<rocksdb::ColumnFamilyOptions> cf_options = {});
 
-    void destroy(const std::string & handle_id);
+    void destroy(const std::string & cf_handle_id);
 
     rocksdb::DB * getDB() { return db.get(); }
 
 private:
-    friend class RocksHandler;
+    friend class RocksDBColumnFamilyHandler;
 
     std::atomic_flag shutdown_flag;
     std::unique_ptr<rocksdb::DB> db;
@@ -54,16 +55,15 @@ private:
     LoggerPtr logger;
 
     std::mutex handles_mutex;
-    std::unordered_map<std::string, rocksdb::ColumnFamilyHandle *> handles;
+    std::unordered_map<std::string, rocksdb::ColumnFamilyHandle *> cf_handles;
 };
-using RocksPtr = std::shared_ptr<Rocks>;
 
-/// RocksHandler is a simple wrapper of RocksDB column family handle and
+/// RocksHandler is a simple wrapper of rocksdb column family handle and
 /// provide put / get / remove operations for the column family.
 /// It doesn't own the lifecycle of the RocksDB nor the column family underlying.
 /// Actually it `borrows` the column family handler from `Rocks` object.
 /// This class it not thread-safe
-class RocksHandler final
+class RocksDBColumnFamilyHandler final
 {
 private:
     using Slice = rocksdb::Slice;
@@ -116,7 +116,7 @@ private:
     }
 
 public:
-    explicit RocksHandler(RocksPtr rocks_, rocksdb::ColumnFamilyHandle * cf_handle_ = nullptr);
+    explicit RocksDBColumnFamilyHandler(RocksDBPtr rocks_, rocksdb::ColumnFamilyHandle * cf_handle_ = nullptr);
 
     template <typename Key, typename Value>
     void put(const Key & key, const Value & value)
@@ -178,14 +178,14 @@ public:
         return id == ROCKSDB_NAMESPACE::kDefaultColumnFamilyName ? std::string_view("") : std::string_view(id);
     }
 
-    ALWAYS_INLINE RocksPtr getRocksHolder() const { return rocks.lock(); }
+    ALWAYS_INLINE RocksDBPtr getRocksDB() const { return rocks.lock(); }
 
     rocksdb::DB * db;
     rocksdb::ColumnFamilyHandle * cf_handle;
 
 private:
     /// Caller should ensure Rocks and ColumnFamilyHandle is alive
-    std::weak_ptr<Rocks> rocks;
+    std::weak_ptr<RocksDB> rocks;
 
     rocksdb::WriteOptions write_options;
     rocksdb::ReadOptions read_options;

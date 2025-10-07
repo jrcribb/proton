@@ -9,8 +9,8 @@
 namespace DB
 {
 
-class Rocks;
-using RocksPtr = std::shared_ptr<Rocks>;
+class RocksDB;
+using RocksDBPtr = std::shared_ptr<RocksDB>;
 
 namespace Streaming
 {
@@ -29,7 +29,7 @@ SERDE struct ManyAggregatedData
     std::vector<std::unique_ptr<std::timed_mutex>> variants_mutexes;
     SERDE ManyIAggregatedDataVariants variants;
 
-    SERDE std::vector<RocksPtr> rocks_holders;
+    SERDE std::vector<RocksDBPtr> rocks;
 
     /// Watermarks for all variants
     /// Acquire lock when update current watermark and find min watermark from all transform

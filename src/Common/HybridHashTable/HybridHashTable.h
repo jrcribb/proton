@@ -13,7 +13,8 @@
 #include <Common/HybridHashTable/HybridMappedValue.h>
 #include <Common/MemoryHelpers.h>
 /// #include <Common/MemoryTrackerBlockerInThread.h>
-#include <Common/Rocks/RocksHandler.h>
+#include <Common/HybridConfig.h>
+#include <Common/Rocks/RocksDB.h>
 #include <Common/Stopwatch.h>
 #include <Common/logger_useful.h>
 
@@ -272,7 +273,7 @@ public:
         , logger(logger_)
     {
         chassert(key_serializer && key_deserializer);
-        if (std::filesystem::exists(config.base_conf.spill_dir_path) && !config.base_conf.rocks_handler_getter)
+        if (std::filesystem::exists(config.base_conf.spill_dir_path) && !config.base_conf.rocks_cf_handler_getter)
             /// If unshared rocks directory already exists, init rocks eagerly, otherwise in a lazy way
             reload();
     }
@@ -291,10 +292,10 @@ public:
 
     const HybridHashTableConfig & getConfig() const noexcept { return config; }
 
-    RocksPtr getRocksHolder() const
+    RocksDBPtr getRocksDB() const
     {
         if (persistentPartInited())
-            return rocks_handler->getRocksHolder();
+            return cf_handler->getRocksDB();
         else
             return nullptr;
     }
@@ -305,10 +306,10 @@ public:
             return;
 
         /// For shared rocks, we just destroy current handler and column family
-        if (!rocks && rocks_handler && config.base_conf.cleanup_on_disk_data)
-            rocks_handler->destroy();
+        if (!rocks && cf_handler && config.base_conf.cleanup_on_disk_data)
+            cf_handler->destroy();
 
-        rocks_handler.reset();
+        cf_handler.reset();
         rocks.reset();
     }
 
@@ -328,7 +329,7 @@ public:
 
         metrics = HybridHashTableMetrics{};
 
-        rocks_handler.reset();
+        cf_handler.reset();
         rocks.reset();
     }
 
@@ -531,7 +532,7 @@ public:
         {
             auto scan_options = read_options;
             scan_options.fill_cache = false;
-            std::unique_ptr<rocksdb::Iterator> iter{rocks_handler->db->NewIterator(scan_options, rocks_handler->cf_handle)};
+            std::unique_ptr<rocksdb::Iterator> iter{cf_handler->db->NewIterator(scan_options, cf_handler->cf_handle)};
             for (iter->SeekToFirst(); iter->Valid(); iter->Next())
             {
                 K k;
@@ -580,7 +581,7 @@ public:
 
             auto scan_options = read_options;
             scan_options.fill_cache = false;
-            std::unique_ptr<rocksdb::Iterator> iter{rocks_handler->db->NewIterator(scan_options, rocks_handler->cf_handle)};
+            std::unique_ptr<rocksdb::Iterator> iter{cf_handler->db->NewIterator(scan_options, cf_handler->cf_handle)};
             for (iter->SeekToFirst(); iter->Valid(); iter->Next())
             {
                 K k;
@@ -648,7 +649,7 @@ public:
 
             auto scan_options = read_options;
             scan_options.fill_cache = false;
-            std::unique_ptr<rocksdb::Iterator> iter{rocks_handler->db->NewIterator(scan_options, rocks_handler->cf_handle)};
+            std::unique_ptr<rocksdb::Iterator> iter{cf_handler->db->NewIterator(scan_options, cf_handler->cf_handle)};
             for (iter->SeekToFirst(); iter->Valid(); iter->Next())
             {
                 K k;
@@ -706,7 +707,7 @@ public:
                     return errcode;
             }
 
-            if (auto status = rocks_handler->db->Delete(write_options, rocks_handler->cf_handle, {key_data.data(), key_data.size()});
+            if (auto status = cf_handler->db->Delete(write_options, cf_handler->cf_handle, {key_data.data(), key_data.size()});
                 !status.ok())
             {
                 LOG_ERROR(logger, "Failed to delete key on disk, status='{}'", status.ToString());
@@ -748,7 +749,7 @@ public:
             rocksdb::WriteBatch batch{static_cast<size_t>(approx_keys_size * 1.5)};
             for (const auto & key_data : keys_data)
             {
-                auto status = batch.Delete(rocks_handler->cf_handle, {key_data.data(), key_data.size()});
+                auto status = batch.Delete(cf_handler->cf_handle, {key_data.data(), key_data.size()});
                 if (!status.ok())
                 {
                     LOG_ERROR(logger, "Failed to add key/value to batch, status='{}'", status.ToString());
@@ -756,7 +757,7 @@ public:
                 }
             }
 
-            if (auto status = rocks_handler->db->Write(write_options, &batch); !status.ok())
+            if (auto status = cf_handler->db->Write(write_options, &batch); !status.ok())
             {
                 LOG_ERROR(logger, "Failed to spill key/values to disk, status='{}'", status.ToString());
                 return ErrorCodes::ROCKSDB_ERROR;
@@ -784,12 +785,12 @@ public:
             /// Flush all hot keys to disk
             const_cast<Self *>(this)->flush();
 
-            /// loop each serialized key / value from rocks_handler->db
+            /// loop each serialized key / value from cf_handler->db
             String batch_data;
             WriteBufferFromString batch_buf(batch_data);
             size_t batch_size = 0;
             constexpr size_t max_batch_size = 10'000;
-            std::unique_ptr<rocksdb::Iterator> iter{rocks_handler->db->NewIterator(read_options, rocks_handler->cf_handle)};
+            std::unique_ptr<rocksdb::Iterator> iter{cf_handler->db->NewIterator(read_options, cf_handler->cf_handle)};
             for (iter->SeekToFirst(); iter->Valid(); iter->Next())
             {
                 writeString(iter->key().ToStringView(), batch_buf);
@@ -891,7 +892,7 @@ public:
 
         UInt64 estimated_keys = 0;
         if (persistentPartInited())
-            rocks_handler->db->GetIntProperty(rocks_handler->cf_handle, "rocksdb.estimate-num-keys", &estimated_keys);
+            cf_handler->db->GetIntProperty(cf_handler->cf_handle, "rocksdb.estimate-num-keys", &estimated_keys);
 
         return hot_key_values.size() + estimated_keys;
     }
@@ -900,7 +901,7 @@ public:
     {
         UInt64 disk_size = 0;
         if (persistentPartInited())
-            rocks_handler->db->GetIntProperty(rocks_handler->cf_handle, "rocksdb.total-sst-files-size", &disk_size);
+            cf_handler->db->GetIntProperty(cf_handler->cf_handle, "rocksdb.total-sst-files-size", &disk_size);
 
         return disk_size;
     }
@@ -947,7 +948,7 @@ public:
             {
                 auto scan_options = read_options;
                 scan_options.fill_cache = false;
-                std::unique_ptr<rocksdb::Iterator> iter{rocks_handler->db->NewIterator(scan_options, rocks_handler->cf_handle)};
+                std::unique_ptr<rocksdb::Iterator> iter{cf_handler->db->NewIterator(scan_options, cf_handler->cf_handle)};
                 for (iter->SeekToFirst(); iter->Valid(); iter->Next())
                 {
                     K k;
@@ -997,15 +998,15 @@ public:
             uint64_t rocksdb_block_cache_pinned_usage = 0;
             uint64_t rocksdb_memory_usage = 0;
 
-            rocks_handler->db->GetIntProperty("rocksdb.size-all-mem-tables", &rocksdb_size_all_mem_tables); // ~kMemTableTotal
-            rocks_handler->db->GetIntProperty(
+            cf_handler->db->GetIntProperty("rocksdb.size-all-mem-tables", &rocksdb_size_all_mem_tables); // ~kMemTableTotal
+            cf_handler->db->GetIntProperty(
                 "rocksdb.cur-size-all-mem-tables", &rocksdb_cur_size_all_mem_tables); // ~kMemTableTotal (current snapshot)
-            rocks_handler->db->GetIntProperty(
+            cf_handler->db->GetIntProperty(
                 "rocksdb.estimate-table-readers-mem", &rocksdb_estimate_table_readers_mem); // ~kTableReadersTotal
-            rocks_handler->db->GetIntProperty("rocksdb.block-cache-usage", &rocksdb_block_cache_usage); // ~kCacheTotal
-            rocks_handler->db->GetIntProperty(
+            cf_handler->db->GetIntProperty("rocksdb.block-cache-usage", &rocksdb_block_cache_usage); // ~kCacheTotal
+            cf_handler->db->GetIntProperty(
                 "rocksdb.block-cache-pinned-usage", &rocksdb_block_cache_pinned_usage); // pinned part of kCacheTotal
-            rocks_handler->db->GetIntProperty("rocksdb.memory-usage", &rocksdb_memory_usage); // total aggregate
+            cf_handler->db->GetIntProperty("rocksdb.memory-usage", &rocksdb_memory_usage); // total aggregate
 
             LOG_INFO(
                 logger,
@@ -1043,22 +1044,22 @@ public:
     /// For testing
     auto & hotKeyValues() noexcept { return hot_key_values; }
     const auto & recentKeys() const noexcept { return recent_keys; }
-    bool persistentPartInited() const noexcept { return rocks_handler != nullptr; }
+    bool persistentPartInited() const noexcept { return cf_handler != nullptr; }
 
 private:
     void initRocks()
     {
         write_options.disableWAL = config.base_conf.cleanup_on_disk_data;
 
-        /// 1) Shared rocks case: if rocks_handler_getter is provided, get rocks handler from external rocksdb instance
+        /// 1) Shared rocks case: if cf_handler_getter is provided, get rocks handler from external rocksdb instance
         /// For example, `Rocks` has 3 column families : [cf1, cf2, cf3] and one `db`
         ///
         /// HybridHashTable-1 -> cf1, db
         /// HybridHashTable-2 -> cf2, db
         /// HybridHashTable-3 -> cf3, db
-        if (config.base_conf.rocks_handler_getter)
+        if (config.base_conf.rocks_cf_handler_getter)
         {
-            rocks_handler = config.base_conf.rocks_handler_getter(config.base_conf.handle_id);
+            cf_handler = config.base_conf.rocks_cf_handler_getter(config.base_conf.cf_handle_id);
             return;
         }
 
@@ -1084,8 +1085,8 @@ private:
             throw DB::Exception(ErrorCodes::CANNOT_OPEN_DATABASE, "Failed to open on disk hash table, {}", status.ToString());
         }
 
-        rocks = std::make_shared<Rocks>(db, std::vector<rocksdb::ColumnFamilyHandle *>{}, config.base_conf.cleanup_on_disk_data, logger);
-        rocks_handler = rocks->getOrCreateHandler(config.base_conf.handle_id);
+        rocks = std::make_shared<RocksDB>(db, std::vector<rocksdb::ColumnFamilyHandle *>{}, config.base_conf.cleanup_on_disk_data, logger);
+        cf_handler = rocks->getOrCreateColumnFamilyHandler(config.base_conf.cf_handle_id);
 
         LOG_INFO(
             logger,
@@ -1153,9 +1154,9 @@ private:
             read_key_slices.emplace_back(key_data.data(), key_data.size());
         }
 
-        std::vector<rocksdb::ColumnFamilyHandle *> column_families(read_key_slices.size(), rocks_handler->cf_handle);
+        std::vector<rocksdb::ColumnFamilyHandle *> column_families(read_key_slices.size(), cf_handler->cf_handle);
         std::vector<std::string> values;
-        auto statuses = rocks_handler->db->MultiGet(read_options, column_families, read_key_slices, &values);
+        auto statuses = cf_handler->db->MultiGet(read_options, column_families, read_key_slices, &values);
 
         for (size_t i = 0, statuses_size = statuses.size(); i < statuses_size; ++i)
         {
@@ -1243,7 +1244,7 @@ private:
 
         std::string rvalue;
         if (auto status
-            = rocks_handler->db->Get(read_options, rocks_handler->cf_handle, rocksdb::Slice{key_data.data(), key_data.size()}, &rvalue);
+            = cf_handler->db->Get(read_options, cf_handler->cf_handle, rocksdb::Slice{key_data.data(), key_data.size()}, &rvalue);
             status.ok())
         {
             ++metrics.read_persistent;
@@ -1410,7 +1411,7 @@ private:
         for (size_t i = 0, size = keys.size(); i < size; ++i)
         {
             auto status = batch.Put(
-                rocks_handler->cf_handle, {keys_data[i].data(), keys_data[i].size()}, {values_data[i].data(), values_data[i].size()});
+                cf_handler->cf_handle, {keys_data[i].data(), keys_data[i].size()}, {values_data[i].data(), values_data[i].size()});
             if (!status.ok())
             {
                 LOG_ERROR(logger, "Failed to add key/value to batch, status='{}'", status.ToString());
@@ -1423,7 +1424,7 @@ private:
         /// https://github.com/timeplus-io/proton-enterprise/issues/10675
         CurrentMemoryTracker::free(batch.GetDataSize());
 
-        if (auto status = rocks_handler->db->Write(write_options, &batch); status.ok())
+        if (auto status = cf_handler->db->Write(write_options, &batch); status.ok())
         {
             /// If cleanup_after_spilled is true, we can skip resetting the changed flag for all spilled keys
             if (!cleanup_after_spilled)
@@ -1498,8 +1499,8 @@ private:
 
     HybridHashTableMetrics metrics;
 
-    RocksPtr rocks; /// internal rocksdb instance
-    RocksHandlerPtr rocks_handler;
+    RocksDBPtr rocks; /// internal rocksdb instance
+    RocksDBColumnFamilyHandlerPtr cf_handler;
 
     rocksdb::WriteOptions write_options;
     rocksdb::ReadOptions read_options;

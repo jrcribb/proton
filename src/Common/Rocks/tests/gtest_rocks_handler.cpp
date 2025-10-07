@@ -1,4 +1,4 @@
-#include <Common/Rocks/RocksHandler.h>
+#include <Common/Rocks/RocksDB.h>
 
 #include <gtest/gtest.h>
 
@@ -34,8 +34,8 @@ TEST(RocksHandler, Basic)
     rocksdb::Options options;
     options.create_if_missing = true;
     options.create_missing_column_families = true;
-    auto rocks = Rocks::createOrLoadIfExists(options, "test_rocks", /*ttl=*/0);
-    auto handler = rocks->getOrCreateHandler();
+    auto rocks = RocksDB::createOrLoadIfExists(options, "test_rocks", /*ttl=*/0);
+    auto handler = rocks->getOrCreateColumnFamilyHandler();
     ASSERT_TRUE(handler->getHandleID().empty());
 
     /// Put key value pairs
@@ -86,24 +86,24 @@ TEST(RocksHandler, Complex)
     options.create_if_missing = true;
     options.create_missing_column_families = true;
     {
-        auto rocks = Rocks::createOrLoadIfExists(options, "test_rocks2", /*ttl=*/0, /*cleanup=*/false);
-        auto default_handler = rocks->getOrCreateHandler();
+        auto rocks = RocksDB::createOrLoadIfExists(options, "test_rocks2", /*ttl=*/0, /*cleanup=*/false);
+        auto default_handler = rocks->getOrCreateColumnFamilyHandler();
         ASSERT_EQ(default_handler->getHandleID(), "");
         default_handler->put(key_sv, value_struct);
 
-        auto handler1 = rocks->getOrCreateHandler("handler1");
+        auto handler1 = rocks->getOrCreateColumnFamilyHandler("handler1");
         ASSERT_EQ(handler1->getHandleID(), "handler1");
         handler1->put(key_s, value_sv);
         handler1->put(key_i, value_s);
 
-        auto handler2 = rocks->getOrCreateHandler("handler2");
+        auto handler2 = rocks->getOrCreateColumnFamilyHandler("handler2");
         ASSERT_EQ(handler2->getHandleID(), "handler2");
         handler2->put(key_d, value_i);
         handler2->put(key_struct, value_d);
     }
 
     /// Reopen the rocks
-    auto rocks = Rocks::createOrLoadIfExists(
+    auto rocks = RocksDB::createOrLoadIfExists(
         options,
         "test_rocks2",
         /*ttl=*/0,
@@ -111,7 +111,7 @@ TEST(RocksHandler, Complex)
         getLogger("RocksHandler"));
 
     {
-        auto default_handler = rocks->getOrCreateHandler();
+        auto default_handler = rocks->getOrCreateColumnFamilyHandler();
         ValueStruct value_struct_out;
         default_handler->get(key_sv, value_struct_out);
         ASSERT_EQ(value_struct_out.a, value_struct.a);
@@ -124,26 +124,26 @@ TEST(RocksHandler, Complex)
 
     {
         /// Case: Multiple same handler instances
-        auto handler1_x = rocks->getOrCreateHandler("handler1");
+        auto handler1_x = rocks->getOrCreateColumnFamilyHandler("handler1");
         std::string_view value_sv_out;
         handler1_x->get(key_s, value_sv_out);
         ASSERT_EQ(value_sv_out, value_sv);
 
         std::string value_s_out;
-        auto handler1_y = rocks->getOrCreateHandler("handler1");
+        auto handler1_y = rocks->getOrCreateColumnFamilyHandler("handler1");
         handler1_y->get(key_i, value_s_out);
         ASSERT_EQ(value_s_out, value_s);
     }
 
     {
         /// Case: Destroy handler and create a new one
-        auto handler2_x = rocks->getOrCreateHandler("handler2");
+        auto handler2_x = rocks->getOrCreateColumnFamilyHandler("handler2");
         int value_i_out;
         handler2_x->get(key_d, value_i_out);
         ASSERT_EQ(value_i_out, value_i);
         handler2_x->destroy();
 
-        auto handler2_y = rocks->getOrCreateHandler("handler2");
+        auto handler2_y = rocks->getOrCreateColumnFamilyHandler("handler2");
         ASSERT_FALSE(handler2_y->tryGet(key_d, value_i_out));
 
         handler2_y->put(key_d, value_i);

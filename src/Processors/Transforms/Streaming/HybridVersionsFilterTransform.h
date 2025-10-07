@@ -51,7 +51,7 @@ private:
 
     void transformToOutputColumns(Columns & columns) const;
 
-    RocksPtr getOrCreateRocks();
+    RocksDBPtr getOrCreateRocksDB();
 
 private:
     std::vector<size_t> output_column_positions;
@@ -70,7 +70,7 @@ private:
     SERDE size_t late_rows = 0;
     HybridHashTableConfig config;
     SERDE HybridHashTableTemplate latest_version_map;
-    SERDE RocksPtr rocks;
+    SERDE RocksDBPtr rocks;
     FormatSettings format_settings;
 
     static constexpr Int64 log_metrics_interval_ms = 30'000;

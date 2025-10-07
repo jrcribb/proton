@@ -255,7 +255,7 @@ void HybridAggregatedDataVariants::deserialize(ReadBuffer & rb, const IAggregato
     }
 }
 
-void HybridAggregatedDataVariants::write(RocksHandlerPtr handler, const IAggregator & aggregator_)
+void HybridAggregatedDataVariants::write(RocksDBColumnFamilyHandlerPtr handler, const IAggregator & aggregator_)
 {
     chassert(aggregator_.type() == AggregatorType::Hybrid);
     const auto & hybrid_aggregator = static_cast<const HybridAggregator &>(aggregator_);
@@ -309,7 +309,7 @@ void HybridAggregatedDataVariants::write(RocksHandlerPtr handler, const IAggrega
     }
 }
 
-void HybridAggregatedDataVariants::read(RocksHandlerPtr handler, const IAggregator & aggregator_)
+void HybridAggregatedDataVariants::read(RocksDBColumnFamilyHandlerPtr handler, const IAggregator & aggregator_)
 {
     chassert(aggregator_.type() == AggregatorType::Hybrid);
     const auto & hybrid_aggregator = static_cast<const HybridAggregator &>(aggregator_);

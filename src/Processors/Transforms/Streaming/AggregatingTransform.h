@@ -50,8 +50,8 @@ private:
 
     void logAggregatingMetricsWithoutLock(Int64 start_ts = MonotonicMilliseconds::now());
 
-    void installRocks();
-    RocksPtr getOrCreateRocks();
+    void initRocksDBConfig();
+    RocksDBPtr getOrCreateRocksDB();
 
     CheckpointPtr createFileCheckpoint();
     void recoverFileCheckpoint(CheckpointPtr ckpt);

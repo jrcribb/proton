@@ -99,9 +99,9 @@ public:
     RocksCheckpointPtr createRocksCheckpoint(VersionType version)
     {
         table->flush();
-        auto rocks_holder = table->getRocksHolder();
-        chassert(rocks_holder);
-        return std::make_shared<RocksCheckpoint>(version, std::move(rocks_holder));
+        auto rocks = table->getRocksDB();
+        chassert(rocks);
+        return std::make_shared<RocksCheckpoint>(version, std::move(rocks));
     }
 
     void recoverFromRocksCheckpoint(RocksCheckpointPtr rocks_ckpt)

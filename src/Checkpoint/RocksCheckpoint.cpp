@@ -58,7 +58,7 @@ bool RocksCheckpoint::enableIncremental(CheckpointConstPtr prev_ckpt)
     return false;
 }
 
-RocksCheckpoint::RocksCheckpoint(VersionType version_, RocksPtr rocks)
+RocksCheckpoint::RocksCheckpoint(VersionType version_, RocksDBPtr rocks)
 {
     version = version_;
     data.emplace<Entity>(rocks);

@@ -50,7 +50,7 @@ private:
 
     bool backfillingNewKeys() const noexcept { return backfill_key_unique && backfill_started && !backfill_done; }
 
-    RocksPtr getOrCreateRocks();
+    RocksDBPtr getOrCreateRocksDB();
 
 private:
     std::vector<size_t> key_column_positions;
@@ -85,7 +85,7 @@ private:
     /// Index blocks by key columns
     HybridHashTableConfig config;
     SERDE HybridHashTableTemplate index;
-    SERDE RocksPtr rocks;
+    SERDE RocksDBPtr rocks;
 
     static constexpr Int64 log_metrics_interval_ms = 30'000;
     int64_t last_log_ts = 0;

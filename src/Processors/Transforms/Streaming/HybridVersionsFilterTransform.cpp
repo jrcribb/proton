@@ -4,7 +4,6 @@
 #include <Checkpoint/CheckpointCoordinator.h>
 #include <Checkpoint/FileCheckpoint.h>
 #include <Checkpoint/RocksCheckpoint.h>
-#include <DataTypes/DataTypesNumber.h>
 #include <IO/ReadHelpers.h>
 #include <IO/WriteHelpers.h>
 #include <Interpreters/Streaming/ChooseHybridHashMethod.h>
@@ -277,16 +276,17 @@ void HybridVersionsFilterTransform::createHashTable(
     };
 
     /// Install rocks handler getter
-    config.base_conf.rocks_handler_getter = [this](const std::string & id) { return getOrCreateRocks()->getOrCreateHandler(id); };
+    config.base_conf.rocks_cf_handler_getter
+        = [this](const std::string & id) { return getOrCreateRocksDB()->getOrCreateColumnFamilyHandler(id); };
     latest_version_map.init(hash_method.type, config, hash_method.key_sizes, logger);
     key_sizes.swap(hash_method.key_sizes);
 }
 
-RocksPtr HybridVersionsFilterTransform::getOrCreateRocks()
+RocksDBPtr HybridVersionsFilterTransform::getOrCreateRocksDB()
 {
     /// Initialize rocks on first use
     if (!rocks)
-        rocks = Rocks::createOrLoadIfExists(
+        rocks = RocksDB::createOrLoadIfExists(
             config.getRocksOptions(), config.base_conf.spill_dir_path, /*ttl=*/0, config.base_conf.cleanup_on_disk_data, logger);
 
     return rocks;
@@ -304,7 +304,7 @@ void HybridVersionsFilterTransform::checkpoint(CheckpointContextPtr ckpt_ctx)
         {
             chassert(!latest_version_map.isTwoLevel());
             latest_version_map.flush();
-            getOrCreateRocks()->getOrCreateHandler()->put("__late_rows", late_rows);
+            getOrCreateRocksDB()->getOrCreateColumnFamilyHandler()->put("__late_rows", late_rows);
             ckpt = std::make_shared<RocksCheckpoint>(getVersion(), rocks);
             break;
         }
@@ -349,9 +349,9 @@ void HybridVersionsFilterTransform::recover(CheckpointContextPtr ckpt_ctx)
             rocks_ckpt->recover(config.base_conf.spill_dir_path);
 
             /// Reinstall recovered rocks
-            rocks = Rocks::createOrLoadIfExists(
+            rocks = RocksDB::createOrLoadIfExists(
                 config.getRocksOptions(), config.base_conf.spill_dir_path, /*ttl=*/0, config.base_conf.cleanup_on_disk_data, logger);
-            rocks->getOrCreateHandler()->get("__late_rows", late_rows);
+            rocks->getOrCreateColumnFamilyHandler()->get("__late_rows", late_rows);
             latest_version_map.reload();
             break;
         }

@@ -54,7 +54,7 @@ AggregatingTransform::AggregatingTransform(
 
     /// Register a rocks instance
     if (params->aggregator->type() == AggregatorType::Hybrid)
-        installRocks();
+        initRocksDBConfig();
 }
 
 AggregatingTransform::~AggregatingTransform() = default;

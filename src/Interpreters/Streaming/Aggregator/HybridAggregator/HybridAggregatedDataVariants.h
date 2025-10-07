@@ -3,7 +3,7 @@
 #include <Interpreters/Streaming/Aggregator/IAggregatedDataVariants.h>
 #include <Common/HybridHashTable/HybridHashTableTemplate.h>
 #include <Common/HybridKeyList/HybridKeyListTemplate.h>
-#include <Common/Rocks/RocksHandler.h>
+#include <Common/Rocks/RocksDB.h>
 #include <Common/serde.h>
 
 namespace DB::Streaming
@@ -32,8 +32,8 @@ SERDE struct HybridAggregatedDataVariants final : public IAggregatedDataVariants
     void deserialize(ReadBuffer & rb, const IAggregator & aggregator_) override;
 
     /// Write / read data to / from RocksDB
-    void write(RocksHandlerPtr rocks_handler, const IAggregator & aggregator_);
-    void read(RocksHandlerPtr rocks_handler, const IAggregator & aggregator_);
+    void write(RocksDBColumnFamilyHandlerPtr cf_handler, const IAggregator & aggregator_);
+    void read(RocksDBColumnFamilyHandlerPtr cf_handler, const IAggregator & aggregator_);
 
     void initWithoutKeyStates(size_t total_size_of_aggregate_states, size_t align_aggregate_states);
     void initWithoutKeyRetractStates(size_t total_size_of_aggregate_states, size_t align_aggregate_states);

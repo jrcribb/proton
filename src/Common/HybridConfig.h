@@ -1,7 +1,7 @@
 #pragma once
 
 #include <Common/Exception.h>
-#include <Common/Rocks/RocksHandler.h>
+#include <Common/Rocks/RocksDB.h>
 
 #include <rocksdb/convenience.h>
 #include <rocksdb/filter_policy.h>
@@ -33,16 +33,16 @@ struct HybridConfig
 
         HybridConfig new_config = *this;
 
-        /// If `rocks_handler_getter` is set, use a sub-handler with `sub_id`; otherwise, use a new one with `spill_dir_path`.
-        if (rocks_handler_getter)
+        /// If `rocks_cf_handler_getter` is set, use a different cf handler with `sub_id`; otherwise, use a new one with `spill_dir_path`.
+        if (rocks_cf_handler_getter)
         {
-            new_config.handle_id = handle_id.empty() ? sub_id : fmt::format("{}-{}", handle_id, sub_id);
+            new_config.cf_handle_id = cf_handle_id.empty() ? sub_id : fmt::format("{}-{}", cf_handle_id, sub_id);
 
             if (unshared)
             {
-                new_config.spill_dir_path = fmt::format("{}-{}", spill_dir_path, new_config.handle_id);
-                new_config.handle_id = "";
-                new_config.rocks_handler_getter = nullptr;
+                new_config.spill_dir_path = fmt::format("{}-{}", spill_dir_path, new_config.cf_handle_id);
+                new_config.cf_handle_id = "";
+                new_config.rocks_cf_handler_getter = {};
             }
         }
         else
@@ -121,9 +121,9 @@ struct HybridConfig
     /// cleanup_on_disk_data_ if true, during dtor, cleanup spill-to-disk data, otherwise keep it around
     bool cleanup_on_disk_data = true;
 
-    /// If `rocks_handler_getter` is set, we will get rocks handler by it
-    std::string handle_id{};
-    std::function<RocksHandlerPtr(const std::string & id)> rocks_handler_getter{};
+    /// If `rocks_cf_handler_getter` is set, we will get rocks cf handler by it
+    std::string cf_handle_id;
+    std::function<RocksDBColumnFamilyHandlerPtr(const std::string & id)> rocks_cf_handler_getter;
 };
 
 }

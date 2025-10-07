@@ -7,9 +7,8 @@
 #include <Interpreters/Streaming/Aggregator/AggregatedDataMetrics.h>
 #include <Interpreters/Streaming/Aggregator/HybridAggregator/HybridAggregator.h>
 #include <Interpreters/Streaming/Aggregator/HybridAggregator/HybridAggregatorParams.h>
-#include <Common/HybridHashTable/HybridHashTable.h>
 #include <Common/ProtonCommon.h>
-#include <Common/Rocks/RocksHandler.h>
+#include <Common/Rocks/RocksDB.h>
 
 namespace DB
 {
@@ -21,7 +20,7 @@ extern const int RECOVER_CHECKPOINT_FAILED;
 
 namespace Streaming
 {
-void AggregatingTransform::installRocks()
+void AggregatingTransform::initRocksDBConfig()
 {
     chassert(variants.aggregatorType() == AggregatorType::Hybrid);
     auto & hybrid_variants = static_cast<HybridAggregatedDataVariants &>(variants);
@@ -35,23 +34,24 @@ void AggregatingTransform::installRocks()
     hybrid_variants.config.kv_options = hybrid_params->kv_options;
 
     /// This is the callback when HybridHashTable needs init its rocks part
-    hybrid_variants.config.rocks_handler_getter = [this](const std::string & id) { return getOrCreateRocks()->getOrCreateHandler(id); };
+    hybrid_variants.config.rocks_cf_handler_getter
+        = [this](const std::string & id) { return getOrCreateRocksDB()->getOrCreateColumnFamilyHandler(id); };
 }
 
-RocksPtr AggregatingTransform::getOrCreateRocks()
+RocksDBPtr AggregatingTransform::getOrCreateRocksDB()
 {
-    auto & rocks_holder = many_data->rocks_holders[current_variant];
-    if (!rocks_holder)
+    auto & rocks = many_data->rocks[current_variant];
+    if (!rocks)
     {
         /// Initialize rocks on first use
 
         chassert(variants.aggregatorType() == AggregatorType::Hybrid);
         const auto & config = static_cast<const HybridAggregatedDataVariants &>(variants).config;
-        rocks_holder
-            = Rocks::createOrLoadIfExists(config.getRocksOptions(), config.spill_dir_path, config.ttl, config.cleanup_on_disk_data, logger);
+        rocks = RocksDB::createOrLoadIfExists(
+            config.getRocksOptions(), config.spill_dir_path, config.ttl, config.cleanup_on_disk_data, logger);
     }
 
-    return rocks_holder;
+    return rocks;
 }
 
 void AggregatingTransform::checkpoint(CheckpointContextPtr ckpt_ctx)
@@ -188,42 +188,42 @@ void AggregatingTransform::recoverFileCheckpoint(CheckpointPtr ckpt)
 
 CheckpointPtr AggregatingTransform::createRocksCheckpoint()
 {
-    auto rocks = getOrCreateRocks();
-    auto handler = rocks->getOrCreateHandler();
+    auto rocks = getOrCreateRocksDB();
+    auto cf_handler = rocks->getOrCreateColumnFamilyHandler();
 
     bool is_last_checkpointing_transform = (this == many_data->last_checkpointing_transform.load());
-    handler->put("is_last", is_last_checkpointing_transform);
+    cf_handler->put("is_last", is_last_checkpointing_transform);
 
     /// Serializing shared data (only do it on last checkpointing transform)
     if (is_last_checkpointing_transform)
     {
         UInt16 num_variants = many_data->variants.size();
-        handler->put("num_variants", num_variants);
-        handler->put("finalized_watermark", many_data->finalized_watermark.load());
-        handler->put("finalized_window_end", many_data->finalized_window_end.load());
-        handler->put("emitted_version", many_data->emitted_version.load());
+        cf_handler->put("num_variants", num_variants);
+        cf_handler->put("finalized_watermark", many_data->finalized_watermark.load());
+        cf_handler->put("finalized_window_end", many_data->finalized_window_end.load());
+        cf_handler->put("emitted_version", many_data->emitted_version.load());
 
         assert(num_variants == many_data->rows_since_last_finalizations.size());
         for (UInt16 i = 0; const auto & rows : many_data->rows_since_last_finalizations)
-            handler->put(fmt::format("rows_{}", i++), rows->load());
+            cf_handler->put(fmt::format("rows_{}", i++), rows->load());
 
         if (many_data->hasField())
         {
             WriteBufferFromOwnString wb;
             many_data->any_field.serializer(many_data->any_field.field, wb, getVersion());
-            handler->put("any_field", wb.str());
+            cf_handler->put("any_field", wb.str());
         }
     }
 
     /// Serializing no shared data
-    handler->put("watermark", watermark);
+    cf_handler->put("watermark", watermark);
 
     /// After the local checkpoint is processed, the `propagated_watermark` may still be updated,
     /// because other transforms may have new finalizing processing.
     /// But it doesn't matter, we will update according to the recovered `finalized_watermark` later
-    handler->put("propagated_watermark", propagated_watermark);
+    cf_handler->put("propagated_watermark", propagated_watermark);
 
-    assert_cast<HybridAggregatedDataVariants &>(variants).write(rocks->getOrCreateHandler("variants"), *params->aggregator);
+    assert_cast<HybridAggregatedDataVariants &>(variants).write(rocks->getOrCreateColumnFamilyHandler("variants"), *params->aggregator);
 
     return std::make_shared<RocksCheckpoint>(getVersion(), rocks);
 }
@@ -233,7 +233,7 @@ void AggregatingTransform::recoverRocksCheckpoint(CheckpointPtr ckpt)
     auto rocks_ckpt = std::static_pointer_cast<RocksCheckpoint>(ckpt);
 
     /// NOTE: All rocks handlers are invalid after shutdown
-    auto & rocks = many_data->rocks_holders[current_variant];
+    auto & rocks = many_data->rocks[current_variant];
     if (rocks)
     {
         rocks->shutdown(/*cleanup=*/true);
@@ -247,17 +247,17 @@ void AggregatingTransform::recoverRocksCheckpoint(CheckpointPtr ckpt)
     rocks_ckpt->recover(config.spill_dir_path);
 
     /// Reinstall recovered rocks
-    rocks = Rocks::createOrLoadIfExists(config.getRocksOptions(), config.spill_dir_path, config.ttl, config.cleanup_on_disk_data, logger);
+    rocks = RocksDB::createOrLoadIfExists(config.getRocksOptions(), config.spill_dir_path, config.ttl, config.cleanup_on_disk_data, logger);
     variants.reset();
 
-    auto handler = rocks->getOrCreateHandler();
+    auto cf_handler = rocks->getOrCreateColumnFamilyHandler();
 
     bool is_last_checkpointing_transform = false;
-    handler->get("is_last", is_last_checkpointing_transform);
+    cf_handler->get("is_last", is_last_checkpointing_transform);
     if (is_last_checkpointing_transform)
     {
         UInt16 num_variants = 0;
-        handler->get("num_variants", num_variants);
+        cf_handler->get("num_variants", num_variants);
         if (num_variants != many_data->variants.size())
             throw Exception(
                 ErrorCodes::RECOVER_CHECKPOINT_FAILED,
@@ -267,22 +267,22 @@ void AggregatingTransform::recoverRocksCheckpoint(CheckpointPtr ckpt)
                 many_data->variants.size());
 
         Int64 last_finalized_watermark;
-        handler->get("finalized_watermark", last_finalized_watermark);
+        cf_handler->get("finalized_watermark", last_finalized_watermark);
         many_data->finalized_watermark = last_finalized_watermark;
 
         Int64 last_finalized_window_end;
-        handler->get("finalized_window_end", last_finalized_window_end);
+        cf_handler->get("finalized_window_end", last_finalized_window_end);
         many_data->finalized_window_end = last_finalized_window_end;
 
         Int64 last_version = 0;
-        handler->get("emitted_version", last_version);
+        cf_handler->get("emitted_version", last_version);
         many_data->emitted_version = last_version;
 
         assert(num_variants == many_data->rows_since_last_finalizations.size());
         for (UInt16 i = 0; const auto & rows : many_data->rows_since_last_finalizations)
         {
             UInt64 last_rows = 0;
-            handler->get(fmt::format("rows_{}", i++), last_rows);
+            cf_handler->get(fmt::format("rows_{}", i++), last_rows);
             /// In case when for we had global aggregated some data, but done checkpoint request before finializing
             if (last_rows > 0) [[unlikely]]
                 LOG_WARNING(logger, "Last checkpoint state don't be finalized, rows_since_last_finalization={}", last_rows);
@@ -291,18 +291,18 @@ void AggregatingTransform::recoverRocksCheckpoint(CheckpointPtr ckpt)
         }
 
         std::string_view field;
-        if (handler->tryGet("any_field", field))
+        if (cf_handler->tryGet("any_field", field))
         {
             ReadBufferFromString rb(field);
             many_data->any_field.deserializer(many_data->any_field.field, rb, getVersion());
         }
     }
 
-    handler->get("watermark", watermark);
+    cf_handler->get("watermark", watermark);
 
-    handler->get("propagated_watermark", propagated_watermark);
+    cf_handler->get("propagated_watermark", propagated_watermark);
 
-    assert_cast<HybridAggregatedDataVariants &>(variants).read(rocks->getOrCreateHandler("variants"), *params->aggregator);
+    assert_cast<HybridAggregatedDataVariants &>(variants).read(rocks->getOrCreateColumnFamilyHandler("variants"), *params->aggregator);
 }
 }
 }

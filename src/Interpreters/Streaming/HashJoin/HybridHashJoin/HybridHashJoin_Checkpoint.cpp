@@ -11,11 +11,11 @@ extern const int RECOVER_CHECKPOINT_FAILED;
 
 namespace Streaming
 {
-RocksPtr HybridHashJoin::getOrCreateRocks()
+RocksDBPtr HybridHashJoin::getOrCreateRocksDB()
 {
     /// Initialize rocks on first use
     if (!rocks)
-        rocks = Rocks::createOrLoadIfExists(
+        rocks = RocksDB::createOrLoadIfExists(
             base_config.getRocksOptions(), base_config.spill_dir_path, base_config.ttl, base_config.cleanup_on_disk_data, logger);
 
     return rocks;
@@ -30,22 +30,23 @@ void HybridHashJoin::shutdownRocks()
     }
 }
 
-void HybridHashJoin::installRocks(const String & spill_dir_, size_t max_hot_key_count_, Int32 ttl_, const String & kv_options_)
+void HybridHashJoin::initRocksDBConfig(const String & spill_dir_, size_t max_hot_key_count_, Int32 ttl_, const String & kv_options_)
 {
     base_config.spill_dir_path = spill_dir_;
     base_config.max_hot_key_count = max_hot_key_count_;
     base_config.ttl = ttl_;
     base_config.kv_options = kv_options_;
     base_config.cleanup_on_disk_data = true;
-    base_config.rocks_handler_getter = [this](const std::string & id) { return getOrCreateRocks()->getOrCreateHandler(id); };
+    base_config.rocks_cf_handler_getter
+        = [this](const std::string & cf_handle_id) { return getOrCreateRocksDB()->getOrCreateColumnFamilyHandler(cf_handle_id); };
 }
 
-void HybridHashJoin::reinstallRocks()
+void HybridHashJoin::reinstallRocksDB()
 {
     if (rocks && !rocks->isShutdown())
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Rocks is already installed");
 
-    rocks = Rocks::createOrLoadIfExists(
+    rocks = RocksDB::createOrLoadIfExists(
         base_config.getRocksOptions(), base_config.spill_dir_path, base_config.ttl, base_config.cleanup_on_disk_data, logger);
 }
 
@@ -299,70 +300,70 @@ void deserializeHybridHashJoinMapsVariants(
 /// Write / read data to / from RocksDB
 void HybridHashJoin::write(VersionType version)
 {
-    auto rocks_handler = getOrCreateRocks()->getOrCreateHandler();
+    auto cf_handler = getOrCreateRocksDB()->getOrCreateColumnFamilyHandler();
     /// Part-1: ON clauses
-    rocks_handler->put("on_clauses", TableJoin::formatClauses(table_join->getClauses(), true));
+    cf_handler->put("on_clauses", TableJoin::formatClauses(table_join->getClauses(), true));
 
     /// Part-2: Description of left/right join stream
-    rocks_handler->put("left_header", left_data.join_ctx.join_stream_desc->input_header.dumpStructure());
-    rocks_handler->put("left_stream_semantic", left_data.join_ctx.join_stream_desc->data_stream_semantic.semantic);
-    rocks_handler->put("left_keep_versions", left_data.join_ctx.join_stream_desc->keep_versions);
+    cf_handler->put("left_header", left_data.join_ctx.join_stream_desc->input_header.dumpStructure());
+    cf_handler->put("left_stream_semantic", left_data.join_ctx.join_stream_desc->data_stream_semantic.semantic);
+    cf_handler->put("left_keep_versions", left_data.join_ctx.join_stream_desc->keep_versions);
 
-    rocks_handler->put("right_header", right_data.join_ctx.join_stream_desc->input_header.dumpStructure());
-    rocks_handler->put("right_stream_semantic", right_data.join_ctx.join_stream_desc->data_stream_semantic.semantic);
-    rocks_handler->put("right_keep_versions", right_data.join_ctx.join_stream_desc->keep_versions);
+    cf_handler->put("right_header", right_data.join_ctx.join_stream_desc->input_header.dumpStructure());
+    cf_handler->put("right_stream_semantic", right_data.join_ctx.join_stream_desc->data_stream_semantic.semantic);
+    cf_handler->put("right_keep_versions", right_data.join_ctx.join_stream_desc->keep_versions);
 
     /// Part-3: Join method
-    rocks_handler->put("streaming_kind", streaming_kind);
-    rocks_handler->put("streaming_strictness", streaming_strictness);
-    /// rocks_handler->put("key_sizes", key_sizes); /// No need after serialized `ON clauses` and left/right streams's header
-    rocks_handler->put("hash_method_type", hash_method_type);
+    cf_handler->put("streaming_kind", streaming_kind);
+    cf_handler->put("streaming_strictness", streaming_strictness);
+    /// cf_handler->put("key_sizes", key_sizes); /// No need after serialized `ON clauses` and left/right streams's header
+    cf_handler->put("hash_method_type", hash_method_type);
 
     /// Part-4: Buffered data of left/right join stream
-    rocks_handler->put("bidirectional_hash_join", bidirectional_hash_join);
+    cf_handler->put("bidirectional_hash_join", bidirectional_hash_join);
     if (bidirectional_hash_join)
     {
         chassert(left_data.index);
-        left_data.index->write(getOrCreateRocks()->getOrCreateHandler(left_data.index->id), version);
+        left_data.index->write(getOrCreateRocksDB()->getOrCreateColumnFamilyHandler(left_data.index->id), version);
     }
 
     chassert(right_data.index);
-    right_data.index->write(getOrCreateRocks()->getOrCreateHandler(right_data.index->id), version);
+    right_data.index->write(getOrCreateRocksDB()->getOrCreateColumnFamilyHandler(right_data.index->id), version);
 
     /// Part-5: Asof type (Optional)
     bool need_asof = streaming_strictness == Strictness::Range || streaming_strictness == Strictness::Asof;
-    rocks_handler->put("need_asof", need_asof);
+    cf_handler->put("need_asof", need_asof);
     if (need_asof)
     {
         chassert(asof_type.has_value());
-        rocks_handler->put("asof_type", *asof_type);
-        rocks_handler->put("asof_inequality", asof_inequality);
+        cf_handler->put("asof_type", *asof_type);
+        cf_handler->put("asof_inequality", asof_inequality);
     }
 
     /// Part-6: Emit changelog (Optional)
-    rocks_handler->put("has_join_results", join_results.has_value());
+    cf_handler->put("has_join_results", join_results.has_value());
     if (join_results.has_value())
     {
         chassert(retract_push_down && emit_changelog);
         std::scoped_lock lock(join_results->mutex);
-        writeHybridHashJoinMapsVariants(*join_results->index, rocks_handler, "join_results", *this);
+        writeHybridHashJoinMapsVariants(*join_results->index, cf_handler, "join_results", *this);
     }
 
     /// Part-7: Others
-    rocks_handler->put("combined_watermark", combined_watermark.load());
+    cf_handler->put("combined_watermark", combined_watermark.load());
 
     WriteBufferFromOwnString wb;
     join_metrics.serialize(wb, version);
-    rocks_handler->put("join_metrics", wb.str());
+    cf_handler->put("join_metrics", wb.str());
 }
 
 void HybridHashJoin::read(VersionType version)
 {
-    auto rocks_handler = getOrCreateRocks()->getOrCreateHandler();
+    auto cf_handler = getOrCreateRocksDB()->getOrCreateColumnFamilyHandler();
     { /// Part-1: ON clauses
         auto clauses_str = TableJoin::formatClauses(table_join->getClauses(), true);
         String recovered_clauses_str;
-        rocks_handler->get("on_clauses", recovered_clauses_str);
+        cf_handler->get("on_clauses", recovered_clauses_str);
         if (recovered_clauses_str != clauses_str)
             throw Exception(
                 ErrorCodes::RECOVER_CHECKPOINT_FAILED,
@@ -375,9 +376,9 @@ void HybridHashJoin::read(VersionType version)
         String recovered_left_header_str;
         DataStreamSemantic recovered_left_stream_semantic;
         UInt64 recovered_left_keep_versions;
-        rocks_handler->get("left_header", recovered_left_header_str);
-        rocks_handler->get("left_stream_semantic", recovered_left_stream_semantic);
-        rocks_handler->get("left_keep_versions", recovered_left_keep_versions);
+        cf_handler->get("left_header", recovered_left_header_str);
+        cf_handler->get("left_stream_semantic", recovered_left_stream_semantic);
+        cf_handler->get("left_keep_versions", recovered_left_keep_versions);
 
         auto left_header_str = left_data.join_ctx.join_stream_desc->input_header.dumpStructure();
         if (recovered_left_header_str != left_header_str
@@ -397,9 +398,9 @@ void HybridHashJoin::read(VersionType version)
         String recovered_right_header_str;
         DataStreamSemantic recovered_right_stream_semantic;
         UInt64 recovered_right_keep_versions;
-        rocks_handler->get("right_header", recovered_right_header_str);
-        rocks_handler->get("right_stream_semantic", recovered_right_stream_semantic);
-        rocks_handler->get("right_keep_versions", recovered_right_keep_versions);
+        cf_handler->get("right_header", recovered_right_header_str);
+        cf_handler->get("right_stream_semantic", recovered_right_stream_semantic);
+        cf_handler->get("right_keep_versions", recovered_right_keep_versions);
 
         auto right_header_str = right_data.join_ctx.join_stream_desc->input_header.dumpStructure();
         if (recovered_right_header_str != right_header_str
@@ -419,7 +420,7 @@ void HybridHashJoin::read(VersionType version)
 
     { /// Part-3: Join method
         auto recovered_streaming_kind = streaming_kind;
-        rocks_handler->get("streaming_kind", recovered_streaming_kind);
+        cf_handler->get("streaming_kind", recovered_streaming_kind);
         if (recovered_streaming_kind != streaming_kind)
             throw Exception(
                 ErrorCodes::RECOVER_CHECKPOINT_FAILED,
@@ -428,7 +429,7 @@ void HybridHashJoin::read(VersionType version)
                 magic_enum::enum_name(streaming_kind));
 
         auto recovered_streaming_strictness = streaming_strictness;
-        rocks_handler->get("streaming_strictness", recovered_streaming_strictness);
+        cf_handler->get("streaming_strictness", recovered_streaming_strictness);
         if (recovered_streaming_strictness != streaming_strictness)
             throw Exception(
                 ErrorCodes::RECOVER_CHECKPOINT_FAILED,
@@ -437,7 +438,7 @@ void HybridHashJoin::read(VersionType version)
                 magic_enum::enum_name(streaming_strictness));
 
         auto recovered_hash_method_type = hash_method_type;
-        rocks_handler->get("hash_method_type", recovered_hash_method_type);
+        cf_handler->get("hash_method_type", recovered_hash_method_type);
         if (recovered_hash_method_type != hash_method_type)
             throw Exception(
                 ErrorCodes::RECOVER_CHECKPOINT_FAILED,
@@ -448,24 +449,24 @@ void HybridHashJoin::read(VersionType version)
 
     /// Part-4: Buffered data of left/right join stream
     bool recovered_bidirectional_join = false;
-    rocks_handler->get("bidirectional_hash_join", recovered_bidirectional_join);
+    cf_handler->get("bidirectional_hash_join", recovered_bidirectional_join);
     if (recovered_bidirectional_join)
     {
         chassert(left_data.index);
-        left_data.index->read(getOrCreateRocks()->getOrCreateHandler(left_data.index->id), version);
+        left_data.index->read(getOrCreateRocksDB()->getOrCreateColumnFamilyHandler(left_data.index->id), version);
     }
 
     chassert(right_data.index);
-    right_data.index->read(getOrCreateRocks()->getOrCreateHandler(right_data.index->id), version);
+    right_data.index->read(getOrCreateRocksDB()->getOrCreateColumnFamilyHandler(right_data.index->id), version);
 
     /// Part-5: Asof type (Optional)
     bool need_asof = false;
-    rocks_handler->get("need_asof", need_asof);
+    cf_handler->get("need_asof", need_asof);
     if (need_asof)
     {
         chassert(asof_type.has_value());
         auto recovered_asof_type = *asof_type;
-        rocks_handler->get("asof_type", recovered_asof_type);
+        cf_handler->get("asof_type", recovered_asof_type);
         if (recovered_asof_type != *asof_type)
             throw Exception(
                 ErrorCodes::RECOVER_CHECKPOINT_FAILED,
@@ -474,7 +475,7 @@ void HybridHashJoin::read(VersionType version)
                 magic_enum::enum_name(*asof_type));
 
         auto recovered_asof_inequality = asof_inequality;
-        rocks_handler->get("asof_inequality", recovered_asof_inequality);
+        cf_handler->get("asof_inequality", recovered_asof_inequality);
         if (recovered_asof_inequality != asof_inequality)
             throw Exception(
                 ErrorCodes::RECOVER_CHECKPOINT_FAILED,
@@ -485,7 +486,7 @@ void HybridHashJoin::read(VersionType version)
 
     /// Part-6: Emit changelog (Optional)
     bool need_emit_changelog;
-    rocks_handler->get("has_join_results", need_emit_changelog);
+    cf_handler->get("has_join_results", need_emit_changelog);
     if (need_emit_changelog)
     {
         if (!join_results.has_value())
@@ -498,27 +499,27 @@ void HybridHashJoin::read(VersionType version)
 
         chassert(retract_push_down && emit_changelog);
         std::scoped_lock lock(join_results->mutex);
-        readHybridHashJoinMapsVariants(*join_results->index, rocks_handler, "join_results", *this);
+        readHybridHashJoinMapsVariants(*join_results->index, cf_handler, "join_results", *this);
     }
 
     /// Part-7: Others
     int64_t recovered_combined_watermark;
-    rocks_handler->get("combined_watermark", recovered_combined_watermark);
+    cf_handler->get("combined_watermark", recovered_combined_watermark);
     combined_watermark = recovered_combined_watermark;
 
     String recovered_join_metrics_str;
-    rocks_handler->get("join_metrics", recovered_join_metrics_str);
+    cf_handler->get("join_metrics", recovered_join_metrics_str);
     ReadBufferFromString rb(recovered_join_metrics_str);
     join_metrics.deserialize(rb, version);
 }
 
 void writeHybridHashJoinMapsVariants(
-    HybridHashJoinMapsVariants & index, RocksHandlerPtr rocks_handler, std::string_view id, const HybridHashJoin & join)
+    HybridHashJoinMapsVariants & index, RocksDBColumnFamilyHandlerPtr cf_handler, std::string_view id, const HybridHashJoin & join)
 {
     chassert(!index.empty());
 
     size_t maps_size = index.size();
-    rocks_handler->put(fmt::format("{}_maps_size", id), maps_size);
+    cf_handler->put(fmt::format("{}_maps_size", id), maps_size);
 
     std::vector<HybridMapsVariant *> maps_vector;
     maps_vector.reserve(maps_size);
@@ -537,12 +538,12 @@ void writeHybridHashJoinMapsVariants(
 }
 
 void readHybridHashJoinMapsVariants(
-    HybridHashJoinMapsVariants & index, RocksHandlerPtr rocks_handler, std::string_view id, const HybridHashJoin & join)
+    HybridHashJoinMapsVariants & index, RocksDBColumnFamilyHandlerPtr cf_handler, std::string_view id, const HybridHashJoin & join)
 {
     chassert(!index.empty());
 
     size_t maps_size = 0;
-    rocks_handler->get(fmt::format("{}_maps_size", id), maps_size);
+    cf_handler->get(fmt::format("{}_maps_size", id), maps_size);
     if (maps_size != index.size())
         throw Exception(
             ErrorCodes::RECOVER_CHECKPOINT_FAILED,

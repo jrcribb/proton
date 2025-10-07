@@ -60,6 +60,8 @@ std::unique_ptr<DB::HybridHashTable<K>> createHashTable(CalledCounts & counts, s
             .spill_dir_path = "/tmp/hybrid-ht",
             .kv_options = "",
             .max_hot_key_count = max_hot_key_count,
+            .cf_handle_id = "",
+            .rocks_cf_handler_getter = {},
         },
         .value_object_size = sizeof(V),
         .align_value_object_size = alignof(V),

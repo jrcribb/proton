@@ -74,11 +74,11 @@ public:
 
     bool alwaysReturnsEmptySet() const override;
 
-    RocksPtr getOrCreateRocks();
+    RocksDBPtr getOrCreateRocksDB();
     void shutdownRocks();
     const String & getRocksDir() const { return base_config.spill_dir_path; }
 
-    void reinstallRocks();
+    void reinstallRocksDB();
 
 private:
     struct JoinData
@@ -89,7 +89,7 @@ private:
         SERDE HashIndexPtr index;
     };
 
-    void installRocks(const String & spill_dir_, size_t max_hot_key_count_, Int32 ttl_, const String & kv_options_);
+    void initRocksDBConfig(const String & spill_dir_, size_t max_hot_key_count_, Int32 ttl_, const String & kv_options_);
 
     void chooseHashMethod();
     void checkLimits() const;
@@ -167,7 +167,7 @@ private:
     friend struct HashIndex;
 
     HybridConfig base_config;
-    RocksPtr rocks;
+    RocksDBPtr rocks;
 
     /// Note: when left block joins right hashtable, use `right_data`
     SERDE JoinData right_data;
@@ -189,8 +189,14 @@ void deserializeHybridHashJoinMapsVariants(
     HybridHashJoinMapsVariants & indexes, ReadBuffer & rb, VersionType version, const HybridHashJoin & join);
 
 void writeHybridHashJoinMapsVariants(
-    HybridHashJoinMapsVariants & indexes, RocksHandlerPtr rocks_handler, std::string_view prefix_id, const HybridHashJoin & join);
+    HybridHashJoinMapsVariants & indexes,
+    RocksDBColumnFamilyHandlerPtr cf_handler,
+    std::string_view prefix_id,
+    const HybridHashJoin & join);
 void readHybridHashJoinMapsVariants(
-    HybridHashJoinMapsVariants & indexes, RocksHandlerPtr rocks_handler, std::string_view prefix_id, const HybridHashJoin & join);
+    HybridHashJoinMapsVariants & indexes,
+    RocksDBColumnFamilyHandlerPtr cf_handler,
+    std::string_view prefix_id,
+    const HybridHashJoin & join);
 }
 }
