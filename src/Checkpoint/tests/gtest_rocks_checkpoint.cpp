@@ -2,6 +2,7 @@
 #include <Checkpoint/LocalFileSystemCheckpointStorage.h>
 #include <Checkpoint/RocksCheckpoint.h>
 #include <base/scope_guard.h>
+#include <Common/Logger.h>
 #include <Common/Rocks/RocksDB.h>
 
 #include <cstring>
@@ -28,9 +29,9 @@ TEST(RocksCheckpoint, Basic)
     rocksdb::Options options;
     options.create_if_missing = true;
     options.create_missing_column_families = true;
-    auto rocks = RocksDB::createOrLoadIfExists(options, base_dir / "rocks", /*cleanup=*/false);
-    auto rocks_handler = rocks->getOrCreateColumnFamilyHandler();
-    auto rocks_handler2 = rocks->getOrCreateColumnFamilyHandler("another");
+    auto rocks = RocksDB::createOrLoadIfExists(options, base_dir / "rocks", /*ttl_sec=*/0, /*cleanup_=*/false, getLogger("rocksut"));
+    auto rocks_handler = rocks->getDefaultColumnFamilyHandler();
+    auto rocks_handler2 = rocks->getOrCreateColumnFamilyHandler("another", /*ttl_sec=*/0);
     rocks_handler->put("k1"sv, "v1"sv);
     rocks_handler2->put("k2"sv, "v2"sv);
 
@@ -50,9 +51,9 @@ TEST(RocksCheckpoint, Basic)
         auto recovered_ckpt = local_fs_ckpt_storage.recover("key", ckpt_ctx);
         ASSERT_EQ(recovered_ckpt->type(), CheckpointType::Rocks);
         std::static_pointer_cast<RocksCheckpoint>(recovered_ckpt)->recover(recovered_rocks_path);
-        rocks = RocksDB::createOrLoadIfExists(options, recovered_rocks_path, /*ttl=*/0);
-        rocks_handler = rocks->getOrCreateColumnFamilyHandler();
-        rocks_handler2 = rocks->getOrCreateColumnFamilyHandler("another");
+        rocks = RocksDB::createOrLoadIfExists(options, recovered_rocks_path, /*ttl=*/0, /*cleanup_=*/false, getLogger("rocksut"));
+        rocks_handler = rocks->getDefaultColumnFamilyHandler();
+        rocks_handler2 = rocks->getOrCreateColumnFamilyHandler("another", /*ttl_sec=*/0);
 
         std::string value;
         rocks_handler->get("k1"sv, value);
@@ -98,9 +99,9 @@ TEST(RocksCheckpoint, Incremental)
     rocksdb::Options options;
     options.create_if_missing = true;
     options.create_missing_column_families = true;
-    auto rocks = RocksDB::createOrLoadIfExists(options, base_dir / "rocks", /*ttl=*/0);
-    auto rocks_handler = rocks->getOrCreateColumnFamilyHandler();
-    auto rocks_handler2 = rocks->getOrCreateColumnFamilyHandler("another");
+    auto rocks = RocksDB::createOrLoadIfExists(options, base_dir / "rocks", /*ttl=*/0, /*cleanup_=*/true, getLogger("rocksut"));
+    auto rocks_handler = rocks->getDefaultColumnFamilyHandler();
+    auto rocks_handler2 = rocks->getOrCreateColumnFamilyHandler("another", /*ttl_sec=*/0);
 
     /// Updated k1 and added k2 in default handler
     rocks_handler->put("k1"sv, "vv1"sv);
@@ -124,9 +125,9 @@ TEST(RocksCheckpoint, Incremental)
         auto recovered_ckpt = local_fs_ckpt_storage.recover("key", ckpt_ctx);
         ASSERT_EQ(recovered_ckpt->type(), CheckpointType::Rocks);
         std::static_pointer_cast<RocksCheckpoint>(recovered_ckpt)->recover(recovered_rocks_path);
-        rocks = RocksDB::createOrLoadIfExists(options, recovered_rocks_path, /*ttl=*/0);
-        rocks_handler = rocks->getOrCreateColumnFamilyHandler();
-        rocks_handler2 = rocks->getOrCreateColumnFamilyHandler("another");
+        rocks = RocksDB::createOrLoadIfExists(options, recovered_rocks_path, /*ttl=*/0, /*cleanup_=*/true, getLogger("rocksut"));
+        rocks_handler = rocks->getDefaultColumnFamilyHandler();
+        rocks_handler2 = rocks->getOrCreateColumnFamilyHandler("another", /*ttl_sec=*/0);
 
         std::string value;
         rocks_handler->get("k1"sv, value);

@@ -355,7 +355,7 @@ void HybridAggregatedDataVariants::read(RocksDBColumnFamilyHandlerPtr handler, c
     std::string_view without_key_state;
     if (handler->tryGet("without_key", without_key_state))
     {
-        if (!without_key) [[unlikely]]
+        if (!without_key)
             throw Exception(
                 ErrorCodes::RECOVER_CHECKPOINT_FAILED,
                 "Failed to recover hybrid aggregated state: expected {} state, but got without key state",
@@ -407,7 +407,8 @@ void HybridAggregatedDataVariants::read(RocksDBColumnFamilyHandlerPtr handler, c
         /// Deserialize old aggregate states
         if (recovered_version <= 2 || old_aggregates_size)
             old_value_deserializer = [&hybrid_aggregator, recovered_version, old_aggregates_size](void * data, ReadBuffer & rb) {
-                hybrid_aggregator.deserializeAggregateStates(reinterpret_cast<AggregateDataPtr>(data), rb, recovered_version, old_aggregates_size);
+                hybrid_aggregator.deserializeAggregateStates(
+                    reinterpret_cast<AggregateDataPtr>(data), rb, recovered_version, old_aggregates_size);
                 return ErrorCodes::OK;
             };
 

@@ -277,7 +277,7 @@ void HybridVersionsFilterTransform::createHashTable(
 
     /// Install rocks handler getter
     config.base_conf.rocks_cf_handler_getter = [this](const HybridConfig & hybrid_config) {
-        return getOrCreateRocksDB(hybrid_config)->getOrCreateColumnFamilyHandler(hybrid_config.cf_handle_id);
+        return getOrCreateRocksDB(hybrid_config)->getOrCreateColumnFamilyHandler(hybrid_config.cf_handle_id, hybrid_config.ttl);
     };
     latest_version_map.init(hash_method.type, config, hash_method.key_sizes, logger);
     key_sizes.swap(hash_method.key_sizes);
@@ -305,7 +305,7 @@ void HybridVersionsFilterTransform::checkpoint(CheckpointContextPtr ckpt_ctx)
         {
             chassert(!latest_version_map.isTwoLevel());
             latest_version_map.flush();
-            getOrCreateRocksDB()->getOrCreateColumnFamilyHandler()->put("__late_rows", late_rows);
+            getOrCreateRocksDB()->getDefaultColumnFamilyHandler()->put("__late_rows", late_rows);
             ckpt = std::make_shared<RocksCheckpoint>(getVersion(), rocks);
             break;
         }
@@ -352,7 +352,7 @@ void HybridVersionsFilterTransform::recover(CheckpointContextPtr ckpt_ctx)
             /// Reinstall recovered rocks
             rocks = RocksDB::createOrLoadIfExists(
                 config.getRocksOptions(), config.base_conf.spill_dir_path, /*ttl=*/0, config.base_conf.cleanup_on_disk_data, logger);
-            rocks->getOrCreateColumnFamilyHandler()->get("__late_rows", late_rows);
+            rocks->getDefaultColumnFamilyHandler()->get("__late_rows", late_rows);
             latest_version_map.reload();
             break;
         }

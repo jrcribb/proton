@@ -56,7 +56,7 @@ void JoinTransformWithAlignment::checkpoint(CheckpointContextPtr ckpt_ctx)
         }
 
         /// Reuse the default rocks handler to avoid creating a new one (must guarantee it doesn't overwrite the same key)
-        auto cf_handler = rocks->getOrCreateColumnFamilyHandler();
+        auto cf_handler = rocks->getDefaultColumnFamilyHandler();
         /// Serializing left_input state
         {
             WriteBufferFromOwnString wb;
@@ -123,7 +123,7 @@ void JoinTransformWithAlignment::recover(CheckpointContextPtr ckpt_ctx)
             /// Deserializing join algorithm state
             hybrid_join->read(rocks_ckpt->getVersion());
 
-            auto cf_handler = hybrid_join->getOrCreateRocksDB()->getOrCreateColumnFamilyHandler();
+            auto cf_handler = hybrid_join->getOrCreateRocksDB()->getDefaultColumnFamilyHandler();
             /// Deserializing left_input state
             {
                 String left_input_str;

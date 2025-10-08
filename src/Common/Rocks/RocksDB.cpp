@@ -1,21 +1,119 @@
 #include <base/scope_guard.h>
 #include <Common/Rocks/RocksDB.h>
 /// #include <Common/Rocks/RocksLogger.h>
+#include <Common/Rocks/RocksDBTTLCompactionFilter.h>
 #include <Common/logger_useful.h>
 
-#include <rocksdb/utilities/db_ttl.h>
-
 #include <filesystem>
+#include <ranges>
 
 namespace DB
 {
+
+namespace ErrorCodes
+{
+extern const int CORRUPTED_DATA;
+extern const int ROCKSDB_ERROR;
+}
+
+namespace
+{
+constexpr const char * META_TTL_PREFIX = "__tp_meta_ttl__";
+
+std::string metaTTLKey(const std::string & cf_handle_id)
+{
+    return fmt::format("{}.{}", META_TTL_PREFIX, cf_handle_id);
+}
+
+void writeTTLMeta(rocksdb::DB * db, const std::string & cf_handle_id, int32_t ttl_sec)
+{
+    rocksdb::Slice ttl{reinterpret_cast<char *>(&ttl_sec), sizeof(ttl_sec)};
+    if (auto status = db->Put(rocksdb::WriteOptions{}, metaTTLKey(cf_handle_id), ttl); !status.ok())
+        throw Exception(
+            ErrorCodes::ROCKSDB_ERROR,
+            "Failed to commit ttl_sec={} metadata to for column_family={}, {}",
+            ttl_sec,
+            cf_handle_id,
+            status.ToString());
+}
+
+absl::flat_hash_map<std::string_view, int32_t> readTTLMeta(rocksdb::DB * db, const std::vector<rocksdb::ColumnFamilyDescriptor> & cf_descs)
+{
+    absl::flat_hash_map<std::string_view, int32_t> cf_ttls;
+
+    std::vector<std::string> keys;
+    keys.reserve(cf_descs.size());
+    std::vector<std::string> values;
+    values.reserve(cf_descs.size());
+
+    std::vector<rocksdb::Slice> key_slices;
+    key_slices.reserve(cf_descs.size());
+
+    /// Build keys
+    for (const auto & cf_desc : cf_descs)
+        keys.emplace_back(metaTTLKey(cf_desc.name));
+
+    for (const auto & key : keys)
+        key_slices.emplace_back(key);
+
+    auto statuses = db->MultiGet(rocksdb::ReadOptions{}, key_slices, &values);
+    for (size_t i = 0; const auto & status : statuses)
+    {
+        if (status.ok())
+        {
+            if (values[i].size() != sizeof(int32_t))
+                throw Exception(
+                    ErrorCodes::CORRUPTED_DATA,
+                    "TTL value for column_family={} is expected to have {} bytes, but got {}",
+                    cf_descs[i].name,
+                    sizeof(int32_t),
+                    values[i].size());
+
+            int32_t ttl = 0;
+            std::memcpy(&ttl, values[i].data(), sizeof(int32_t));
+
+            if (ttl > 0)
+                cf_ttls.emplace(cf_descs[i].name, ttl);
+        }
+        else if (!status.IsNotFound())
+        {
+            throw Exception(
+                ErrorCodes::ROCKSDB_ERROR, "Failed to reload TTL for column_family={}, {}", cf_descs[i].name, status.ToString());
+        }
+
+        ++i;
+    }
+
+    return cf_ttls;
+}
+
+}
 
 RocksDB::RocksDB(rocksdb::DB * db_, const std::vector<rocksdb::ColumnFamilyHandle *> & cf_handles_, bool cleanup_, LoggerPtr logger_)
     : db(db_), cleanup(cleanup_), logger(logger_)
 {
     chassert(db && logger);
     for (auto * cf_handle : cf_handles_)
-        cf_handles.emplace(cf_handle->GetName(), cf_handle);
+        cf_handles.emplace(cf_handle->GetName(), TTLColumnFamilyHandle{.handle = cf_handle, .ttl_sec = 0});
+}
+
+RocksDB::RocksDB(
+    rocksdb::DB * db_,
+    const std::vector<rocksdb::ColumnFamilyHandle *> & cf_handles_,
+    const absl::flat_hash_map<std::string_view, int32_t> & cf_ttls_,
+    bool cleanup_,
+    LoggerPtr logger_)
+    : db(db_), cleanup(cleanup_), logger(logger_)
+{
+    chassert(db && logger);
+
+    for (auto * cf_handle : cf_handles_)
+    {
+        if (auto it = cf_ttls_.find(cf_handle->GetName()); it != cf_ttls_.end())
+            cf_handles.emplace(cf_handle->GetName(), TTLColumnFamilyHandle{.handle = cf_handle, .ttl_sec = it->second});
+        else
+            cf_handles.emplace(cf_handle->GetName(), TTLColumnFamilyHandle{.handle = cf_handle, .ttl_sec = 0});
+    }
 }
 
 RocksDB::~RocksDB()
@@ -31,16 +129,16 @@ RocksDB::~RocksDB()
 }
 
 RocksDBPtr
-RocksDB::createOrLoadIfExists(const rocksdb::Options & options, const std::string & path, Int32 ttl, bool cleanup_, LoggerPtr logger)
+RocksDB::createOrLoadIfExists(const rocksdb::Options & options, const std::string & path, int32_t ttl_sec, bool cleanup_, LoggerPtr logger_)
 {
-    if (!logger)
-        logger = getLogger("Rocks");
+    if (!logger_)
+        logger_ = getLogger("Rocks");
 
     {
         LOG_INFO(
-            logger,
-            "Init rocks with ttl={} path={} cleanup={} max_background_jobs={} max_write_buffer_number={} enable_blob_files={}",
-            ttl,
+            logger_,
+            "Init rocks with ttl_sec={} path={} cleanup={} max_background_jobs={} max_write_buffer_number={} enable_blob_files={}",
+            ttl_sec,
             path,
             cleanup_,
             options.max_background_jobs,
@@ -50,13 +148,13 @@ RocksDB::createOrLoadIfExists(const rocksdb::Options & options, const std::strin
         /// options.Dump(&rlogger);
     }
 
+    /// Note when we open, we don't apply the ttl_sec compaction filter and we don't apply ttl_sec for default column family for now
     if (std::filesystem::exists(path))
     {
         /// Open existing rocksdb with column families
         std::vector<std::string> column_families;
-        auto status = rocksdb::DB::ListColumnFamilies(options, path, &column_families);
-        if (!status.ok())
-            throw DB::Exception(ErrorCodes::ROCKSDB_ERROR, "Failed to list column families: {}", status.ToString());
+        if (auto status = rocksdb::DB::ListColumnFamilies(options, path, &column_families); !status.ok())
+            throw DB::Exception(ErrorCodes::ROCKSDB_ERROR, "Failed to list column families in path={} : {}", path, status.ToString());
 
         std::vector<rocksdb::ColumnFamilyDescriptor> cf_descriptors;
         cf_descriptors.reserve(column_families.size());
@@ -67,45 +165,60 @@ RocksDB::createOrLoadIfExists(const rocksdb::Options & options, const std::strin
         cf_handles.reserve(cf_descriptors.size());
         rocksdb::DB * db = nullptr;
 
-        if (ttl > 0)
+        if (auto status = rocksdb::DB::Open(options, path, cf_descriptors, &cf_handles, &db); !status.ok())
+            throw DB::Exception(ErrorCodes::ROCKSDB_ERROR, "Failed to open rocksdb in path={}: {}", path, status.ToString());
+
+        auto cf_ttls = readTTLMeta(db, cf_descriptors);
+        if (cf_ttls.empty())
+            return std::make_shared<RocksDB>(db, cf_handles, cleanup_, std::move(logger_));
+
+        auto ttl_v = cf_ttls | std::views::transform([](const auto & cf_ttl) { return fmt::format("{}:{}", cf_ttl.first, cf_ttl.second); });
+
+        LOG_INFO(logger_, "Loaded TTLs: [{}] from path={}", fmt::join(ttl_v, ", "), path);
+
+        /// Closed the column families and db
         {
-            rocksdb::DBWithTTL * ttl_db = nullptr;
+            for (size_t i = 0; auto * cf_handle : cf_handles)
+            {
+                if (auto status = db->DestroyColumnFamilyHandle(cf_handle); !status.ok())
+                {
+                    LOG_ERROR(logger_, "Failed to destroy column family_handle={}: {}", column_families[i], status.ToString());
 
-            std::vector<Int32> ttls(cf_descriptors.size(), ttl);
+                    throw Exception(
+                        ErrorCodes::ROCKSDB_ERROR, "Failed to destroy column family_handle={}: {}", column_families[i], status.ToString());
+                }
 
-            status = rocksdb::DBWithTTL::Open(options, path, cf_descriptors, &cf_handles, &ttl_db, ttls);
-            db = ttl_db;
+                ++i;
+            }
+            cf_handles.clear();
+
+            if (auto status = db->Close(); !status.ok())
+                throw DB::Exception(ErrorCodes::ROCKSDB_ERROR, "Failed to close rocksdb={}: {}", db->GetName(), status.ToString());
+
+            db = nullptr;
+
+            /// Setup compaction filter for column families
+            for (auto & cf_desc : cf_descriptors)
+            {
+                if (auto it = cf_ttls.find(cf_desc.name); it != cf_ttls.end())
+                    cf_desc.options.compaction_filter_factory
+                        = std::make_shared<DB::RocksDBTTLCompactionFilterFactory>(it->second, cf_desc.name, logger_);
+            }
+
+            /// Reopen column families and RocksDB
+            if (auto status = rocksdb::DB::Open(options, path, cf_descriptors, &cf_handles, &db); !status.ok())
+                throw DB::Exception(ErrorCodes::ROCKSDB_ERROR, "Failed to open rocksdb in path={}: {}", path, status.ToString());
+
+            return std::make_shared<RocksDB>(db, cf_handles, cf_ttls, cleanup_, std::move(logger_));
         }
-        else
-        {
-            status = rocksdb::DB::Open(options, path, cf_descriptors, &cf_handles, &db);
-        }
-
-        if (!status.ok())
-            throw DB::Exception(ErrorCodes::ROCKSDB_ERROR, "Failed to open rocksdb: {}", status.ToString());
-
-        return std::make_shared<RocksDB>(db, cf_handles, cleanup_, logger);
     }
     else
     {
         rocksdb::DB * db = nullptr;
-        rocksdb::Status status;
+        if (auto status = rocksdb::DB::Open(options, path, &db); !status.ok())
+            throw DB::Exception(ErrorCodes::ROCKSDB_ERROR, "Failed to open rocksdb in path={}: {}", path, status.ToString());
 
-        if (ttl > 0)
-        {
-            rocksdb::DBWithTTL * ttl_db = nullptr;
-            status = rocksdb::DBWithTTL::Open(options, path, &ttl_db, ttl);
-            db = ttl_db;
-        }
-        else
-        {
-            status = rocksdb::DB::Open(options, path, &db);
-        }
-
-        if (!status.ok())
-            throw DB::Exception(ErrorCodes::ROCKSDB_ERROR, "Failed to open rocksdb: {}", status.ToString());
-
-        return std::make_shared<RocksDB>(db, std::vector<rocksdb::ColumnFamilyHandle *>{}, cleanup_, logger);
+        return std::make_shared<RocksDB>(db, std::vector<rocksdb::ColumnFamilyHandle *>{}, cleanup_, std::move(logger_));
     }
 }
 
@@ -114,17 +227,15 @@ void RocksDB::shutdown(bool cleanup_)
     if (shutdown_flag.test_and_set())
         return;
 
-    for (auto & [_, cf_handle] : cf_handles)
+    for (auto & [cf_handle_id, cf_handle] : cf_handles)
     {
-        auto status = db->DestroyColumnFamilyHandle(cf_handle);
-        if (!status.ok())
-            LOG_ERROR(logger, "Failed to destroy column family handle: {}", status.ToString());
+        if (auto status = db->DestroyColumnFamilyHandle(cf_handle.handle); !status.ok())
+            LOG_ERROR(logger, "Failed to destroy column family_handle={}: {}", cf_handle_id, status.ToString());
     }
     cf_handles.clear();
 
-    auto status = db->Close();
-    if (!status.ok())
-        throw DB::Exception(ErrorCodes::ROCKSDB_ERROR, "Failed to close rocksdb: {}", status.ToString());
+    if (auto status = db->Close(); !status.ok())
+        throw DB::Exception(ErrorCodes::ROCKSDB_ERROR, "Failed to close rocksdb={}: {}", db->GetName(), status.ToString());
 
     if (cleanup_)
     {
@@ -136,62 +247,79 @@ void RocksDB::shutdown(bool cleanup_)
     db.reset();
 }
 
-RocksDBColumnFamilyHandlerPtr
-RocksDB::getOrCreateColumnFamilyHandler(const std::string & cf_handle_id, std::optional<rocksdb::ColumnFamilyOptions> cf_options)
+RocksDBColumnFamilyHandlerPtr RocksDB::getOrCreateColumnFamilyHandler(const std::string & cf_handle_id, int32_t ttl_sec)
 {
     if (isShutdown())
         throw DB::Exception(ErrorCodes::LOGICAL_ERROR, "RocksDB is already shutdown");
 
     if (cf_handle_id.empty())
+        /// ttl is not applied to default column family
         return std::make_shared<RocksDBColumnFamilyHandler>(shared_from_this());
 
     std::lock_guard lock(handles_mutex);
-    auto it = cf_handles.find(cf_handle_id);
-    if (it != cf_handles.end())
-        return std::make_shared<RocksDBColumnFamilyHandler>(shared_from_this(), it->second);
+    if (auto it = cf_handles.find(cf_handle_id); it != cf_handles.end())
+    {
+        if (ttl_sec != it->second.ttl_sec)
+            LOG_WARNING(
+                logger,
+                "The ttl_sec={} passed-in is different than the ttl_sec={} used in the current open column_family={}",
+                ttl_sec,
+                it->second.ttl_sec,
+                cf_handle_id);
+
+        return std::make_shared<RocksDBColumnFamilyHandler>(shared_from_this(), it->second.handle, it->second.ttl_sec);
+    }
+
+    auto cf_options = rocksdb::ColumnFamilyOptions(db->GetOptions());
+    if (ttl_sec > 0)
+    {
+        cf_options.compaction_filter_factory = std::make_shared<DB::RocksDBTTLCompactionFilterFactory>(ttl_sec, cf_handle_id, logger);
+        LOG_INFO(logger, "Creating column_family={} with ttl_sec={}", cf_handle_id, ttl_sec);
+    }
 
     rocksdb::ColumnFamilyHandle * cf_handle = nullptr;
-    auto status
-        = db->CreateColumnFamily(cf_options ? *cf_options : rocksdb::ColumnFamilyOptions(db->GetOptions()), cf_handle_id, &cf_handle);
-    if (!status.ok())
-        throw DB::Exception(ErrorCodes::ROCKSDB_ERROR, "Failed to get create column family: {}", status.ToString());
+    if (auto status = db->CreateColumnFamily(cf_options, cf_handle_id, &cf_handle); !status.ok())
+        throw DB::Exception(ErrorCodes::ROCKSDB_ERROR, "Failed to get create column_family={}: {}", cf_handle_id, status.ToString());
 
-    cf_handles.emplace(cf_handle_id, cf_handle);
-    return std::make_shared<RocksDBColumnFamilyHandler>(shared_from_this(), cf_handle);
+    cf_handles.emplace(cf_handle_id, TTLColumnFamilyHandle{.handle = cf_handle, .ttl_sec = ttl_sec});
+
+    /// Commit the TTL to default cf handle, then we can recover the TTLs from it
+    writeTTLMeta(db.get(), cf_handle_id, ttl_sec);
+
+    return std::make_shared<RocksDBColumnFamilyHandler>(shared_from_this(), cf_handle, ttl_sec);
 }
 
-void RocksDB::destroy(const std::string & handle_id)
+void RocksDB::destroy(const std::string & cf_handle_id)
 {
     if (isShutdown()) [[unlikely]]
         throw DB::Exception(ErrorCodes::LOGICAL_ERROR, "RocksDB is already shutdown");
 
-    if (handle_id.empty())
+    if (cf_handle_id.empty())
+        /// Skipping destroying default cf
         return;
 
     rocksdb::ColumnFamilyHandle * cf_handle = nullptr;
     {
         std::lock_guard lock(handles_mutex);
-        auto it = cf_handles.find(handle_id);
+
+        auto it = cf_handles.find(cf_handle_id);
         if (it == cf_handles.end())
             return;
 
-        cf_handle = it->second;
+        cf_handle = it->second.handle;
         cf_handles.erase(it);
     }
 
-    auto status = db->DropColumnFamily(cf_handle);
-    if (!status.ok())
-        throw DB::Exception(ErrorCodes::ROCKSDB_ERROR, "Failed to drop rocks column family: {}", status.ToString());
+    if (auto status = db->DropColumnFamily(cf_handle); !status.ok())
+        throw DB::Exception(ErrorCodes::ROCKSDB_ERROR, "Failed to drop rocks column_family={}: {}", cf_handle_id, status.ToString());
 
-    LOG_INFO(logger, "Dropped rocks column family '{}'", cf_handle->GetName());
-
-    status = db->DestroyColumnFamilyHandle(cf_handle);
-    if (!status.ok())
-        throw DB::Exception(ErrorCodes::ROCKSDB_ERROR, "Failed to destroy column family handle: {}", status.ToString());
+    LOG_INFO(logger, "Dropped rocks column_family={}", cf_handle_id);
+    if (auto status = db->DestroyColumnFamilyHandle(cf_handle); !status.ok())
+        throw DB::Exception(ErrorCodes::ROCKSDB_ERROR, "Failed to destroy column_family={}: {}", cf_handle_id, status.ToString());
 }
 
-RocksDBColumnFamilyHandler::RocksDBColumnFamilyHandler(RocksDBPtr rocks_, rocksdb::ColumnFamilyHandle * cf_handle_)
-    : db(rocks_->db.get()), cf_handle(cf_handle_), rocks(rocks_)
+RocksDBColumnFamilyHandler::RocksDBColumnFamilyHandler(RocksDBPtr rocks_, rocksdb::ColumnFamilyHandle * cf_handle_, int32_t ttl_sec_)
+    : db(rocks_->db.get()), cf_handle(cf_handle_), ttl_sec(ttl_sec_), rocks(rocks_)
 {
     chassert(db);
     if (!cf_handle)

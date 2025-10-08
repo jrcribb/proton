@@ -3,13 +3,13 @@
 #include <IO/PrefixTreeEncode.h>
 #include <base/ClockUtils.h>
 #include <Common/HybridConfig.h>
+#include <Common/Rocks/RocksDBTTLCompactionFilter.h>
 #include <Common/logger_useful.h>
 
 #include <absl/container/flat_hash_set.h>
 #include <rocksdb/db.h>
 #include <rocksdb/slice_transform.h>
 #include <rocksdb/statistics.h>
-#include <rocksdb/utilities/db_ttl.h>
 
 #include <filesystem>
 #include <list>
@@ -51,6 +51,8 @@ public:
         , key_deserializer(std::move(key_deserializer_))
         , logger(logger_)
     {
+        config.ttl = 0; /// Disable ttl for hybrid key list
+
         chassert(key_serializer && key_deserializer);
         if (std::filesystem::exists(config.spill_dir_path)
             && !config.rocks_cf_handler_getter) /// If unshared rocks directory already exists, init rocks eagerly, otherwise in a lazy way)
@@ -125,7 +127,7 @@ public:
                 initRocks();
 
             /// Flush everything to disk
-            rocksdb::WriteBatch batch;
+            rocksdb::WriteBatch batch{keys.size() * (64 + 8)};
             for (size_t size = keys.size(); i < size; ++i)
             {
                 auto encode_result = encodeKey(keys[i], ts);
@@ -139,6 +141,11 @@ public:
                     return ErrorCodes::ROCKSDB_ERROR;
                 }
             }
+
+            /// The data in batch can be moved to other thread when db->Write(...)
+            /// which caused the tracking inaccuracy
+            /// https://github.com/timeplus-io/proton-enterprise/issues/10675
+            CurrentMemoryTracker::free(batch.GetDataSize());
 
             if (auto status = cf_handler->db->Write(write_options, &batch); !status.ok())
             {
@@ -420,29 +427,15 @@ private:
             return;
         }
 
-        auto options = config.getRocksOptions();
-        rocksdb::Status status;
         rocksdb::DB * db = nullptr;
-
-        if (config.ttl > 0)
-        {
-            rocksdb::DBWithTTL * ttl_db = nullptr;
-            status = rocksdb::DBWithTTL::Open(options, config.spill_dir_path, &ttl_db, config.ttl);
-            db = ttl_db;
-        }
-        else
-        {
-            status = rocksdb::DB::Open(options, config.spill_dir_path, &db);
-        }
-
-        if (!status.ok())
+        if (auto status = rocksdb::DB::Open(config.getRocksOptions(), config.spill_dir_path, &db); !status.ok())
         {
             LOG_ERROR(logger, "Failed to init on disk sorted list, status='{}'", status.ToString());
             throw DB::Exception(ErrorCodes::CANNOT_OPEN_DATABASE, "Failed to open on disk sorted list, {}", status.ToString());
         }
 
         rocks = std::make_shared<RocksDB>(db, std::vector<rocksdb::ColumnFamilyHandle *>{}, config.cleanup_on_disk_data, logger);
-        cf_handler = rocks->getOrCreateColumnFamilyHandler(config.cf_handle_id);
+        cf_handler = rocks->getOrCreateColumnFamilyHandler(config.cf_handle_id, config.ttl);
     }
 
     void reload(const absl::flat_hash_set<std::string> & skips)

@@ -53,7 +53,7 @@ void JoinTransform::checkpoint(CheckpointContextPtr ckpt_ctx)
         }
 
         /// Reuse the default rocks handler to avoid creating a new one (must gurantee don't overwrite the same key)
-        rocks->getOrCreateColumnFamilyHandler()->put("_watermark", watermark);
+        rocks->getDefaultColumnFamilyHandler()->put("_watermark", watermark);
 
         ckpt = std::make_shared<RocksCheckpoint>(getVersion(), rocks);
     }
@@ -99,7 +99,7 @@ void JoinTransform::recover(CheckpointContextPtr ckpt_ctx)
             /// Reinstall recovered rocks
             hybrid_join->reinstallRocksDB();
             hybrid_join->read(rocks_ckpt->getVersion());
-            hybrid_join->getOrCreateRocksDB()->getOrCreateColumnFamilyHandler()->get("_watermark", watermark);
+            hybrid_join->getOrCreateRocksDB()->getDefaultColumnFamilyHandler()->get("_watermark", watermark);
             break;
         }
         case CheckpointType::File:

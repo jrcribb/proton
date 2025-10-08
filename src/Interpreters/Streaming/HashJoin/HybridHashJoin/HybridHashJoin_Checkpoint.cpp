@@ -38,8 +38,9 @@ void HybridHashJoin::initRocksDBConfig(const String & spill_dir_, size_t max_hot
     base_config.ttl = ttl_;
     base_config.kv_options = kv_options_;
     base_config.cleanup_on_disk_data = true;
-    base_config.rocks_cf_handler_getter
-        = [this](const HybridConfig & config) { return getOrCreateRocksDB(config)->getOrCreateColumnFamilyHandler(config.cf_handle_id); };
+    base_config.rocks_cf_handler_getter = [this](const HybridConfig & config) {
+        return getOrCreateRocksDB(config)->getOrCreateColumnFamilyHandler(config.cf_handle_id, config.ttl);
+    };
 }
 
 void HybridHashJoin::reinstallRocksDB()
@@ -301,7 +302,8 @@ void deserializeHybridHashJoinMapsVariants(
 /// Write / read data to / from RocksDB
 void HybridHashJoin::write(VersionType version)
 {
-    auto cf_handler = getOrCreateRocksDB()->getOrCreateColumnFamilyHandler();
+    /// Checkpoint metadata to default column family
+    auto cf_handler = getOrCreateRocksDB()->getDefaultColumnFamilyHandler();
     /// Part-1: ON clauses
     cf_handler->put("on_clauses", TableJoin::formatClauses(table_join->getClauses(), true));
 
@@ -325,11 +327,11 @@ void HybridHashJoin::write(VersionType version)
     if (bidirectional_hash_join)
     {
         chassert(left_data.index);
-        left_data.index->write(getOrCreateRocksDB()->getOrCreateColumnFamilyHandler(left_data.index->id), version);
+        left_data.index->write(getOrCreateRocksDB()->getOrCreateColumnFamilyHandler(left_data.index->id, /*ttl_sec=*/0), version);
     }
 
     chassert(right_data.index);
-    right_data.index->write(getOrCreateRocksDB()->getOrCreateColumnFamilyHandler(right_data.index->id), version);
+    right_data.index->write(getOrCreateRocksDB()->getOrCreateColumnFamilyHandler(right_data.index->id, /*ttl_sec=*/0), version);
 
     /// Part-5: Asof type (Optional)
     bool need_asof = streaming_strictness == Strictness::Range || streaming_strictness == Strictness::Asof;
@@ -360,7 +362,7 @@ void HybridHashJoin::write(VersionType version)
 
 void HybridHashJoin::read(VersionType version)
 {
-    auto cf_handler = getOrCreateRocksDB()->getOrCreateColumnFamilyHandler();
+    auto cf_handler = getOrCreateRocksDB()->getDefaultColumnFamilyHandler();
     { /// Part-1: ON clauses
         auto clauses_str = TableJoin::formatClauses(table_join->getClauses(), true);
         String recovered_clauses_str;
@@ -454,11 +456,11 @@ void HybridHashJoin::read(VersionType version)
     if (recovered_bidirectional_join)
     {
         chassert(left_data.index);
-        left_data.index->read(getOrCreateRocksDB()->getOrCreateColumnFamilyHandler(left_data.index->id), version);
+        left_data.index->read(getOrCreateRocksDB()->getOrCreateColumnFamilyHandler(left_data.index->id, /*ttl_sec=*/0), version);
     }
 
     chassert(right_data.index);
-    right_data.index->read(getOrCreateRocksDB()->getOrCreateColumnFamilyHandler(right_data.index->id), version);
+    right_data.index->read(getOrCreateRocksDB()->getOrCreateColumnFamilyHandler(right_data.index->id, /*ttl_sec=*/0), version);
 
     /// Part-5: Asof type (Optional)
     bool need_asof = false;

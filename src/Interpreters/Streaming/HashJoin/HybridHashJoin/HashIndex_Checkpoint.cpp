@@ -80,6 +80,7 @@ void HashIndex::deserialize(ReadBuffer & rb, VersionType version)
 /// Write / read data to / from RocksDB
 void HashIndex::write(RocksDBColumnFamilyHandlerPtr cf_handler, VersionType version)
 {
+    /// Checkpoint hash index metadata to cf_handler
     std::scoped_lock lock(mutex);
 
     {
@@ -124,6 +125,7 @@ void HashIndex::write(RocksDBColumnFamilyHandlerPtr cf_handler, VersionType vers
 
 void HashIndex::read(RocksDBColumnFamilyHandlerPtr cf_handler, VersionType version)
 {
+    /// Restore hash index metadata from cf_handler
     std::scoped_lock lock(mutex);
 
     {

@@ -72,7 +72,6 @@ add_subdirectory (Loggers)
 
 add_headers_and_sources(clickhouse_common_io Common)
 add_headers_and_sources(clickhouse_common_io Common/HashTable)
-add_headers_and_sources(clickhouse_common_io Common/Rocks)
 add_headers_and_sources(clickhouse_common_io IO)
 add_headers_and_sources(clickhouse_common_io IO/Resource)
 add_headers_and_sources(clickhouse_common_io IO/S3)
@@ -363,6 +362,7 @@ dbms_target_link_libraries (
         ch_contrib::lz4
         Poco::JSON
         string_utils
+        rocks
     PUBLIC
         boost::system
         clickhouse_common_io
@@ -581,6 +581,7 @@ if (ENABLE_TESTS)
         clickhouse_common_config
         clickhouse_common_zookeeper
         string_utils
+        rocks
         loggers)
 
     if (TARGET ch_contrib::simdjson)

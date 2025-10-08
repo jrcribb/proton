@@ -36,7 +36,7 @@ void HybridChangelogConvertTransform::checkpoint(CheckpointContextPtr ckpt_ctx)
         {
             chassert(!index.isTwoLevel());
             index.flush();
-            getOrCreateRocksDB()->getOrCreateColumnFamilyHandler()->put("late_rows", late_rows);
+            getOrCreateRocksDB()->getDefaultColumnFamilyHandler()->put("late_rows", late_rows);
             ckpt = std::make_shared<RocksCheckpoint>(getVersion(), rocks);
             break;
         }
@@ -83,7 +83,7 @@ void HybridChangelogConvertTransform::recover(CheckpointContextPtr ckpt_ctx)
             /// Reinstall recovered rocks
             rocks = RocksDB::createOrLoadIfExists(
                 config.getRocksOptions(), config.base_conf.spill_dir_path, /*ttl=*/0, config.base_conf.cleanup_on_disk_data, logger);
-            rocks->getOrCreateColumnFamilyHandler()->get("late_rows", late_rows);
+            rocks->getDefaultColumnFamilyHandler()->get("late_rows", late_rows);
             index.reload();
             break;
         }

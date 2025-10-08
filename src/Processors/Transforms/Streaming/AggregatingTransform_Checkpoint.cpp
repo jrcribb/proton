@@ -34,8 +34,9 @@ void AggregatingTransform::initRocksDBConfig()
     hybrid_variants.config.kv_options = hybrid_params->kv_options;
 
     /// This is the callback when HybridHashTable needs init its rocks part
-    hybrid_variants.config.rocks_cf_handler_getter
-        = [this](const HybridConfig & config) { return getOrCreateRocksDB(config)->getOrCreateColumnFamilyHandler(config.cf_handle_id); };
+    hybrid_variants.config.rocks_cf_handler_getter = [this](const HybridConfig & config) {
+        return getOrCreateRocksDB(config)->getOrCreateColumnFamilyHandler(config.cf_handle_id, config.ttl);
+    };
 }
 
 RocksDBPtr AggregatingTransform::getOrCreateRocksDB(const HybridConfig & config)
@@ -184,12 +185,10 @@ void AggregatingTransform::recoverFileCheckpoint(CheckpointPtr ckpt)
 CheckpointPtr AggregatingTransform::createRocksCheckpoint()
 {
     chassert(variants.aggregatorType() == AggregatorType::Hybrid);
-    HybridConfig config_copy = static_cast<const HybridAggregatedDataVariants &>(variants).config;
-    /// Disable TTL
-    config_copy.ttl = 0;
+    auto rocks = getOrCreateRocksDB(static_cast<const HybridAggregatedDataVariants &>(variants).config);
 
-    auto rocks = getOrCreateRocksDB(config_copy);
-    auto cf_handler = rocks->getOrCreateColumnFamilyHandler();
+    /// Checkpoint metadata to default column family without TTL
+    auto cf_handler = rocks->getDefaultColumnFamilyHandler();
 
     bool is_last_checkpointing_transform = (this == many_data->last_checkpointing_transform.load());
     cf_handler->put("is_last", is_last_checkpointing_transform);
@@ -223,7 +222,9 @@ CheckpointPtr AggregatingTransform::createRocksCheckpoint()
     /// But it doesn't matter, we will update according to the recovered `finalized_watermark` later
     cf_handler->put("propagated_watermark", propagated_watermark);
 
-    assert_cast<HybridAggregatedDataVariants &>(variants).write(rocks->getOrCreateColumnFamilyHandler("variants"), *params->aggregator);
+    /// Checkpoint variants metadata to `variants` column family
+    assert_cast<HybridAggregatedDataVariants &>(variants).write(
+        rocks->getOrCreateColumnFamilyHandler("variants", /*ttl_sec=*/0), *params->aggregator);
 
     return std::make_shared<RocksCheckpoint>(getVersion(), rocks);
 }
@@ -241,7 +242,7 @@ void AggregatingTransform::recoverRocksCheckpoint(CheckpointPtr ckpt)
     }
 
     chassert(variants.aggregatorType() == AggregatorType::Hybrid);
-    const auto & hybrid_variants = static_cast<const HybridAggregatedDataVariants &>(variants);
+    auto & hybrid_variants = assert_cast<HybridAggregatedDataVariants &>(variants);
     const auto & config = hybrid_variants.config;
 
     rocks_ckpt->recover(config.spill_dir_path);
@@ -250,7 +251,8 @@ void AggregatingTransform::recoverRocksCheckpoint(CheckpointPtr ckpt)
     rocks = RocksDB::createOrLoadIfExists(config.getRocksOptions(), config.spill_dir_path, config.ttl, config.cleanup_on_disk_data, logger);
     variants.reset();
 
-    auto cf_handler = rocks->getOrCreateColumnFamilyHandler();
+    /// Recover from default column family to restore metadata
+    auto cf_handler = rocks->getDefaultColumnFamilyHandler();
 
     bool is_last_checkpointing_transform = false;
     cf_handler->get("is_last", is_last_checkpointing_transform);
@@ -283,8 +285,8 @@ void AggregatingTransform::recoverRocksCheckpoint(CheckpointPtr ckpt)
         {
             UInt64 last_rows = 0;
             cf_handler->get(fmt::format("rows_{}", i++), last_rows);
-            /// In case when for we had global aggregated some data, but done checkpoint request before finializing
-            if (last_rows > 0) [[unlikely]]
+            /// In case when for we had global aggregated some data, but done checkpoint request before finalization
+            if (last_rows > 0)
                 LOG_WARNING(logger, "Last checkpoint state don't be finalized, rows_since_last_finalization={}", last_rows);
 
             *rows = last_rows;
@@ -302,7 +304,7 @@ void AggregatingTransform::recoverRocksCheckpoint(CheckpointPtr ckpt)
 
     cf_handler->get("propagated_watermark", propagated_watermark);
 
-    assert_cast<HybridAggregatedDataVariants &>(variants).read(rocks->getOrCreateColumnFamilyHandler("variants"), *params->aggregator);
+    hybrid_variants.read(rocks->getOrCreateColumnFamilyHandler("variants", /*ttl_sec=*/0), *params->aggregator);
 }
 }
 }

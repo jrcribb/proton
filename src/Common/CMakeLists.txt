@@ -1,5 +1,7 @@
 add_subdirectory(StringUtils)
 
+add_subdirectory(Rocks) # proton: added
+
 if (ENABLE_EXAMPLES)
     add_subdirectory(examples)
 endif()

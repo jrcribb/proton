@@ -13,6 +13,7 @@
 #include <Common/HybridHashTable/HybridMappedValue.h>
 #include <Common/MemoryHelpers.h>
 /// #include <Common/MemoryTrackerBlockerInThread.h>
+#include <base/ClockUtils.h>
 #include <Common/HybridConfig.h>
 #include <Common/Rocks/RocksDB.h>
 #include <Common/Stopwatch.h>
@@ -25,7 +26,6 @@
 #include <rocksdb/db.h>
 #include <rocksdb/slice_transform.h>
 #include <rocksdb/statistics.h>
-#include <rocksdb/utilities/db_ttl.h>
 #include <rocksdb/utilities/memory_util.h>
 
 #include <ranges>
@@ -921,6 +921,7 @@ public:
             throw DB::Exception(status, "Failed to flush hot keys to disk");
 
         /// After flushing, always expects rocks instance here
+        /// In case, no keys in this table
         if (!persistentPartInited())
             initRocks();
 
@@ -1064,29 +1065,15 @@ private:
         }
 
         /// 2) Otherwise, create an internal rocksdb instance
-        auto options = config.getRocksOptions();
-        rocksdb::Status status;
         rocksdb::DB * db = nullptr;
-
-        if (config.base_conf.ttl > 0)
-        {
-            rocksdb::DBWithTTL * ttl_db = nullptr;
-            status = rocksdb::DBWithTTL::Open(options, config.base_conf.spill_dir_path, &ttl_db, config.base_conf.ttl);
-            db = ttl_db;
-        }
-        else
-        {
-            status = rocksdb::DB::Open(options, config.base_conf.spill_dir_path, &db);
-        }
-
-        if (!status.ok())
+        if (auto status = rocksdb::DB::Open(config.getRocksOptions(), config.base_conf.spill_dir_path, &db); !status.ok())
         {
             LOG_ERROR(logger, "Failed to init on disk hash table, status='{}'", status.ToString());
             throw DB::Exception(ErrorCodes::CANNOT_OPEN_DATABASE, "Failed to open on disk hash table, {}", status.ToString());
         }
 
         rocks = std::make_shared<RocksDB>(db, std::vector<rocksdb::ColumnFamilyHandle *>{}, config.base_conf.cleanup_on_disk_data, logger);
-        cf_handler = rocks->getOrCreateColumnFamilyHandler(config.base_conf.cf_handle_id);
+        cf_handler = rocks->getOrCreateColumnFamilyHandler(config.base_conf.cf_handle_id, config.base_conf.ttl);
 
         LOG_INFO(
             logger,
@@ -1403,6 +1390,13 @@ private:
                 WriteBufferFromVector<CharVector> wb(value_data);
                 if (auto errcode = config.value_serializer(entry->data, wb); errcode != ErrorCodes::OK)
                     return errcode;
+
+                if (cf_handler->ttl_sec > 0)
+                {
+                    /// Append timestamp to tail
+                    auto now_sec = static_cast<UInt32>(DB::UTCSeconds::now());
+                    DB::writeIntBinary(now_sec, wb);
+                }
             }
             approx_batch_size += value_data.size();
         }

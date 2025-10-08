@@ -6,6 +6,7 @@
 #include <IO/WriteHelpers.h>
 #include <base/StringRef.h>
 
+#include <absl/container/flat_hash_map.h>
 #include <rocksdb/db.h>
 
 namespace DB
@@ -28,19 +29,30 @@ class RocksDB final : public std::enable_shared_from_this<RocksDB>
 {
 public:
     RocksDB(rocksdb::DB * db_, const std::vector<rocksdb::ColumnFamilyHandle *> & cf_handles_, bool cleanup_, LoggerPtr logger_);
+
+    RocksDB(
+        rocksdb::DB * db_,
+        const std::vector<rocksdb::ColumnFamilyHandle *> & cf_handles_,
+        const absl::flat_hash_map<std::string_view, int32_t> & cf_ttls_,
+        bool cleanup_,
+        LoggerPtr logger_);
     ~RocksDB();
 
-    static RocksDBPtr createOrLoadIfExists(
-        const rocksdb::Options & options, const std::string & path, Int32 ttl, bool cleanup_ = true, LoggerPtr logger = nullptr);
+    static RocksDBPtr
+    createOrLoadIfExists(const rocksdb::Options & options, const std::string & path, int32_t ttl_sec, bool cleanup_, LoggerPtr logger_);
 
     void shutdown(bool cleanup_);
 
     bool isShutdown() const { return shutdown_flag.test(); }
 
+    RocksDBColumnFamilyHandlerPtr getDefaultColumnFamilyHandler()
+    {
+        return getOrCreateColumnFamilyHandler(/*cf_handle_id=*/"", /*ttl_sec=*/0);
+    }
+
     /// If cf_handle_id is empty, return default handler
     /// A RocksHandler is a wrap of separate column family which share the s ame RocksDB (Rocks here)
-    RocksDBColumnFamilyHandlerPtr
-    getOrCreateColumnFamilyHandler(const std::string & cf_handle_id = {}, std::optional<rocksdb::ColumnFamilyOptions> cf_options = {});
+    RocksDBColumnFamilyHandlerPtr getOrCreateColumnFamilyHandler(const std::string & cf_handle_id, int32_t ttl_sec);
 
     void destroy(const std::string & cf_handle_id);
 
@@ -55,7 +67,13 @@ private:
     LoggerPtr logger;
 
     std::mutex handles_mutex;
-    std::unordered_map<std::string, rocksdb::ColumnFamilyHandle *> cf_handles;
+
+    struct TTLColumnFamilyHandle
+    {
+        rocksdb::ColumnFamilyHandle * handle = nullptr;
+        int32_t ttl_sec = 0;
+    };
+    std::unordered_map<std::string, TTLColumnFamilyHandle> cf_handles;
 };
 
 /// RocksHandler is a simple wrapper of rocksdb column family handle and
@@ -116,11 +134,12 @@ private:
     }
 
 public:
-    explicit RocksDBColumnFamilyHandler(RocksDBPtr rocks_, rocksdb::ColumnFamilyHandle * cf_handle_ = nullptr);
+    explicit RocksDBColumnFamilyHandler(RocksDBPtr rocks_, rocksdb::ColumnFamilyHandle * cf_handle_ = nullptr, int32_t ttl_sec = 0);
 
     template <typename Key, typename Value>
     void put(const Key & key, const Value & value)
     {
+        chassert(ttl_sec <= 0);
         internal_buf.clear();
         auto status = db->Put(write_options, cf_handle, toSlice(key), toSlice(value));
         if (!status.ok())
@@ -130,6 +149,7 @@ public:
     template <typename Key, typename Value>
     void get(const Key & key, Value & value) const
     {
+        chassert(ttl_sec <= 0);
         internal_buf.clear();
         rocksdb::PinnableSlice pinnable_value(&internal_buf);
         auto status = db->Get(read_options, cf_handle, toSlice(key), &pinnable_value);
@@ -142,6 +162,7 @@ public:
     template <typename Key, typename Value>
     bool tryGet(const Key & key, Value & value) const
     {
+        chassert(ttl_sec <= 0);
         internal_buf.clear();
         rocksdb::PinnableSlice pinnable_value(&internal_buf);
         auto status = db->Get(read_options, cf_handle, toSlice(key), &pinnable_value);
@@ -161,6 +182,7 @@ public:
     template <typename Key>
     void remove(const Key & key)
     {
+        chassert(ttl_sec <= 0);
         internal_buf.clear();
         auto status = db->Delete(write_options, cf_handle, toSlice(key));
         if (!status.ok())
@@ -182,6 +204,8 @@ public:
 
     rocksdb::DB * db;
     rocksdb::ColumnFamilyHandle * cf_handle;
+
+    const int32_t ttl_sec;
 
 private:
     /// Caller should ensure Rocks and ColumnFamilyHandle is alive
