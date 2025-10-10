@@ -1,5 +1,5 @@
-proton (2.9.9-rc.39) unstable; urgency=low
+proton (3.0.1) unstable; urgency=low
 
   * Modified source code
 
- -- proton-robot <root@timeplus.io>  Thu, 28 Aug 2025 09:11:13 +0000
+ -- proton-robot <root@timeplus.io>  Fri, 10 Oct 2025 13:45:10 +0000
