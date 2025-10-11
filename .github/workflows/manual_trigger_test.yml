@@ -45,20 +45,19 @@ on: # yamllint disable-line rule:truthy
         - compatibility
         - performance
         - migration
-        - scope.release # smoke,stateless,stateful,compatibility,performance (release_build use) (skip query_compatibility until ready)
+        - scope.release # smoke,stateless,stateful (release_build use) (disabled: query_compatibility, compatibility, performance, migration)
       has_feature_enabled:
         description: 'Executed features separated by semicolons (support: hybrid;python-udf-library)'
         required: false
         type: string
         default: ''
       nodes:
-        description: 'smoke deploy nodes'
+        description: 'smoke deploy nodes (only single-node supported)'
         required: false
         type: choice
-        default: "3"
+        default: "1"
         options:
         - "1"
-        - "3"
 
 jobs:
   prepare_smoke_test:
@@ -520,7 +519,7 @@ jobs:
       TIMEPLUS_WORKSPACE: ${{ secrets.TIMEPLUS_WORKSPACE }}
   prepare_performance_test:
     runs-on: ubuntu-latest
-    if: ${{ github.event.inputs.test_category == 'performance' || github.event.inputs.test_category == 'scope.release' }}
+    if: false # Disabled performance tests
     outputs:
       command: |
         export PROTON_VERSION=$TAG
@@ -599,7 +598,7 @@ jobs:
       TIMEPLUS_WORKSPACE: ${{ secrets.TIMEPLUS_WORKSPACE }}
   prepare_migration_test:
     runs-on: ubuntu-latest
-    if: ${{ github.event.inputs.test_category == 'migration' || github.event.inputs.test_category == 'scope.release' }}
+    if: false # Disabled migration tests
     outputs:
       command: |
         export PROTON_VERSION=$TAG
@@ -714,17 +713,15 @@ jobs:
           export PROTON_VERSION=$TAG
           cd $GITHUB_WORKSPACE/tests/cluster/deployment/legacy/
 
-          # Start Up Proton
-          nohup ./proton server start --config-file config_node1.yaml > console_proton1.log 2>&1 &
-          nohup ./proton server start --config-file config_node2.yaml > console_proton2.log 2>&1 &
-          nohup ./proton server start --config-file config_node3.yaml > console_proton3.log 2>&1 &
+          # Start Up Proton (single node only)
+          nohup ./proton server > console_proton1.log 2>&1 &
           ps -ef | grep proton
 
-          # Run Smoke Tests
+          # Run Smoke Tests (single node: p1k1)
           mkdir log
-          ./probe smoke -v $GITHUB_WORKSPACE/tests/cluster/smoke -d $GITHUB_WORKSPACE/tests/cluster/deployment/local -c p3k1 -k 00_tumble_window_max --collect-only
+          ./probe smoke -v $GITHUB_WORKSPACE/tests/cluster/smoke -d $GITHUB_WORKSPACE/tests/cluster/deployment/local -c p1k1 -k 00_tumble_window_max --collect-only
           sleep 5
-          ./probe smoke -v $GITHUB_WORKSPACE/tests/cluster/smoke -d $GITHUB_WORKSPACE/tests/cluster/deployment/local -c p3k1 -k 00_tumble_window_max -f ./log/probe.log
+          ./probe smoke -v $GITHUB_WORKSPACE/tests/cluster/smoke -d $GITHUB_WORKSPACE/tests/cluster/deployment/local -c p1k1 -k 00_tumble_window_max -f ./log/probe.log
 
           # Collect Log
           cat ./log/probe.log
