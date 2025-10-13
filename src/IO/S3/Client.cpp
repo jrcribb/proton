@@ -13,6 +13,7 @@
 #include <aws/core/utils/HashingUtils.h>
 #include <aws/core/utils/logging/ErrorMacros.h>
 
+#include <IO/Expect404ResponseScope.h>
 #include <IO/S3Common.h>
 #include <IO/S3/Requests.h>
 #include <IO/S3/PocoHTTPClientFactory.h>
@@ -400,12 +401,12 @@ Model::UploadPartCopyOutcome Client::UploadPartCopy(const UploadPartCopyRequest 
 
 Model::DeleteObjectOutcome Client::DeleteObject(const DeleteObjectRequest & request) const
 {
-    return doRequest(request, [this](const Model::DeleteObjectRequest & req) { return DeleteObject(req); });
+    return doRequest(request, [this](const Model::DeleteObjectRequest & req) { Expect404ResponseScope scope; return DeleteObject(req); });
 }
 
 Model::DeleteObjectsOutcome Client::DeleteObjects(const DeleteObjectsRequest & request) const
 {
-    return doRequest(request, [this](const Model::DeleteObjectsRequest & req) { return DeleteObjects(req); });
+    return doRequest(request, [this](const Model::DeleteObjectsRequest & req) { Expect404ResponseScope scope; return DeleteObjects(req); });
 }
 
 Client::ComposeObjectOutcome Client::ComposeObject(const ComposeObjectRequest & request) const
