@@ -1061,7 +1061,7 @@ void HybridHashJoin::joinBlock(Block & block, ExtraBlockPtr & not_processed)
 /// Use left_block to join right hash table
 void HybridHashJoin::joinLeftBlock(Block & left_block)
 {
-    chassert(!bidirectional_hash_join && !range_bidirectional_hash_join && !emit_changelog);
+    chassert(!bidirectional_hash_join && !range_bidirectional_hash_join);
 
     /// SELECT * FROM append_only [INNER | LEFT | RIGHT | FULL] JOIN versioned_kv
     /// SELECT * FROM append_only ASOF JOIN versioned_kv
@@ -1354,7 +1354,8 @@ void HybridHashJoin::transformToOutputBlock(Block & joined_block) const
     /// Please note we didn't reorder columns according to output header if block is empty to save some cpu cycles
     /// Caller shall check if the retracted block is empty and avoid pushing this empty block downstream since
     /// this empty block's structure probably doesn't match the output header
-    if (!joined_block.rows())
+    /// Also for stream join hybrid table
+    if (!joined_block.rows() || !right_data.join_ctx.join_stream_desc->data_stream_semantic.streaming)
         return;
 
     if constexpr (is_left_block)
@@ -1423,6 +1424,10 @@ void HybridHashJoin::transformHeader(Block & header)
         joinBlockWithHashTable<true>(header, right_data.index->getCurrentMapsVariants());
     else
         joinLeftBlock(header);
+
+    /// Doesn't handle _tp_delta for stream join hybrid table
+    if (!right_data.join_ctx.join_stream_desc->data_stream_semantic.streaming)
+        return;
 
     /// Remove internal left/right delta column
     {

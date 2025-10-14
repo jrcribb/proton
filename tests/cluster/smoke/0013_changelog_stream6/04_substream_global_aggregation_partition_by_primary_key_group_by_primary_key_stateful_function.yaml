@@ -23,7 +23,7 @@ steps:
     type: stream
     query: |
       select max(val), min(val), avg(val), id from changelog(test14_substream_6, id)
-      partition by id group by id;
+      partition by id group by id emit periodic 1ms;
     schema:
       - name: max(val)
         type: int32
@@ -67,6 +67,8 @@ steps:
       - [1, 1, 1, 2]
       - [3, 3, 3, 3]
       - [5, 5, 5, 1]
-      - [14, 14, 14, 2]
-      - [10, 10, 10, 1]
+      - [8, 8, 8, 2]
       - [9, 9, 9, 3]
+      - [11, 11, 11, 2]
+      - [10, 10, 10, 1]
+      - [14, 14, 14, 2]

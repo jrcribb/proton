@@ -228,4 +228,64 @@ std::vector<HashIndex::BucketBlock> HashIndex::assignDataBlockToRangeBuckets(Blo
 
     return bucket_assigned_blocks;
 }
+
+size_t HashIndex::approximateCount() const
+{
+    size_t count = 0;
+    auto collect_count = [&](const HybridHashJoinMapsVariants & index) {
+        std::vector<const HybridMapsVariant *> maps_vector;
+        maps_vector.reserve(index.size());
+        for (size_t i = 0; i < index.size(); ++i)
+            maps_vector.push_back(&index[i]);
+
+        hybridJoinDispatch(
+            join->getStreamingKind(),
+            join->getStreamingStrictness(),
+            maps_vector,
+            [&](auto /*kind_*/, auto /*strictness_*/, const auto & maps_vector_) {
+                for (const auto & map : maps_vector_)
+                    count += map->table.approximateCount();
+            });
+    };
+
+    {
+        std::scoped_lock lock(mutex);
+        collect_count(*current_hash_index);
+
+        for (const auto & [_, index_with_timestamps] : range_bucket_hash_indexes)
+            collect_count(*index_with_timestamps.index);
+    }
+
+    return count;
+}
+
+size_t HashIndex::getBufferSizeInBytes() const
+{
+    size_t bytes = 0;
+    auto collect_bytes = [&](const HybridHashJoinMapsVariants & index) {
+        std::vector<const HybridMapsVariant *> maps_vector;
+        maps_vector.reserve(index.size());
+        for (size_t i = 0; i < index.size(); ++i)
+            maps_vector.push_back(&index[i]);
+
+        hybridJoinDispatch(
+            join->getStreamingKind(),
+            join->getStreamingStrictness(),
+            maps_vector,
+            [&](auto /*kind_*/, auto /*strictness_*/, const auto & maps_vector_) {
+                for (const auto & map : maps_vector_)
+                    bytes += map->table.getBufferSizeInBytes();
+            });
+    };
+
+    {
+        std::scoped_lock lock(mutex);
+        collect_bytes(*current_hash_index);
+
+        for (const auto & [_, index_with_timestamps] : range_bucket_hash_indexes)
+            collect_bytes(*index_with_timestamps.index);
+    }
+
+    return bytes;
+}
 }

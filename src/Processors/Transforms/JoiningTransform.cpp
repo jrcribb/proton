@@ -4,6 +4,10 @@
 
 #include <Common/logger_useful.h>
 
+/// proton: starts.
+#include <Interpreters/Streaming/HashJoin/IHashJoin.h>
+/// proton: ends.
+
 namespace DB
 {
 
@@ -15,10 +19,19 @@ namespace ErrorCodes
 Block JoiningTransform::transformHeader(Block header, const JoinPtr & join)
 {
     LOG_DEBUG(getLogger("JoiningTransform"), "Before join block: '{}'", header.dumpStructure());
-    join->checkTypesOfKeys(header);
-    join->initialize(header);
-    ExtraBlockPtr tmp;
-    join->joinBlock(header, tmp);
+    /// proton: starts. Add for join hybrid hash table
+    if (auto hash_join = std::dynamic_pointer_cast<Streaming::IHashJoin>(join))
+    {
+        hash_join->transformHeader(header);
+    }
+    else
+    {
+        join->checkTypesOfKeys(header);
+        join->initialize(header);
+        ExtraBlockPtr tmp;
+        join->joinBlock(header, tmp);
+    }
+    /// proton: ends.
     LOG_DEBUG(getLogger("JoiningTransform"), "After join block: '{}'", header.dumpStructure());
     return header;
 }
@@ -40,6 +53,11 @@ JoiningTransform::JoiningTransform(
 {
     if (!join->isFilled())
         inputs.emplace_back(Block(), this); // Wait for FillingRightJoinSideTransform
+
+    /// proton: starts. Add for join hybrid hash table
+    if (auto hash_join = std::dynamic_pointer_cast<Streaming::IHashJoin>(join))
+        hash_join->postInit(input_header, output_header, /*join_max_cached_bytes=*/std::numeric_limits<size_t>::max());
+    /// proton: ends.
 }
 
 JoiningTransform::~JoiningTransform() = default;
@@ -230,6 +248,16 @@ FillingRightJoinSideTransform::FillingRightJoinSideTransform(Block input_header,
     : IProcessor({input_header}, {Block()}, ProcessorID::FillingRightJoinSideTransformID)
     , join(std::move(join_))
 {}
+
+/// proton: starts.
+String FillingRightJoinSideTransform::getName() const
+{
+    if (auto hash_join = std::dynamic_pointer_cast<Streaming::IHashJoin>(join))
+        return fmt::format("FillingRightJoinSide({})", hash_join->type());
+    else
+        return "FillingRightJoinSide";
+}
+/// proton: ends.
 
 InputPort * FillingRightJoinSideTransform::addTotalsPort()
 {

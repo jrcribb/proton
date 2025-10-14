@@ -215,9 +215,11 @@ void HashJoin::init()
     /// SELECT * FROM left_append_only INNER ASOF JOIN right_append_only ON left_append_only.key = right_append_only.key AND left_append_only.timestamp < right_append_only.timestamp SETTINGS keep_versions=3;
     /// SELECT * FROM left_append_only INNER LATEST JOIN right_append_only ON left_append_only.key = right_append_only.key;
     /// `ASOF` keeps multiple versions and `LATEST` only keeps the latest version for the join key
+    /// Also for `Stream join Table`
     auto data_enrichment_join = (left_join_ctx.join_stream_desc->data_stream_semantic == DataStreamSemantic::Append
                                  && right_join_ctx.join_stream_desc->data_stream_semantic == DataStreamSemantic::Changelog)
-        || streaming_strictness == Strictness::Asof || (streaming_strictness == Strictness::Latest && streaming_kind != Kind::Full);
+        || streaming_strictness == Strictness::Asof || (streaming_strictness == Strictness::Latest && streaming_kind != Kind::Full)
+        || !right_join_ctx.join_stream_desc->data_stream_semantic.streaming;
 
     bidirectional_hash_join = !data_enrichment_join;
 

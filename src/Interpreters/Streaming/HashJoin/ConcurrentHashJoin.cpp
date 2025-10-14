@@ -133,6 +133,11 @@ void ConcurrentHashJoin::transformHeader(Block & header)
     hash_joins[0]->data->transformHeader(header);
 }
 
+const Block & ConcurrentHashJoin::getOutputHeader() const
+{
+    return hash_joins[0]->data->getOutputHeader();
+}
+
 void ConcurrentHashJoin::insertRightBlock(Block right_block)
 {
     auto dispatched_blocks = dispatchBlock(right_key_column_positions, std::move(right_block));
@@ -214,6 +219,9 @@ void ConcurrentHashJoin::joinLeftBlock(Block & left_block)
     }
 
     left_block = concatenateBlocks(joined_blocks);
+    /// If there is no joined block, return an empty block as a heartbeat
+    if (!left_block)
+        left_block = getOutputHeader().cloneEmpty();
 }
 
 template <bool is_left_block>
@@ -283,6 +291,10 @@ Block ConcurrentHashJoin::insertBlockAndJoin(Block & block)
     }
 
     block = concatenateBlocks(joined_blocks);
+    /// If there is no joined block, return an empty block as a heartbeat
+    if (!block)
+        block = getOutputHeader().cloneEmpty();
+
     return concatenateBlocks(retracted_blocks);
 }
 
@@ -353,6 +365,10 @@ std::vector<Block> ConcurrentHashJoin::insertBlockToRangeBucketAndJoin(Block blo
         }
     }
 
+    /// If there is no joined block, return an empty block as a heartbeat
+    if (joined_results.empty())
+        joined_results.emplace_back(getOutputHeader().cloneEmpty());
+
     return joined_results;
 }
 
@@ -380,6 +396,20 @@ void ConcurrentHashJoin::joinBlock(Block & block, std::shared_ptr<ExtraBlock> & 
 void ConcurrentHashJoin::checkTypesOfKeys(const Block & block) const
 {
     hash_joins[0]->data->checkTypesOfKeys(block);
+}
+
+void ConcurrentHashJoin::setTotals(const Block & block)
+{
+    if (block)
+    {
+        std::lock_guard lock(totals_mutex);
+        totals = block;
+    }
+}
+
+const Block & ConcurrentHashJoin::getTotals() const
+{
+    return totals;
 }
 
 size_t ConcurrentHashJoin::getTotalRowCount() const

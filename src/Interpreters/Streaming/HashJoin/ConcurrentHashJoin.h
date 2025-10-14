@@ -48,6 +48,7 @@ public:
     void postInit(const Block & left_header, const Block & output_header_, UInt64 join_max_cached_bytes_) override;
 
     void transformHeader(Block & header) override;
+    const Block & getOutputHeader() const override;
 
     /// For non-bidirectional hash join
     void insertRightBlock(Block right_block) override;
@@ -75,6 +76,8 @@ public:
 
     const TableJoin & getTableJoin() const override { return *table_join; }
     void checkTypesOfKeys(const Block & block) const override;
+    void setTotals(const Block & block) override;
+    const Block & getTotals() const override;
     size_t getTotalRowCount() const override;
     size_t getTotalByteCount() const override;
     bool alwaysReturnsEmptySet() const override;
@@ -131,6 +134,9 @@ private:
     size_t max_hot_keys = 0;
     std::vector<std::shared_ptr<InternalHashJoin>> hash_joins;
     size_t num_used_hash_joins; /// Actual number of used hash joins
+
+    std::mutex totals_mutex;
+    Block totals;
 
     std::vector<size_t> left_key_column_positions;
     std::vector<size_t> right_key_column_positions;

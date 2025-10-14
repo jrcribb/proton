@@ -46,7 +46,7 @@ public:
 
     UInt64 keepVersions() const { return right_join_ctx.join_stream_desc->keep_versions; }
 
-    const Block & getOutputHeader() const { return output_header; }
+    const Block & getOutputHeader() const override { return output_header; }
 
     JoinKind getKind() const { return kind; }
     JoinStrictness getStrictness() const { return strictness; }

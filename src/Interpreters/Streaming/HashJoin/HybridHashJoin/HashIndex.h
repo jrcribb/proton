@@ -85,6 +85,8 @@ SERDE struct HashIndex
     }
 
     const CachedBlockMetrics & getJoinMetrics() const { return metrics; }
+    size_t approximateCount() const;
+    size_t getBufferSizeInBytes() const;
 
     void serialize(WriteBuffer & wb, VersionType version) const;
     void deserialize(ReadBuffer & rb, VersionType version);
