@@ -165,8 +165,12 @@ protected:
         PaddedPODArray<AggregateDataPtr> & places, OutputBlockColumns && out_cols, Arena * arena, bool use_compiled_functions) const;
     Block insertResultsIntoColumns(PaddedPODArray<ConstAggregateDataPtr> & places, OutputBlockColumns && out_cols, Arena * arena) const;
 
+    /// Merging state for finalization
     void mergeAggregateStates(
         AggregateDataPtr dst, ConstAggregateDataPtr src, Arena * arena, bool skip_compiled_aggregate_functions = false) const;
+
+    /// Copying state for retraction
+    void copyAggregateStates(AggregateDataPtr dst, ConstAggregateDataPtr src, Arena * arena) const;
 
     void doDestroyAggregateStates(AggregateDataPtr place) const;
 

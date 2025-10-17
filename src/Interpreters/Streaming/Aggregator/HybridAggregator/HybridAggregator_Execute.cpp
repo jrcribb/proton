@@ -182,7 +182,7 @@ template <typename Table, typename KeyGetter>
                 if (retracts_emplace_result.isInserted() && !TrackingCount::empty(src_place + tracking_count_offset))
                 {
                     auto * dst_place = static_cast<AggregateDataPtr>(retracts_emplace_result.getMutableMapped());
-                    mergeAggregateStates(dst_place, src_place, /*arena=*/nullptr);
+                    copyAggregateStates(dst_place, src_place, /*arena=*/nullptr);
                     TrackingCount::merge(dst_place + tracking_count_offset, src_place + tracking_count_offset);
                 }
             }
