@@ -29,7 +29,7 @@
 #include <Parsers/ExpressionElementParsers.h>
 #include <Parsers/Streaming/ParserIntervalAliasExpression.h>
 #include <Parsers/Streaming/ParserJsonElementExpression.h>
-#include <Parsers/Streaming/ParserSessionRangeComparisonExpressionIfPossible.h>
+#include <Parsers/Streaming/ParserSessionBoundaryExpression.h>
 #include <Common/ClickHouseCompatibleFlag.h>
 /// proton: ends.
 

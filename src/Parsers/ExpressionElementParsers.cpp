@@ -48,7 +48,7 @@
 #include <Interpreters/StorageID.h>
 
 /// proton: starts.
-#include <Parsers/Streaming/ParserSessionRangeComparisonExpressionIfPossible.h>
+#include <Parsers/Streaming/ParserSessionBoundaryExpression.h>
 #include <Common/ClickHouseCompatibleFlag.h>
 /// proton: ends.
 
@@ -1018,7 +1018,7 @@ bool ParserFunction::parseImpl(Pos & pos, ASTPtr & node, Expected & expected, [[
     if (is_table_function && function_name == "session")
     {
         if (!ParserList(
-                 std::make_unique<ParserSessionRangeComparisonExpressionIfPossible>(
+                 std::make_unique<ParserSessionBoundaryExpression>(
                      std::make_unique<ParserExpressionWithOptionalAlias>(false, true)),
                  std::make_unique<ParserToken>(TokenType::Comma))
                  .parse(pos, expr_list_args, expected))

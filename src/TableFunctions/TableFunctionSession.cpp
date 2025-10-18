@@ -36,7 +36,9 @@ ASTs TableFunctionSession::checkAndExtractArguments(ASTFunction * node) const
 
 void TableFunctionSession::postArgs(ASTs & args) const
 {
-    /// __session(timestamp_expr, timeout_interval, [max_session_size], [<range_comparison>: start_cond, start_with_inclusion, end_cond, end_with_inclusion])
+    /// __session(timestamp_expr, timeout_interval, [max_session_size], [<start_cond, start_with_inclusion, end_cond, end_with_inclusion])
+    /// When we reach here, `checkAndExtractSessionArguments(node)` already fill the missing args for session function
+    /// and also the first `stream` arg is popped off
     assert(args.size() == 7);
 
     auto timeout_interval = extractInterval(args[1]->as<ASTFunction>());
@@ -44,13 +46,15 @@ void TableFunctionSession::postArgs(ASTs & args) const
     if (!args[2])
         args[2] = makeASTInterval(timeout_interval.interval * ProtonConsts::SESSION_SIZE_MULTIPLIER, timeout_interval.unit);
 
-    /// If range predication is not assigned, any incoming event should be able to start a session window.
+    /// If session boundary is not assigned, session start / end predicates are not there - session(stream, ts, timeout, max_session_size)
+    /// Any incoming event for that grouping (session) key will start a session window and it will depend on
+    /// timeout / max session size to close the window
     if (!args[3])
     {
-        args[3] = std::make_shared<ASTLiteral>(true);
-        args[4] = std::make_shared<ASTLiteral>(true);
-        args[5] = std::make_shared<ASTLiteral>(false);
-        args[6] = std::make_shared<ASTLiteral>(true);
+        args[3] = std::make_shared<ASTLiteral>(true); /// session_start_expr
+        args[4] = std::make_shared<ASTLiteral>(true); /// start_with_inclusion
+        args[5] = std::make_shared<ASTLiteral>(false); /// session_end_expr
+        args[6] = std::make_shared<ASTLiteral>(true); /// end_with_inclusion
     }
     assert(args[3] && args[4] && args[5] && args[6]);
 
@@ -73,8 +77,8 @@ NamesAndTypesList TableFunctionSession::getAdditionalResultColumns(const Columns
     return NamesAndTypesList{
         NameAndTypePair(ProtonConsts::STREAMING_WINDOW_START, arguments[0].type),
         NameAndTypePair(ProtonConsts::STREAMING_WINDOW_END, arguments[0].type),
-        NameAndTypePair(ProtonConsts::STREAMING_SESSION_START, arguments[3].type),
-        NameAndTypePair(ProtonConsts::STREAMING_SESSION_END, arguments[5].type)};
+        NameAndTypePair(ProtonConsts::STREAMING_SESSION_START, arguments[3].type), /// session_start_expr
+        NameAndTypePair(ProtonConsts::STREAMING_SESSION_END, arguments[5].type)};  /// session_end_expr
 }
 
 void registerTableFunctionSession(TableFunctionFactory & factory)

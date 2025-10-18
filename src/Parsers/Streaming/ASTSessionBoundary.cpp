@@ -1,13 +1,13 @@
-#include "ASTSessionRangeComparision.h"
+#include <Parsers/Streaming/ASTSessionBoundary.h>
 
 #include <IO/Operators.h>
 #include <Common/SipHash.h>
 
 namespace DB
 {
-ASTPtr ASTSessionRangeComparision::clone() const
+ASTPtr ASTSessionBoundary::clone() const
 {
-    auto res = std::make_shared<ASTSessionRangeComparision>(*this);
+    auto res = std::make_shared<ASTSessionBoundary>(*this);
     res->children.clear();
     for (auto & child : children)
         res->children.push_back(child->clone());
@@ -15,7 +15,7 @@ ASTPtr ASTSessionRangeComparision::clone() const
     return res;
 }
 
-void ASTSessionRangeComparision::updateTreeHashImpl(SipHash & hash_state) const
+void ASTSessionBoundary::updateTreeHashImpl(SipHash & hash_state) const
 {
     assert(children.size() == 2);
 
@@ -28,7 +28,7 @@ void ASTSessionRangeComparision::updateTreeHashImpl(SipHash & hash_state) const
     IAST::updateTreeHashImpl(hash_state);
 }
 
-void ASTSessionRangeComparision::formatImplWithoutAlias(const FormatSettings & settings, FormatState &, FormatStateStacked) const
+void ASTSessionBoundary::formatImplWithoutAlias(const FormatSettings & settings, FormatState &, FormatStateStacked) const
 {
     assert(children.size() == 2);
 
@@ -39,7 +39,7 @@ void ASTSessionRangeComparision::formatImplWithoutAlias(const FormatSettings & s
     settings.ostr << (settings.hilite ? hilite_keyword : "") << (end_with_inclusion ? "]" : ")") << (settings.hilite ? hilite_none : "");
 }
 
-void ASTSessionRangeComparision::appendColumnNameImpl(WriteBuffer & ostr) const
+void ASTSessionBoundary::appendColumnNameImpl(WriteBuffer & ostr) const
 {
     assert(children.size() == 2);
 
