@@ -73,7 +73,7 @@ std::pair<bool, bool> HybridAggregator::doExecuteOnBlock(
         }
         case HybridHashType::WithoutKey:
         {
-            need_finalization = executeWithoutKeyImpl(result, row_begin, row_end, aggregate_functions_instructions.data());
+            need_finalization = executeWithoutKeyImpl(result, row_begin, row_end, aggregate_functions_instructions.data(), tracking_retracts);
             break;
         }
 

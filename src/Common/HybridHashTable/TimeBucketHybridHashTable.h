@@ -248,6 +248,8 @@ public:
         return metrics;
     }
 
+    bool empty() const { return approximateCount() == 0; }
+
     size_t approximateCount() const
     {
         size_t estimated_keys = 0;

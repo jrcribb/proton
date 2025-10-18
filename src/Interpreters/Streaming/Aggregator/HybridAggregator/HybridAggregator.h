@@ -101,10 +101,10 @@ private:
         HybridAggregatedDataVariants & result,
         size_t row_begin,
         size_t row_end,
-        AggregateFunctionInstruction * aggregate_instructions) const;
+        AggregateFunctionInstruction * aggregate_instructions,
+        bool tracking_retracts) const;
 
-    BlocksList convertToBlocksWithoutKey(HybridAggregatedDataVariants & data_variants, bool merged_variants, bool final_) const;
-    BlocksList convertToBlocksWithoutKeyForRetractsMerged(HybridAggregatedDataVariants & data_variants, bool final_) const;
+    BlocksList convertToBlocksWithoutKey(HybridAggregatedDataVariants & data_variants, bool final_) const;
     BlocksList convertToBlocksWithoutKeyForRetracts(HybridAggregatedDataVariants & data_variants, bool final_) const;
     Block doConvertOnePlace(AggregateDataPtr data, const Block & res_header, bool final_) const;
 
@@ -227,12 +227,8 @@ private:
 
     template <typename KeyGetter, typename Table>
     void mergeRetracts(
-        Table & dst,
-        Table * dst_retracts,
-        const std::vector<Table *> & srcs,
-        const std::vector<Table *> & src_updates,
-        const std::vector<Table *> & src_retracts,
-        Arena & arena) const;
+        Table & dst, Table * dst_retracts, const std::vector<Table *> & srcs, const std::vector<Table *> & src_retracts, Arena & arena)
+        const;
 
 private:
     friend struct HybridAggregatedDataVariants;

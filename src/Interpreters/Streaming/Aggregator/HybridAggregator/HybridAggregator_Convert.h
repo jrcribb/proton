@@ -53,7 +53,7 @@ HybridAggregator::convertToBlocks(IAggregatedDataVariants & variants, size_t /*m
         }
         case HybridHashType::WithoutKey:
         {
-            blocks = convertToBlocksWithoutKey(data_variants, /*merged_variants=*/false, /*final=*/true);
+            blocks = convertToBlocksWithoutKey(data_variants, /*final=*/true);
             break;
         }
 
@@ -174,20 +174,44 @@ BlocksList HybridAggregator::convertToBlocksForAll(Table & table) const
 
     if (params->group_by != IAggregatorParams::GroupBy::UserDefined)
     {
-        table.forBatchValue(
-            std::min(max_block_size, table.getConfig().max_hot_key_count),
-            [&](const KeyGetter::KeyType & key, auto value, bool flush) {
-                KeyGetter::insertKeyIntoColumns(key, out_cols.raw_key_columns, key_sizes_ref);
-                places.emplace_back(static_cast<ConstAggregateDataPtr>(value.getMapped()));
+        if (trackingStateCount())
+        {
+            table.forBatchValue(
+                std::min(max_block_size, table.getConfig().max_hot_key_count),
+                [&](const KeyGetter::KeyType & key, auto value, bool flush) {
+                    auto mapped = static_cast<ConstAggregateDataPtr>(value.getMapped());
+                    if (!TrackingCount::empty(mapped))
+                    {
+                        KeyGetter::insertKeyIntoColumns(key, out_cols.raw_key_columns, key_sizes_ref);
+                        places.emplace_back(mapped);
+                    }
 
-                /// If reached max block size, finalize the block and start a new one
-                if (flush)
-                {
-                    res.emplace_back(insertResultsIntoColumns(places, std::move(out_cols), /*arena=*/nullptr));
-                    init_out_cols();
-                }
-            },
-            done_callback);
+                    /// If reached max block size, finalize the block and start a new one
+                    if (flush)
+                    {
+                        res.emplace_back(insertResultsIntoColumns(places, std::move(out_cols), /*arena=*/nullptr));
+                        init_out_cols();
+                    }
+                },
+                done_callback);
+        }
+        else
+        {
+            table.forBatchValue(
+                std::min(max_block_size, table.getConfig().max_hot_key_count),
+                [&](const KeyGetter::KeyType & key, auto value, bool flush) {
+                    KeyGetter::insertKeyIntoColumns(key, out_cols.raw_key_columns, key_sizes_ref);
+                    places.emplace_back(static_cast<ConstAggregateDataPtr>(value.getMapped()));
+
+                    /// If reached max block size, finalize the block and start a new one
+                    if (flush)
+                    {
+                        res.emplace_back(insertResultsIntoColumns(places, std::move(out_cols), /*arena=*/nullptr));
+                        init_out_cols();
+                    }
+                },
+                done_callback);
+        }
     }
     else
     {
@@ -485,7 +509,7 @@ BlocksList HybridAggregator::mergeAndConvertToBlocks(
             initStates(result);
 
             mergeWithoutKey(result, many_data_variants, merge_arena);
-            return convertToBlocksWithoutKey(result, /*merged_variants=*/true, /*final=*/true);
+            return convertToBlocksWithoutKey(result, /*final=*/true);
         }
 
 #define M(NAME, IS_TWO_LEVEL) \
@@ -589,8 +613,6 @@ void HybridAggregator::mergeWithoutKey(
         case TrackingUpdatesType::None:
             [[fallthrough]];
         case TrackingUpdatesType::Updates:
-            [[fallthrough]];
-        case TrackingUpdatesType::UpdatesWithRetract:
         {
             for (auto & data_variants : many_data_variants)
             {
@@ -600,19 +622,55 @@ void HybridAggregator::mergeWithoutKey(
                     continue;
 
                 mergeAggregateStates(result.without_key.get(), src_variants->without_key.get(), &arena);
+            }
+            break;
+        }
+        case TrackingUpdatesType::UpdatesWithRetract:
+        {
+            auto has_retract = std::ranges::any_of(many_data_variants, [](const auto & data_variants) {
+                chassert(data_variants->aggregatorType() == AggregatorType::Hybrid);
+                return static_cast<HybridAggregatedDataVariants *>(data_variants.get())->without_key_retracts != nullptr;
+            });
+
+            for (auto & data_variants : many_data_variants)
+            {
+                auto * src_variants = static_cast<HybridAggregatedDataVariants *>(data_variants.get());
+                if (!src_variants->without_key)
+                    continue;
+
+                /// 1) Merge current state
+                mergeAggregateStates(result.without_key.get(), src_variants->without_key.get(), &arena);
+                TrackingCount::merge(
+                    result.without_key.get() + tracking_count_offset, src_variants->without_key.get() + tracking_count_offset);
+
+                /// 2) Merge retract state
+                if (!has_retract)
+                    continue;
+
+                if (!result.without_key_retracts)
+                    result.initWithoutKeyRetractStates(total_size_of_aggregate_states, align_aggregate_states);
 
                 if (src_variants->without_key_retracts)
                 {
-                    if (!result.without_key_retracts)
-                        result.initWithoutKeyRetractStates(total_size_of_aggregate_states, align_aggregate_states);
+                    /// 2.1) The key was added/updated in some shard (has retract state or empty retract state), merge with the retracted state, then reset it
+                    if (!TrackingCount::empty(src_variants->without_key_retracts.get()))
+                    {
+                        mergeAggregateStates(result.without_key_retracts.get(), src_variants->without_key_retracts.get(), &arena);
+                        TrackingCount::merge(
+                            result.without_key_retracts.get() + tracking_count_offset,
+                            src_variants->without_key_retracts.get() + tracking_count_offset);
+                    }
 
-                    mergeAggregateStates(result.without_key_retracts.get(), src_variants->without_key_retracts.get(), &arena);
-
-                    /// After merge the retract state to result, clean it up
                     src_variants->resetRetractWithoutKey();
                 }
+                else
+                {
+                    /// 2.2) The key is not found in some shards (no retract state), merge with current state
+                    mergeAggregateStates(result.without_key_retracts.get(), src_variants->without_key.get(), &arena);
+                    TrackingCount::merge(
+                        result.without_key_retracts.get() + tracking_count_offset, src_variants->without_key.get() + tracking_count_offset);
+                }
             }
-
             break;
         }
     }
@@ -642,7 +700,7 @@ ALWAYS_INLINE void HybridAggregator::merge(
         }
         case TrackingUpdatesType::UpdatesWithRetract:
         {
-            mergeRetracts<KeyGetter>(dst, dst_retracts, srcs, src_updates, src_retracts, arena);
+            mergeRetracts<KeyGetter>(dst, dst_retracts, srcs, src_retracts, arena);
             break;
         }
     }
@@ -656,15 +714,34 @@ void HybridAggregator::mergeNormal(Table & dst, const std::vector<Table *> & src
         assert(src != nullptr);
 
         /// FIXME, batch
-        src->forEachKeyValue([&](const Table::KeyType & key, auto value) {
-            auto src_mapped = static_cast<ConstAggregateDataPtr>(value.getMapped());
-            auto emplace_result = dst.emplaceKey(key, /*disable_spill=*/false);
-            if (emplace_result.hasError())
-                throw Exception::createRuntime(emplace_result.errorCode(), emplace_result.errorString());
+        if (trackingStateCount())
+        {
+            src->forEachKeyValue([&](const Table::KeyType & key, auto value) {
+                auto src_mapped = static_cast<ConstAggregateDataPtr>(value.getMapped());
+                if (TrackingCount::empty(src_mapped + tracking_count_offset))
+                    return;
 
-            auto dst_mapped = static_cast<AggregateDataPtr>(emplace_result.getMutableMapped());
-            mergeAggregateStates(dst_mapped, src_mapped, &arena);
-        });
+                auto emplace_result = dst.emplaceKey(key, /*disable_spill=*/false);
+                if (emplace_result.hasError())
+                    throw Exception::createRuntime(emplace_result.errorCode(), emplace_result.errorString());
+
+                auto dst_mapped = static_cast<AggregateDataPtr>(emplace_result.getMutableMapped());
+                mergeAggregateStates(dst_mapped, src_mapped, &arena);
+                TrackingCount::merge(dst_mapped + tracking_count_offset, src_mapped + tracking_count_offset);
+            });
+        }
+        else
+        {
+            src->forEachKeyValue([&](const Table::KeyType & key, auto value) {
+                auto src_mapped = static_cast<ConstAggregateDataPtr>(value.getMapped());
+                auto emplace_result = dst.emplaceKey(key, /*disable_spill=*/false);
+                if (emplace_result.hasError())
+                    throw Exception::createRuntime(emplace_result.errorCode(), emplace_result.errorString());
+
+                auto dst_mapped = static_cast<AggregateDataPtr>(emplace_result.getMutableMapped());
+                mergeAggregateStates(dst_mapped, src_mapped, &arena);
+            });
+        }
     }
 }
 
@@ -699,87 +776,80 @@ void HybridAggregator::mergeUpdates(
 
 template <typename KeyGetter, typename Table>
 void HybridAggregator::mergeRetracts(
-    Table & dst,
-    Table * dst_retracts,
-    const std::vector<Table *> & srcs,
-    const std::vector<Table *> & src_updates,
-    const std::vector<Table *> & src_retracts,
-    Arena & arena) const
+    Table & dst, Table * dst_retracts, const std::vector<Table *> & srcs, const std::vector<Table *> & src_retracts, Arena & arena) const
 {
-    /// First, merge all updated retracts to dst_retracts and save new retracts
-    for (size_t i = 0, num_srcs = srcs.size(); i < num_srcs; ++i)
+    chassert(dst_retracts);
+    /// First, collect all retracted keys (including new keys) to dst_retracts
+    /// For example:
+    ///                 (thread)        (thread-2)      (thread-3)
+    ///     key-1       retract         non-retract     non-retract
+    ///     key-2       non-retract     retract         non-retract
+    ///     key-3       non-retract     non-retract     non-retract
+    /// The collected keys: [key-1, key-2]
+    for (auto * src_retract : src_retracts)
     {
-        assert(srcs[i]);
-        if (!src_retracts[i])
+        if (!src_retract)
             continue;
 
-        src_updates[i]->forEachKey([&](const KeyGetter::KeyType & key) {
-            auto find_result = srcs[i]->findKey(key, /*disable_spill=*/true);
-            if (find_result.hasError())
-                throw Exception::createRuntime(find_result.errcode, find_result.errorString());
-
-            if (!find_result.isFound())
-                throw Exception(ErrorCodes::LOGICAL_ERROR, "Updated key is not found in source hash table");
-
-            auto src_retracts_emplace_result = src_retracts[i]->emplaceKey(key, /*disable_spill=*/true);
-            if (src_retracts_emplace_result.hasError())
-                throw Exception::createRuntime(src_retracts_emplace_result.errorCode(), src_retracts_emplace_result.errorString());
-
-            auto src_place = static_cast<ConstAggregateDataPtr>(find_result.getMapped());
-            auto src_retract = static_cast<AggregateDataPtr>(src_retracts_emplace_result.getMutableMapped());
-            if (src_retracts_emplace_result.isInserted())
-            {
-                /// If retract is empty, save the aggregate state first for next retract
-                mergeAggregateStates(src_retract, src_place, &arena);
-            }
-            else
-            {
-                auto dst_retracts_emplace_result = dst_retracts->emplaceKey(key, /*disable_spill=*/true);
-                if (dst_retracts_emplace_result.hasError())
-                    throw Exception::createRuntime(dst_retracts_emplace_result.errorCode(), dst_retracts_emplace_result.errorString());
-
-                auto dst_place = static_cast<AggregateDataPtr>(dst_retracts_emplace_result.getMutableMapped());
-                mergeAggregateStates(dst_place, src_retract, &arena);
-
-                /// After merge src_retract, override it with current aggregate states
-                destroyAggregateStates(src_retract);
-                std::memset(src_retract, 0, total_size_of_aggregate_states);
-                createAggregateStates(src_retract);
-                mergeAggregateStates(src_retract, src_place, &arena);
-            }
+        src_retract->forEachKey([&](const KeyGetter::KeyType & key) {
+            auto dst_retracts_emplace_result = dst_retracts->emplaceKey(key, /*disable_spill=*/false);
+            if (dst_retracts_emplace_result.hasError())
+                throw Exception::createRuntime(dst_retracts_emplace_result.errorCode(), dst_retracts_emplace_result.errorString());
         });
-
-        srcs[i]->spillIfNecessary();
-        src_retracts[i]->spillIfNecessary();
-        dst_retracts->spillIfNecessary();
     }
 
-    /// Second, merge all current aggregate states to dst
-    for (size_t i = 0, num_srcs = srcs.size(); i < num_srcs; ++i)
-    {
-        if (!src_updates[i])
-            continue;
+    /// Second, merge current/retracted aggregate state of collected keys to dst/dst_retracts
+    /// A special case: If there is no collected key, it means it is the first conversion (Retract is not enabled yet),
+    /// merge all current state as normal
+    if (dst_retracts->empty())
+        return mergeNormal(dst, srcs, arena);
 
-        src_updates[i]->forEachKey([&](const KeyGetter::KeyType & key) {
-            auto find_result = srcs[i]->findKey(key, /*disable_spill=*/true);
+    dst_retracts->forEachKeyValue([&](const KeyGetter::KeyType & key, auto retract_value) {
+        for (auto [src, src_retract] : std::views::zip(srcs, src_retracts))
+        {
+            if (!src)
+                continue;
+
+            auto find_result = src->findKey(key, /*disable_spill=*/false);
             if (find_result.hasError())
                 throw Exception::createRuntime(find_result.errcode, find_result.errorString());
 
             if (!find_result.isFound())
-                throw Exception(ErrorCodes::LOGICAL_ERROR, "Updates key is not found in source table");
+                continue;
 
-            auto emplace_result = dst.emplaceKey(key, /*disable_spill=*/true);
+            /// 1) Merge current state to dst
+            auto emplace_result = dst.emplaceKey(key, /*disable_spill=*/false);
             if (emplace_result.hasError())
                 throw Exception::createRuntime(emplace_result.errorCode(), emplace_result.errorString());
 
             auto src_mapped = static_cast<ConstAggregateDataPtr>(find_result.getMapped());
             auto dst_mapped = static_cast<AggregateDataPtr>(emplace_result.getMutableMapped());
             mergeAggregateStates(dst_mapped, src_mapped, &arena);
-        });
+            TrackingCount::merge(dst_mapped + tracking_count_offset, src_mapped + tracking_count_offset);
 
-        srcs[i]->spillIfNecessary();
-        dst.spillIfNecessary();
-    }
+            /// 2) Merge retracted state to dst_retracts
+            /// 2.1) The key was updated in some shard (has retract data), merge with the retracted state
+            auto dst_retract = static_cast<AggregateDataPtr>(retract_value.getMutableMapped());
+            if (src_retract)
+            {
+                auto retract_find_result = src_retract->findKey(key, /*disable_spill=*/false);
+                if (retract_find_result.hasError())
+                    throw Exception::createRuntime(retract_find_result.errcode, retract_find_result.errorString());
+
+                if (retract_find_result.isFound())
+                {
+                    auto src_retract_mapped = static_cast<ConstAggregateDataPtr>(retract_find_result.getMapped());
+                    mergeAggregateStates(dst_retract, src_retract_mapped, &arena);
+                    TrackingCount::merge(dst_retract + tracking_count_offset, src_retract_mapped + tracking_count_offset);
+                    return;
+                }
+            }
+
+            /// 2.2) The key is not found in some shards (no retract data), merge with current state
+            mergeAggregateStates(dst_retract, src_mapped, &arena);
+            TrackingCount::merge(dst_retract + tracking_count_offset, src_mapped + tracking_count_offset);
+        }
+    });
 }
 
 }
