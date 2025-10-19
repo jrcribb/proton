@@ -18,12 +18,14 @@ SERDE struct TrackingTime
     {
         writeVarUInt(min_ts, wb);
         writeVarUInt(max_ts, wb);
+        writeVarUInt(create_utc_ts, wb);
     }
 
     void deserialize(ReadBuffer & rb)
     {
         readVarUInt(min_ts, rb);
         readVarUInt(max_ts, rb);
+        readVarUInt(create_utc_ts, rb);
     }
 
     static void serialize(ConstAggregateDataPtr __restrict place, WriteBuffer & wb)
@@ -51,19 +53,24 @@ SERDE struct TrackingTime
         return data(place).maxSpanReached(span_threshold_ms);
     }
 
+    static UInt64 getCreateTimestamp(ConstAggregateDataPtr __restrict place) noexcept { return data(place).create_utc_ts; }
+
     ALWAYS_INLINE bool maxSpanReached(UInt64 span_threshold_ms) const noexcept { return max_ts - min_ts >= span_threshold_ms; }
 
     static void updateTimestamp(AggregateDataPtr __restrict place, UInt64 ts) noexcept { data(place).updateTimestamp(ts); }
+    static void setCreateTimestamp(AggregateDataPtr __restrict place, UInt64 create_ts) noexcept { data(place).create_utc_ts = create_ts; }
 
     void updateTimestamp(UInt64 ts) noexcept
     {
-        min_ts = min_ts > 0 ? std::min(min_ts, ts) : ts;
+        min_ts = std::min(min_ts, ts);
         max_ts = std::max(max_ts, ts);
     }
 
     /// In milliseconds
-    UInt64 min_ts = 0;
+    UInt64 min_ts = std::numeric_limits<UInt64>::max();
     UInt64 max_ts = 0;
+    /// Timestamp for key creation
+    UInt64 create_utc_ts = 0;
 };
 
 }

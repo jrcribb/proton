@@ -12,7 +12,7 @@
 #include <rocksdb/statistics.h>
 
 #include <filesystem>
-#include <list>
+#include <set>
 
 namespace DB
 {
@@ -39,10 +39,24 @@ public:
         KeyWithTimestamp(K && k_, int64_t ts_) : k(std::move(k_)), ts(ts_) { }
         KeyWithTimestamp(const K & k_, int64_t ts_) : k(k_), ts(ts_) { }
 
-        bool expired(int64_t idle_threshold_ms) const noexcept { return UTCMilliseconds::now() > ts + idle_threshold_ms; }
+        bool expired(int64_t timeout_threshold_ms) const noexcept { return UTCMilliseconds::now() > ts + timeout_threshold_ms; }
 
         K k;
         int64_t ts;
+    };
+
+    struct KeyWithTimestampLess
+    {
+        bool operator()(const KeyWithTimestamp & lhs, const KeyWithTimestamp & rhs) const noexcept
+        {
+            if (lhs.ts < rhs.ts)
+                return true;
+
+            if (lhs.ts > rhs.ts)
+                return false;
+
+            return lhs.k < rhs.k;
+        }
     };
 
     HybridKeyList(HybridConfig config_, KeySerializer key_serializer_, KeyDeserializer key_deserializer_, LoggerPtr logger_)
@@ -73,13 +87,14 @@ public:
 
     /// Emplace back a key without checking if the key existence, if max cold keys reaches the threshold,
     /// the new key will be inserted to hybrid hash table which will be spilled to disk
-    int emplace(const K & key)
+    /// \return {create_utc_ts, errcode} pair
+    std::pair<int64_t, int> emplaceKey(const K & key)
     {
         auto ts = DB::UTCMilliseconds::now();
         if (oldest_keys.size() < config.max_hot_key_count)
         {
             oldest_keys.emplace(key, ts);
-            return ErrorCodes::OK;
+            return {ts, ErrorCodes::OK};
         }
         else
         {
@@ -89,21 +104,22 @@ public:
 
             auto encode_result = encodeKey(key, ts);
             if (encode_result.second != ErrorCodes::OK)
-                return encode_result.second;
+                return {0, encode_result.second};
 
             if (auto status = cf_handler->db->Put(write_options, cf_handler->cf_handle, encode_result.first, rocksdb::Slice{}); status.ok())
             {
-                return ErrorCodes::OK;
+                return {ts, ErrorCodes::OK};
             }
             else
             {
                 LOG_ERROR(logger, "Failed to spill key to disk, status='{}'", status.ToString());
-                return ErrorCodes::ROCKSDB_ERROR;
+                return {0, ErrorCodes::ROCKSDB_ERROR};
             }
         }
     }
 
-    int emplace(std::vector<K> & keys)
+    /// \return {create_utc_ts, errcode} pair
+    std::pair<int64_t, int> emplaceKeys(std::vector<K> & keys)
     {
         auto ts = DB::UTCMilliseconds::now();
 
@@ -113,7 +129,7 @@ public:
             for (auto & key : keys)
                 oldest_keys.emplace(std::move(key), ts);
 
-            return ErrorCodes::OK;
+            return {ts, ErrorCodes::OK};
         }
         else
         {
@@ -126,19 +142,19 @@ public:
             if (!persistentPartInited())
                 initRocks();
 
-            /// Flush everything to disk
+            /// Flush remaining keys to disk
             rocksdb::WriteBatch batch{keys.size() * (64 + 8)};
             for (size_t size = keys.size(); i < size; ++i)
             {
                 auto encode_result = encodeKey(keys[i], ts);
                 if (encode_result.second != ErrorCodes::OK)
-                    return encode_result.second;
+                    return {0, encode_result.second};
 
                 auto status = batch.Put(cf_handler->cf_handle, encode_result.first, rocksdb::Slice{});
                 if (!status.ok())
                 {
                     LOG_ERROR(logger, "Failed to add key/value to batch, status='{}'", status.ToString());
-                    return ErrorCodes::ROCKSDB_ERROR;
+                    return {0, ErrorCodes::ROCKSDB_ERROR};
                 }
             }
 
@@ -150,16 +166,41 @@ public:
             if (auto status = cf_handler->db->Write(write_options, &batch); !status.ok())
             {
                 LOG_ERROR(logger, "Failed to spill key/values to disk, status='{}'", status.ToString());
-                return ErrorCodes::ROCKSDB_ERROR;
+                return {0, ErrorCodes::ROCKSDB_ERROR};
             }
 
-            return ErrorCodes::OK;
+            return {ts, ErrorCodes::OK};
         }
     }
 
-    /// Find all expired keys, remove them from the key list
-    /// \return {expired_keys, errcode}
-    std::pair<std::vector<K>, int> removeExpiredKeys(int64_t idle_threshold_ms, const absl::flat_hash_set<K> & handled_expires)
+    /// \return ErrorCodes::OK if successful, otherwise errcode
+    int removeKey(const K & key, int64_t create_utc_ts)
+    {
+        oldest_keys.remove(key, create_utc_ts);
+
+        if (persistentPartInited())
+        {
+            /// Remove from persistent store
+            auto encode_result = encodeKey(key, create_utc_ts);
+            if (encode_result.second != ErrorCodes::OK)
+                return encode_result.second;
+
+            if (auto status = cf_handler->db->Delete(write_options, encode_result.first); !status.ok())
+            {
+                LOG_ERROR(
+                    logger, "Failed to delete key from persistent store, key_create_ts={} status='{}'", create_utc_ts, status.ToString());
+                return ErrorCodes::ROCKSDB_ERROR;
+            }
+        }
+
+        return ErrorCodes::OK;
+    }
+
+    /// Find timed-out keys, remove them from the key list
+    /// Either all timed-out keys are removed or \max_keys_to_remove threshold reaches
+    /// \return {timed-out_keys, errcode}
+    std::pair<std::vector<K>, int>
+    removeTimedOutKeys(int64_t timeout_threshold_ms, const absl::flat_hash_set<K> & skipped_keys, size_t max_keys_to_remove = 100'000)
     {
         if (empty())
             return {{}, ErrorCodes::OK};
@@ -167,45 +208,37 @@ public:
         std::pair<std::vector<K>, int> result;
         result.second = ErrorCodes::OK;
 
-        absl::flat_hash_set<std::string> removed;
-        bool log_removed = persistentPartInited();
-        size_t approx_batch_size = 0;
+        bool has_on_disk_keys = persistentPartInited();
 
-        /// return true if done (means no further processing), otherwise false
-        auto remove_expires = [&]() {
-            for (auto iter = oldest_keys.keys.begin(); iter != oldest_keys.keys.end();)
+        /// return DB::ErrorCodes::OK if no error, otherwise errcode
+        auto remove_expires_from_memory = [&](absl::flat_hash_set<std::string> & expired_encoded_keys, size_t approx_batch_size) {
+            for (auto iter = oldest_keys.keys.begin(); iter != oldest_keys.keys.end() && result.first.size() < max_keys_to_remove;)
             {
-                if (handled_expires.contains(iter->k))
+                if (skipped_keys.contains(iter->k))
                 {
                     /// Already handled
-                    if (log_removed)
+                    if (has_on_disk_keys)
                     {
                         auto encode_result = encodeKey(iter->k, iter->ts);
                         if (encode_result.second != ErrorCodes::OK)
-                        {
-                            result.second = encode_result.second;
-                            return true;
-                        }
+                            return encode_result.second;
 
                         approx_batch_size += encode_result.first.size();
-                        removed.insert(std::move(encode_result.first));
+                        expired_encoded_keys.insert(std::move(encode_result.first));
                     }
 
                     iter = oldest_keys.keys.erase(iter);
                 }
-                else if (iter->expired(idle_threshold_ms))
+                else if (iter->expired(timeout_threshold_ms))
                 {
-                    if (log_removed)
+                    if (has_on_disk_keys)
                     {
                         auto encode_result = encodeKey(iter->k, iter->ts);
                         if (encode_result.second != ErrorCodes::OK)
-                        {
-                            result.second = encode_result.second;
-                            return true;
-                        }
+                            return encode_result.second;
 
                         approx_batch_size += encode_result.first.size();
-                        removed.insert(std::move(encode_result.first));
+                        expired_encoded_keys.insert(std::move(encode_result.first));
                     }
 
                     result.first.push_back(std::move(iter->k));
@@ -215,46 +248,72 @@ public:
                 else
                 {
                     /// Key list is monotonically sorted
-                    return true;
+                    return ErrorCodes::OK;
                 }
             }
 
-            return false;
+            return ErrorCodes::OK;
         };
 
-        if (auto done = remove_expires(); done)
-            return result;
+        auto remove_from_disk = [&](const absl::flat_hash_set<std::string> & encoded_removed_keys, size_t reserved_batch_size) {
+            rocksdb::WriteBatch batch{static_cast<size_t>(reserved_batch_size * 1.2)};
 
-        chassert(oldest_keys.empty());
-        if (!persistentPartInited())
-            return result;
+            for (const auto & encoded_key : encoded_removed_keys)
+                batch.Delete(cf_handler->cf_handle, encoded_key);
 
-        /// Check if persistent keys have been expired as well
-        for (;;)
+            if (auto status = cf_handler->db->Write(write_options, &batch); status.ok())
+            {
+                return ErrorCodes::OK;
+            }
+            else
+            {
+                LOG_ERROR(logger, "Failed to delete keys from disk, status='{}'", status.ToString());
+                return ErrorCodes::ROCKSDB_ERROR;
+            }
+        };
+
+        bool on_disk_keys_drained = false;
+        do
         {
-            reload(removed);
-            if (oldest_keys.empty())
-                /// No more keys on disk
-                break;
+            absl::flat_hash_set<std::string> expired_encoded_keys;
+            size_t approx_batch_size = 0;
+            if (auto errcode = remove_expires_from_memory(expired_encoded_keys, approx_batch_size); errcode != ErrorCodes::OK)
+            {
+                result.second = errcode;
+                return result;
+            }
 
-            if (auto done = remove_expires(); done)
-                break;
-        }
+            if (!expired_encoded_keys.empty())
+            {
+                if (auto errcode = remove_from_disk(expired_encoded_keys, approx_batch_size); errcode != ErrorCodes::OK)
+                {
+                    result.second = errcode;
+                    return result;
+                }
 
-        if (result.second != ErrorCodes::OK)
-            return result;
+                bool may_have_more_expired_keys = oldest_keys.empty() && !on_disk_keys_drained;
 
-        /// Remove from disk
-        rocksdb::WriteBatch batch{static_cast<size_t>(approx_batch_size * 1.2)};
+                if (has_on_disk_keys && !on_disk_keys_drained)
+                    /// Try refill more keys from disk to make the in-memory sort list full
+                    on_disk_keys_drained = refill();
 
-        for (const auto & encode_key : removed)
-            batch.Delete(cf_handler->cf_handle, encode_key);
+                if (!may_have_more_expired_keys)
+                    return result;
+            }
+            else
+            {
+                /// No more expiration keys
+                if (has_on_disk_keys && !on_disk_keys_drained)
+                    /// Try refill more keys from disk to make the in-memory sort list full
+                    on_disk_keys_drained = refill();
 
-        if (auto status = cf_handler->db->Write(write_options, &batch); !status.ok())
-        {
-            LOG_ERROR(logger, "Failed to delete keys from disk, status='{}'", status.ToString());
-            result.second = ErrorCodes::ROCKSDB_ERROR;
-        }
+                return result;
+            }
+        } while (result.first.size() < max_keys_to_remove);
+
+        if (result.first.size() >= max_keys_to_remove && !on_disk_keys_drained)
+            /// Try last refill to make make the in-memory sort list full
+            refill();
 
         return result;
     }
@@ -406,9 +465,31 @@ public:
         return ErrorCodes::OK;
     }
 
-    void reload() { reload(absl::flat_hash_set<std::string>{}); }
-
     bool persistentPartInited() const noexcept { return cf_handler != nullptr; }
+
+    /// \return true, reloaded all keys from disk, otherwise false
+    void reload() { refill(); }
+
+    int refill()
+    {
+        if (!persistentPartInited())
+            initRocks();
+
+        std::unique_ptr<rocksdb::Iterator> iterator(cf_handler->db->NewIterator(read_options, cf_handler->cf_handle));
+        for (iterator->SeekToFirst(); iterator->Valid() && oldest_keys.size() < config.max_hot_key_count; iterator->Next())
+        {
+            auto key_v = iterator->key().ToStringView();
+
+            int64_t ts = 0;
+            K key;
+            if (auto errcode = decodeKey(key_v, key, ts); errcode != ErrorCodes::OK)
+                throw DB::Exception(errcode, "Failed to deserialize key, {}", ErrorCodes::getName(errcode));
+
+            oldest_keys.emplace(std::move(key), ts);
+        }
+
+        return !iterator->Valid();
+    }
 
 private:
     void initRocks()
@@ -436,30 +517,6 @@ private:
 
         rocks = std::make_shared<RocksDB>(db, std::vector<rocksdb::ColumnFamilyHandle *>{}, config.cleanup_on_disk_data, logger);
         cf_handler = rocks->getOrCreateColumnFamilyHandler(config.cf_handle_id, config.ttl);
-    }
-
-    void reload(const absl::flat_hash_set<std::string> & skips)
-    {
-        chassert(oldest_keys.empty());
-
-        if (!persistentPartInited())
-            initRocks();
-
-        std::unique_ptr<rocksdb::Iterator> iterator(cf_handler->db->NewIterator(read_options, cf_handler->cf_handle));
-        for (iterator->SeekToFirst(); iterator->Valid(); iterator->Next())
-        {
-            auto key_v = iterator->key().ToStringView();
-            if (skips.contains(key_v))
-                continue;
-
-            int64_t ts = 0;
-            K key;
-            if (auto errcode = decodeKey(key_v, key, ts); errcode != ErrorCodes::OK)
-                throw DB::Exception(errcode, "Failed to deserialize key, {}", ErrorCodes::getName(errcode));
-
-            if (oldest_keys.size() < config.max_hot_key_count)
-                oldest_keys.emplace(std::move(key), ts);
-        }
     }
 
     int decodeKey(std::string_view key_v, K & key, int64_t & ts) const
@@ -499,44 +556,34 @@ private:
     }
 
 private:
-    struct KeyList
+    struct SortedKeyList
     {
         bool empty() const noexcept { return keys.empty(); }
 
         size_t size() const noexcept { return keys.size(); }
 
-        void emplace(K && k, int64_t timestamp) { keys.emplace_back(std::move(k), timestamp); }
-        void emplace(const K & k, int64_t timestamp) { keys.emplace_back(k, timestamp); }
+        void emplace(K && k, int64_t timestamp) { keys.emplace(std::move(k), timestamp); }
+        void emplace(const K & k, int64_t timestamp) { keys.emplace(k, timestamp); }
 
         void clear() { keys.clear(); }
 
         const KeyWithTimestamp & front() const
         {
             chassert(!keys.empty());
-            return keys.front();
+            return *keys.begin();
         }
 
-        void removeFront()
-        {
-            chassert(!keys.empty());
-            keys.pop_front();
-        }
+        /// \return true if removed, otherwise false
+        bool remove(const K & k, int64_t timestamp) { return keys.erase(KeyWithTimestamp{k, timestamp}) == 1; }
 
-        /// Here we are using std::list instead of a std::map or the like
-        /// because our current use case is highly temporal: later insert
-        /// key is always fresher and we don't have `lookup` requirement
-        /// for HybridKeyList but only sequentially accessing the elements
-        /// from earliest to latest order to decide if a key is expired.
-        /// If we have fast `lookup` requirement or if we like a more general
-        /// sorted key space, we may need change std::list to std::map
-        std::list<KeyWithTimestamp> keys;
+        std::set<KeyWithTimestamp, KeyWithTimestampLess> keys;
     };
 
     HybridConfig config;
     KeySerializer key_serializer;
     KeyDeserializer key_deserializer;
 
-    KeyList oldest_keys;
+    SortedKeyList oldest_keys;
 
     RocksDBPtr rocks; /// internal rocksdb instance
     RocksDBColumnFamilyHandlerPtr cf_handler;

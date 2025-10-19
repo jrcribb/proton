@@ -348,17 +348,18 @@ public:
 
         chassert(recent_keys.size() == hot_key_values.size());
 
-        return emplaceNewKey(key);
+        return emplaceNewKey(key, disable_spill);
     }
 
-    HybridEmplaceResult emplaceNewKey(const K & key)
+    HybridEmplaceResult emplaceNewKey(const K & key, bool disable_spill)
     {
         ++metrics.write_total;
         ++metrics.write_new;
 
         auto & entry = insert(key, constructValue());
 
-        spillIfNecessary(/*current_batch_size=*/1);
+        if (!disable_spill)
+            spillIfNecessary(/*current_batch_size=*/1);
 
         chassert(recent_keys.size() == hot_key_values.size());
 

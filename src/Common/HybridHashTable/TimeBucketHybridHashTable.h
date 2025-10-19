@@ -84,7 +84,7 @@ public:
 
     HybridEmplaceResult emplaceKey(const K & key, bool disable_spill) { return emplaceKey(key, /*is_new_key=*/false, disable_spill); }
 
-    HybridEmplaceResult emplaceNewKey(const K & key) { return emplaceKey(key, /*is_new_key=*/true, /*disable_spill=*/false); }
+    HybridEmplaceResult emplaceNewKey(const K & key, bool disable_spill) { return emplaceKey(key, /*is_new_key=*/true, disable_spill); }
 
     /// Call shall call `spillIfNecessary()` after done with the values
     HybridEmplaceResults emplaceKeys(const std::vector<K> & keys) { return emplaceKeys(keys, /*is_new_keys=*/false); }
@@ -436,7 +436,7 @@ private:
             [[maybe_unused]] auto [_, inserted] = bucket_tables.emplace(bucket, std::move(impl));
             chassert(inserted);
         }
-        return is_new_key ? table->emplaceNewKey(key) : table->emplaceKey(key, disable_spill);
+        return is_new_key ? table->emplaceNewKey(key, disable_spill) : table->emplaceKey(key, disable_spill);
     }
 
     HybridEmplaceResults emplaceKeys(const std::vector<K> & keys, bool is_new_keys)

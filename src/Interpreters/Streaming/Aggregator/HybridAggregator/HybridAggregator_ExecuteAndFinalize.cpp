@@ -229,7 +229,7 @@ template <typename Table, typename KeyList, typename KeyGetter>
     std::unique_ptr<AggregateDataPtr[]> places;
     std::vector<typename KeyGetter::KeyType> keys;
 
-    absl::flat_hash_set<typename KeyGetter::KeyType> expired_key_set;
+    absl::flat_hash_set<typename KeyGetter::KeyType> handled_key_set;
     HybridEmplaceResults emplace_results;
 
     Block block;
@@ -282,41 +282,53 @@ template <typename Table, typename KeyList, typename KeyGetter>
             }
         }
 
-        /// 1) Check expired keys of the current insert batch
-        std::vector<typename KeyGetter::KeyType> expired_keys;
-        PaddedPODArray<ConstAggregateDataPtr> expired_places;
+        /// 1) Check sessions which reach max duration in the current insert batch
+        std::vector<typename KeyGetter::KeyType> max_duration_keys;
+        PaddedPODArray<ConstAggregateDataPtr> max_duration_places;
         auto * places_ptr = places.get();
 
-        for (size_t row = row_begin; row < row_end; ++row)
+        for (size_t i = 0, row = row_begin; row < row_end; ++row, ++i)
         {
             TrackingTime::updateTimestamp(places_ptr[row], session_ts_col->get64(row));
 
             if (TrackingTime::maxSpanReached(places_ptr[row], params->emit_session_params->max_span_interval))
             {
-                expired_keys.push_back(std::move(keys[row - row_begin]));
-                expired_places.emplace_back(places_ptr[row]);
+                if (!emplace_results.results[i].isInserted())
+                {
+                    /// Remove existing key from the outstanding key list
+                    auto create_utc_ts = TrackingTime::getCreateTimestamp(places_ptr[row]);
+                    if (auto errcode = outstanding_keys.removeKey(keys[i], create_utc_ts); errcode != ErrorCodes::OK)
+                        throw Exception(
+                            errcode,
+                            "Failed to remove key from hybrid key list, error_code={}, error={}",
+                            errcode,
+                            DB::ErrorCodes::getName(errcode));
+                }
+
+                max_duration_keys.push_back(std::move(keys[i]));
+                max_duration_places.emplace_back(places_ptr[row]);
             }
         }
 
-        if (!expired_keys.empty())
+        if (!max_duration_keys.empty())
         {
             OutputBlockColumns out_cols
                 = prepareOutputBlockColumns(getHeader(/*final=*/true), /*aggregates_pools=*/{}, /*final=*/true, row_end - row_begin + 1);
             auto shuffled_key_sizes = KeyGetter::shuffleKeyColumns(out_cols.raw_key_columns, key_sizes);
             const auto & key_sizes_ref = shuffled_key_sizes ? *shuffled_key_sizes : key_sizes;
 
-            for (const auto & key : expired_keys)
+            for (const auto & key : max_duration_keys)
                 KeyGetter::insertKeyIntoColumns(key, out_cols.raw_key_columns, key_sizes_ref);
 
-            block = insertResultsIntoColumns(expired_places, std::move(out_cols), /*arena=*/nullptr);
+            block = insertResultsIntoColumns(max_duration_places, std::move(out_cols), /*arena=*/nullptr);
 
-            /// Remove expired keys from hybrid hash table
-            if (auto err = table.removeKeys(expired_keys); err != ErrorCodes::OK)
+            /// Remove sessions which reaches max durations from hybrid hash table
+            if (auto err = table.removeKeys(max_duration_keys); err != ErrorCodes::OK)
                 throw Exception(
                     err, "Failed to remove keys from hybrid hash table, error_code={}, error={}", err, DB::ErrorCodes::getName(err));
 
-            for (auto & key : expired_keys)
-                expired_key_set.insert(std::move(key));
+            for (auto & key : max_duration_keys)
+                handled_key_set.insert(std::move(key));
         }
     }
 
@@ -325,7 +337,7 @@ template <typename Table, typename KeyList, typename KeyGetter>
         table,
         key_getter,
         outstanding_keys,
-        expired_key_set,
+        handled_key_set,
         aggregate_instructions,
         /*add_expired_keys=*/true,
         removed_expired_sessions);
@@ -337,22 +349,41 @@ template <typename Table, typename KeyList, typename KeyGetter>
     {
         /// Finally add the new keys in the current insert batch to outstanding key list
         std::vector<typename KeyGetter::KeyType> keys_to_add;
+        keys_to_add.reserve(emplace_results.results.size() / 2 + 1);
+
+        std::vector<size_t> inserted;
+        inserted.reserve(emplace_results.results.size() / 2 + 1);
+
         for (size_t i = 0; auto & emplace_result : emplace_results.results)
         {
-            if (emplace_result.isInserted() && !expired_key_set.contains(keys[i]))
+            if (emplace_result.isInserted() && !handled_key_set.contains(keys[i]))
+            {
                 keys_to_add.push_back(std::move(keys[i]));
+                inserted.push_back(i);
+            }
 
             ++i;
         }
 
         if (!keys_to_add.empty())
         {
-            if (auto errcode = outstanding_keys.emplace(keys_to_add); errcode != ErrorCodes::OK)
-                throw Exception(errcode, "Failed to add keys to HybridKeyList");
+            if (auto [create_utc_ts, errcode] = outstanding_keys.emplaceKeys(keys_to_add); errcode == ErrorCodes::OK)
+            {
+                /// Update the create timestamp which will be used to delete keys from HybridKeyList earlier
+                /// if session reaches maxspan or closed before it expires
+                for (auto i : inserted)
+                    TrackingTime::setCreateTimestamp(
+                        static_cast<AggregateDataPtr>(emplace_results.results[i].getMutableMapped()), create_utc_ts);
+            }
+            else
+            {
+                throw Exception(errcode, "Failed to add keys to HybridKeyList, error={}", DB::ErrorCodes::getName(errcode));
+            }
         }
     }
 
-    table.logMetrics(/*throttling_sec=*/30, "aggr-after-key-expire", variants_id);
+    table.logMetrics(/*throttling_sec=*/30, "aggr-after-session-close", variants_id);
+    /// outstanding_keys.logMetrics(/*throttling_sec=*/30, "timed-session-keys", variants_id);
 
     auto block_rows = block.rows();
     auto block2_rows = block2.rows();
@@ -381,7 +412,7 @@ Block HybridAggregator::finalizeExpiredSessions(
         return {};
 
     /// Handle expired keys
-    auto remove_result = outstanding_keys.removeExpiredKeys(params->emit_session_params->timeout_interval_ms, handled_key_set);
+    auto remove_result = outstanding_keys.removeTimedOutKeys(params->emit_session_params->timeout_interval_ms, handled_key_set);
     if (remove_result.second != ErrorCodes::OK)
         throw Exception(remove_result.second, "Failed to remove expired keys from HybridKeyList");
 
@@ -467,7 +498,7 @@ template <typename Table, typename KeyList, typename KeyGetter>
     absl::flat_hash_set<typename KeyGetter::KeyType> handled_key_set;
 
     auto emplace_new_and_aggregate = [&](size_t row_num, const KeyGetter::KeyType & k, bool add_to_outstanding_keys = true) {
-        auto emplace_result = table.emplaceKey(k, /*disable_spill=*/true);
+        auto emplace_result = table.emplaceNewKey(k, /*disable_spill=*/true);
         if (emplace_result.hasError())
             throw Exception::createRuntime(emplace_result.errorCode(), emplace_result.errorString());
 
@@ -478,7 +509,12 @@ template <typename Table, typename KeyList, typename KeyGetter>
         TrackingTime::updateTimestamp(aggregate_data, session_ts_col->get64(row_num));
 
         if (add_to_outstanding_keys)
-            outstanding_keys.emplace(k);
+        {
+            if (auto [create_utc_ts, errcode] = outstanding_keys.emplaceKey(k); errcode == ErrorCodes::OK)
+                TrackingTime::setCreateTimestamp(aggregate_data, create_utc_ts);
+            else
+                throw Exception(errcode, "Failed to insert key to hybrid key list");
+        }
 
         return aggregate_data;
     };
@@ -504,6 +540,10 @@ template <typename Table, typename KeyList, typename KeyGetter>
             /// Close the session by removing it
             if (auto errcode = table.removeKey(k); errcode != ErrorCodes::OK)
                 throw Exception(errcode, "Failed to remove closed session");
+
+            auto create_utc_ts = TrackingTime::getCreateTimestamp(aggregate_data);
+            if (auto errcode = outstanding_keys.removeKey(k, create_utc_ts); errcode != ErrorCodes::OK)
+                throw Exception(errcode, "Failed to remove session key from hybrid key list, key_create_ts={}", create_utc_ts);
 
             handled_key_set.insert(k);
         }
@@ -535,7 +575,11 @@ template <typename Table, typename KeyList, typename KeyGetter>
 
                 /// Close the session by removing it
                 if (auto errcode = table.removeKey(k); errcode != ErrorCodes::OK)
-                    throw Exception(errcode, "Failed to remove closed session");
+                    throw Exception(errcode, "Failed to remove closed session from hybrid hash table");
+
+                auto create_utc_ts = TrackingTime::getCreateTimestamp(aggregate_data);
+                if (auto errcode = outstanding_keys.removeKey(k, create_utc_ts); errcode != ErrorCodes::OK)
+                    throw Exception(errcode, "Failed to remove session key from hybrid key list, key_create_ts={}", create_utc_ts);
 
                 handled_key_set.insert(k);
 
@@ -574,7 +618,11 @@ template <typename Table, typename KeyList, typename KeyGetter>
 
             /// Close the session by removing it
             if (auto errcode = table.removeKey(k); errcode != ErrorCodes::OK)
-                throw Exception(errcode, "Failed to remove closed session");
+                throw Exception(errcode, "Failed to remove closed session from hybrid hash table");
+
+            auto create_utc_ts = TrackingTime::getCreateTimestamp(aggregate_data);
+            if (auto errcode = outstanding_keys.removeKey(k, create_utc_ts); errcode != ErrorCodes::OK)
+                throw Exception(errcode, "Failed to remove session key from hybrid key list, key_create_ts={}", create_utc_ts);
 
             handled_key_set.insert(k);
         }

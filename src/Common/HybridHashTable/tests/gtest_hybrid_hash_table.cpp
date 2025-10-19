@@ -166,7 +166,7 @@ void executeActionsAndValidateResults(const std::vector<ExecuteAction> & execute
                     auto is_new_key = execute_action.new_keys[0];
 
                     auto result = execute_action.action == Action::EmplaceKey ? table->emplaceKey(k, /*disable_spill=*/false)
-                                                                              : table->emplaceNewKey(k);
+                                                                              : table->emplaceNewKey(k, /*disable_spill=*/false);
                     ASSERT_TRUE(!result.hasError());
 
                     if (is_new_key)
