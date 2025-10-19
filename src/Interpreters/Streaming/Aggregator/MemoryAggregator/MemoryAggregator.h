@@ -93,17 +93,15 @@ public:
         size_t row_end,
         IAggregatedDataVariants & result,
         ColumnRawPtrs & key_columns,
-        AggregateColumns & aggregate_columns, /// Passed to not create them anew for each block
-        bool new_keys) const override;
+        AggregateColumns & aggregate_columns) const override;
 
-    Block executeAndFinalizeAfterKeyExpire(
+    Block executeAndFinalizeAfterSessionClose(
         Columns columns,
         size_t row_begin,
         size_t row_end,
         IAggregatedDataVariants & result,
         ColumnRawPtrs & key_columns,
-        AggregateColumns & aggregate_columns, /// Passed to not create them anew for each block
-        bool new_keys) const override;
+        AggregateColumns & aggregate_columns) const override;
 
     /** Convert the aggregation data structure into a block.
       * If final = false, then ColumnAggregateFunction is created as the aggregation columns with the state of the calculations,
@@ -296,7 +294,8 @@ private:
 
     void serializeAggregateStates(const AggregateDataPtr & place, WriteBuffer & wb) const;
     /// \param old_aggregates_size is used for deserialization of old aggregate states
-    void deserializeAggregateStates(AggregateDataPtr & place, ReadBuffer & rb, Arena * arena, std::optional<size_t> old_aggregates_size = {}) const;
+    void deserializeAggregateStates(
+        AggregateDataPtr & place, ReadBuffer & rb, Arena * arena, std::optional<size_t> old_aggregates_size = {}) const;
 
     /// \return true means execution must be aborted, false means normal
     bool checkAndProcessResult(MemoryAggregatedDataVariants & result) const;

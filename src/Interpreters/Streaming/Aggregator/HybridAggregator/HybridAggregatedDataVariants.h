@@ -98,7 +98,7 @@ SERDE struct HybridAggregatedDataVariants final : public IAggregatedDataVariants
     /// \retracts is used to save last emits of each key
     HybridHashTableTemplate retracts;
 
-    /// Keep tracking outstanding keys for `EMIT AFTER KEY EXPIRE`
+    /// Keep tracking outstanding keys for `EMIT AFTER SESSION CLOSE`
     HybridKeyListTemplate outstanding_keys;
 
     /// V2 - outstanding keys is added

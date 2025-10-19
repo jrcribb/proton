@@ -4,10 +4,6 @@
 
 namespace DB
 {
-namespace ErrorCodes
-{
-extern const int TOO_MANY_TRACKING_KEYS;
-}
 
 namespace Streaming
 {
@@ -29,24 +25,22 @@ Block NO_INLINE HybridAggregator::executeAndFinalizePerRowImpl(
     size_t row_begin,
     size_t row_end,
     AggregateFunctionInstruction * aggregate_instructions,
-    bool new_keys,
     std::string_view variants_id) const
 {
     constexpr bool final = true;
-    OutputBlockColumns out_cols = prepareOutputBlockColumns(getHeader(final), /*aggregates_pools=*/{}, final, row_end - row_begin + 1);
+    Block result_block_header = getHeader(final);
+    OutputBlockColumns out_cols = prepareOutputBlockColumns(result_block_header, /*aggregates_pools=*/{}, final, row_end - row_begin + 1);
     auto shuffled_key_sizes = KeyGetter::shuffleKeyColumns(out_cols.raw_key_columns, key_sizes);
     const auto & key_sizes_ref = shuffled_key_sizes ? *shuffled_key_sizes : key_sizes;
 
-    HybridEmplaceResult emplace_result;
-    AggregateDataPtr aggregate_data;
     for (size_t i = row_begin; i < row_end; ++i)
     {
         auto key = key_getter.getKeyHolder(i);
-        emplace_result = new_keys ? table.emplaceNewKey(key) : table.emplaceKey(key, /*disable_spill=*/false);
+        auto emplace_result = table.emplaceKey(key, /*disable_spill=*/false);
         if (emplace_result.hasError())
             throw Exception::createRuntime(emplace_result.errorCode(), emplace_result.errorString());
 
-        aggregate_data = static_cast<AggregateDataPtr>(emplace_result.getMutableMapped());
+        auto * aggregate_data = static_cast<AggregateDataPtr>(emplace_result.getMutableMapped());
         chassert(aggregate_data != nullptr);
 
         /// Insert the key into the output columns.
@@ -58,7 +52,7 @@ Block NO_INLINE HybridAggregator::executeAndFinalizePerRowImpl(
 
     table.logMetrics(/*throttling_sec=*/30, "aggr-per-row", variants_id);
 
-    return finalizeBlock(getHeader(final), std::move(out_cols), final, row_end - row_begin);
+    return finalizeBlock(result_block_header, std::move(out_cols), final, row_end - row_begin);
 }
 
 Block HybridAggregator::executeAndFinalizePerRow(
@@ -67,8 +61,7 @@ Block HybridAggregator::executeAndFinalizePerRow(
     size_t row_end,
     IAggregatedDataVariants & variants_result,
     ColumnRawPtrs & key_columns,
-    AggregateColumns & aggregate_columns,
-    bool new_keys) const
+    AggregateColumns & aggregate_columns) const
 {
     if (unlikely(row_end <= row_begin))
         return {};
@@ -103,13 +96,13 @@ Block HybridAggregator::executeAndFinalizePerRow(
         { \
             HybridKeyGetter<HybridHashType::NAME, /*nullable=*/true> key_getter{key_columns, key_sizes}; \
             return executeAndFinalizePerRowImpl( \
-                *result.table.NAME, key_getter, row_begin, row_end, aggregate_functions_instructions.data(), new_keys, result.getID()); \
+                *result.table.NAME, key_getter, row_begin, row_end, aggregate_functions_instructions.data(), result.getID()); \
         } \
         else \
         { \
             HybridKeyGetter<HybridHashType::NAME, /*nullable=*/false> key_getter{key_columns, key_sizes}; \
             return executeAndFinalizePerRowImpl( \
-                *result.table.NAME, key_getter, row_begin, row_end, aggregate_functions_instructions.data(), new_keys, result.getID()); \
+                *result.table.NAME, key_getter, row_begin, row_end, aggregate_functions_instructions.data(), result.getID()); \
         } \
     }
             APPLY_FOR_HASH_KEY_VARIANTS_HYBRID(M)
@@ -119,14 +112,13 @@ Block HybridAggregator::executeAndFinalizePerRow(
     }
 }
 
-Block HybridAggregator::executeAndFinalizeAfterKeyExpire(
+Block HybridAggregator::executeAndFinalizeAfterSessionClose(
     Columns columns,
     size_t row_begin,
     size_t row_end,
     IAggregatedDataVariants & variants_result,
     ColumnRawPtrs & key_columns,
-    AggregateColumns & aggregate_columns,
-    bool new_keys) const
+    AggregateColumns & aggregate_columns) const
 {
     chassert(variants_result.aggregatorType() == AggregatorType::Hybrid);
     auto & result = static_cast<HybridAggregatedDataVariants &>(variants_result);
@@ -135,9 +127,15 @@ Block HybridAggregator::executeAndFinalizeAfterKeyExpire(
     if (result.empty())
         initStates(result);
 
-    chassert(params->emit_key_params->key_ts_col_pos < columns.size());
+    chassert(params->emit_session_params->session_ts_col_pos < columns.size());
+    chassert(!params->emit_session_params->session_start_pos || params->emit_session_params->session_start_pos.value() < columns.size());
+    chassert(!params->emit_session_params->session_end_pos || params->emit_session_params->session_end_pos.value() < columns.size());
 
-    const auto * ts_col = columns[params->emit_key_params->key_ts_col_pos].get();
+    const auto * session_ts_col = columns[params->emit_session_params->session_ts_col_pos].get();
+    const IColumn * session_start_col
+        = params->emit_session_params->session_start_pos ? columns[params->emit_session_params->session_start_pos.value()].get() : nullptr;
+    const IColumn * session_end_col
+        = params->emit_session_params->session_end_pos ? columns[params->emit_session_params->session_end_pos.value()].get() : nullptr;
 
     /// Constant columns are not supported directly during aggregation.
     /// To make them work anyway, we materialize them.
@@ -150,7 +148,7 @@ Block HybridAggregator::executeAndFinalizeAfterKeyExpire(
     switch (method_chosen)
     {
         default:
-            throw Exception(ErrorCodes::LOGICAL_ERROR, "{} group by key is not supported by `EMIT AFTER KEY EXPIRE`", method_chosen);
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "{} group by key is not supported by `EMIT AFTER SESSION CLOSE`", method_chosen);
 
 #define M(NAME, IS_TWO_LEVEL) \
     case HybridHashType::NAME: \
@@ -158,29 +156,31 @@ Block HybridAggregator::executeAndFinalizeAfterKeyExpire(
         if (has_nullable_key) \
         { \
             HybridKeyGetter<HybridHashType::NAME, /*nullable=*/true> key_getter{key_columns, key_sizes}; \
-            return executeAndFinalizeAfterKeyExpireImpl( \
+            return executeAndFinalizeAfterSessionCloseImpl( \
                 *result.table.NAME, \
                 *result.outstanding_keys.NAME, \
-                ts_col, \
+                session_ts_col, \
+                session_start_col, \
+                session_end_col, \
                 key_getter, \
                 row_begin, \
                 row_end, \
                 aggregate_functions_instructions.data(), \
-                new_keys, \
                 result.getID()); \
         } \
         else \
         { \
             HybridKeyGetter<HybridHashType::NAME, /*nullable=*/false> key_getter{key_columns, key_sizes}; \
-            return executeAndFinalizeAfterKeyExpireImpl( \
+            return executeAndFinalizeAfterSessionCloseImpl( \
                 *result.table.NAME, \
                 *result.outstanding_keys.NAME, \
-                ts_col, \
+                session_ts_col, \
+                session_start_col, \
+                session_end_col, \
                 key_getter, \
                 row_begin, \
                 row_end, \
                 aggregate_functions_instructions.data(), \
-                new_keys, \
                 result.getID()); \
         } \
         break; \
@@ -194,17 +194,34 @@ Block HybridAggregator::executeAndFinalizeAfterKeyExpire(
 /// (Probably because after the inline of this function, more internal functions no longer be inlined.)
 /// Inline does not make sense, since the inner loop is entirely inside this function.
 template <typename Table, typename KeyList, typename KeyGetter>
-[[nodiscard]] Block NO_INLINE HybridAggregator::executeAndFinalizeAfterKeyExpireImpl(
+[[nodiscard]] Block NO_INLINE HybridAggregator::executeAndFinalizeAfterSessionCloseImpl(
     Table & table,
     KeyList & outstanding_keys,
-    const IColumn * ts_col,
+    const IColumn * session_ts_col,
+    const IColumn * session_start_col,
+    const IColumn * session_end_col,
     const KeyGetter & key_getter,
     size_t row_begin,
     size_t row_end,
     AggregateFunctionInstruction * aggregate_instructions,
-    bool new_keys,
     std::string_view variants_id) const
 {
+    if (session_start_col || session_end_col)
+        /// Have session start / end condition columns, it is usually more complex and slower
+        return executeAndFinalizeAfterSessionCondCloseImpl(
+            table,
+            outstanding_keys,
+            session_ts_col,
+            session_start_col,
+            session_end_col,
+            key_getter,
+            row_begin,
+            row_end,
+            aggregate_instructions,
+            variants_id);
+
+    /// Faster path when session start / end columns are absent
+    ///
     /// NOTE: only row_end-row_start is required, but:
     /// - this affects only optimize_aggregation_in_order,
     /// - this is just a pointer, so it should not be significant,
@@ -223,7 +240,7 @@ template <typename Table, typename KeyList, typename KeyGetter>
         for (size_t row = row_begin; row < row_end; ++row)
             keys.emplace_back(key_getter.getKeyHolder(row));
 
-        emplace_results = new_keys ? table.emplaceNewKeys(keys) : table.emplaceKeys(keys);
+        emplace_results = table.emplaceKeys(keys);
         if (emplace_results.hasError())
             throw Exception::createRuntime(emplace_results.errorCode(), emplace_results.errorString());
 
@@ -272,9 +289,9 @@ template <typename Table, typename KeyList, typename KeyGetter>
 
         for (size_t row = row_begin; row < row_end; ++row)
         {
-            TrackingTime::updateTimestamp(places_ptr[row], ts_col->get64(row));
+            TrackingTime::updateTimestamp(places_ptr[row], session_ts_col->get64(row));
 
-            if (TrackingTime::maxSpanReached(places_ptr[row], params->emit_key_params->key_max_span_interval))
+            if (TrackingTime::maxSpanReached(places_ptr[row], params->emit_session_params->max_span_interval))
             {
                 expired_keys.push_back(std::move(keys[row - row_begin]));
                 expired_places.emplace_back(places_ptr[row]);
@@ -301,71 +318,20 @@ template <typename Table, typename KeyList, typename KeyGetter>
             for (auto & key : expired_keys)
                 expired_key_set.insert(std::move(key));
         }
+    }
 
-        /// After processing the current insert batch, spill to disk
+    bool removed_expired_sessions = false;
+    Block block2 = finalizeExpiredSessions(
+        table,
+        key_getter,
+        outstanding_keys,
+        expired_key_set,
+        aggregate_instructions,
+        /*add_expired_keys=*/true,
+        removed_expired_sessions);
+
+    if (row_end > row_begin || removed_expired_sessions)
         table.spillIfNecessary();
-    }
-
-    Block block2;
-    if (!outstanding_keys.empty())
-    {
-        /// Handle expired keys
-        auto remove_result = outstanding_keys.removeExpiredKeys(params->emit_key_params->timeout_interval_ms, expired_key_set);
-        if (remove_result.second != ErrorCodes::OK)
-            throw Exception(remove_result.second, "Failed to remove expired keys from HybridKeyList");
-
-        const auto & expired_keys = remove_result.first;
-
-        if (!expired_keys.empty())
-        {
-            if (!params->emit_key_params->only_max_span)
-            {
-                auto find_results = table.findKeys(expired_keys);
-                if (find_results.hasError())
-                    throw Exception(
-                        emplace_results.errorCode(),
-                        "Failed to find expired keys from HybridHashTable, error={}",
-                        emplace_results.errorString());
-
-                PaddedPODArray<ConstAggregateDataPtr> expired_places;
-                expired_places.reserve(expired_keys.size());
-
-                OutputBlockColumns out_cols
-                    = prepareOutputBlockColumns(getHeader(/*final=*/true), /*aggregates_pools=*/{}, /*final=*/true, expired_keys.size());
-                auto shuffled_key_sizes = KeyGetter::shuffleKeyColumns(out_cols.raw_key_columns, key_sizes);
-                const auto & key_sizes_ref = shuffled_key_sizes ? *shuffled_key_sizes : key_sizes;
-
-                for (size_t i = 0; const auto & result : find_results.results)
-                {
-                    if (result.isFound())
-                    {
-                        KeyGetter::insertKeyIntoColumns(expired_keys[i], out_cols.raw_key_columns, key_sizes_ref);
-                        expired_places.emplace_back(reinterpret_cast<ConstAggregateDataPtr>(result.getMapped()));
-                    }
-                    else
-                    {
-                        /// XXX, look there are some discrepancy between the in-memory outstanding keys and on disk HashTable
-                        LOG_WARNING(logger, "Expired key is missing in HybridHashTable");
-                    }
-
-                    ++i;
-                }
-
-                block2 = insertResultsIntoColumns(expired_places, std::move(out_cols), /*arena=*/nullptr);
-            }
-
-            /// Remove expired keys from hybrid hash table
-            if (auto err = table.removeKeys(expired_keys); err != ErrorCodes::OK)
-                throw Exception(
-                    err, "Failed to remove keys from hybrid hash table, error_code={}, error={}", err, DB::ErrorCodes::getName(err));
-
-            for (auto & key : expired_keys)
-                expired_key_set.insert(std::move(key));
-        }
-
-        if (!expired_keys.empty())
-            table.spillIfNecessary();
-    }
 
     if (!emplace_results.results.empty())
     {
@@ -401,6 +367,340 @@ template <typename Table, typename KeyList, typename KeyGetter>
         return block;
 }
 
+template <typename Table, typename KeyList, typename KeyGetter>
+Block HybridAggregator::finalizeExpiredSessions(
+    Table & table,
+    const KeyGetter &,
+    KeyList & outstanding_keys,
+    absl::flat_hash_set<typename KeyGetter::KeyType> & handled_key_set,
+    AggregateFunctionInstruction * aggregate_instructions,
+    bool add_expired_keys,
+    bool & removed_expired_session) const
+{
+    if (outstanding_keys.empty())
+        return {};
+
+    /// Handle expired keys
+    auto remove_result = outstanding_keys.removeExpiredKeys(params->emit_session_params->timeout_interval_ms, handled_key_set);
+    if (remove_result.second != ErrorCodes::OK)
+        throw Exception(remove_result.second, "Failed to remove expired keys from HybridKeyList");
+
+    const auto & expired_keys = remove_result.first;
+    if (expired_keys.empty())
+        return {};
+
+    Block block;
+    if (!params->emit_session_params->only_max_span)
+    {
+        auto find_results = table.findKeys(expired_keys, /*disable_spill=*/true);
+        if (find_results.hasError())
+            throw Exception(
+                find_results.errorCode(), "Failed to find expired keys from HybridHashTable, error={}", find_results.errorString());
+
+        PaddedPODArray<ConstAggregateDataPtr> expired_places;
+        expired_places.reserve(expired_keys.size());
+
+        OutputBlockColumns out_cols
+            = prepareOutputBlockColumns(getHeader(/*final=*/true), /*aggregates_pools=*/{}, /*final=*/true, expired_keys.size());
+        auto shuffled_key_sizes = KeyGetter::shuffleKeyColumns(out_cols.raw_key_columns, key_sizes);
+        const auto & key_sizes_ref = shuffled_key_sizes ? *shuffled_key_sizes : key_sizes;
+
+        for (size_t i = 0; const auto & result : find_results.results)
+        {
+            if (result.isFound())
+            {
+                /// Recheck the expiration / timeout ?
+                KeyGetter::insertKeyIntoColumns(expired_keys[i], out_cols.raw_key_columns, key_sizes_ref);
+                expired_places.emplace_back(reinterpret_cast<ConstAggregateDataPtr>(result.getMapped()));
+            }
+            else
+            {
+                /// XXX, look there are some discrepancy between the in-memory outstanding keys and on disk HashTable
+                LOG_WARNING(logger, "Expired key is missing in HybridHashTable");
+            }
+
+            ++i;
+        }
+
+        block = insertResultsIntoColumns(expired_places, std::move(out_cols), /*arena=*/nullptr);
+    }
+
+    removed_expired_session = true;
+
+    /// Remove expired keys from hybrid hash table
+    if (auto err = table.removeKeys(expired_keys); err != ErrorCodes::OK)
+        throw Exception(
+            err,
+            "Failed to remove {} keys from hybrid hash table, error_code={}, error={}",
+            expired_keys.size(),
+            err,
+            DB::ErrorCodes::getName(err));
+
+    if (add_expired_keys)
+    {
+        for (auto & key : expired_keys)
+            handled_key_set.insert(std::move(key));
+    }
+
+    return block;
 }
 
+template <typename Table, typename KeyList, typename KeyGetter>
+[[nodiscard]] Block NO_INLINE HybridAggregator::executeAndFinalizeAfterSessionCondCloseImpl(
+    Table & table,
+    KeyList & outstanding_keys,
+    const IColumn * session_ts_col,
+    const IColumn * session_start_col,
+    const IColumn * session_end_col,
+    const KeyGetter & key_getter,
+    size_t row_begin,
+    size_t row_end,
+    AggregateFunctionInstruction * aggregate_instructions,
+    std::string_view variants_id) const
+{
+    constexpr bool final = true;
+    Block result_block_header = getHeader(final);
+    OutputBlockColumns out_cols = prepareOutputBlockColumns(result_block_header, /*aggregates_pools=*/{}, final, row_end - row_begin + 1);
+    auto shuffled_key_sizes = KeyGetter::shuffleKeyColumns(out_cols.raw_key_columns, key_sizes);
+    const auto & key_sizes_ref = shuffled_key_sizes ? *shuffled_key_sizes : key_sizes;
+
+    absl::flat_hash_set<typename KeyGetter::KeyType> handled_key_set;
+
+    auto emplace_new_and_aggregate = [&](size_t row_num, const KeyGetter::KeyType & k, bool add_to_outstanding_keys = true) {
+        auto emplace_result = table.emplaceKey(k, /*disable_spill=*/true);
+        if (emplace_result.hasError())
+            throw Exception::createRuntime(emplace_result.errorCode(), emplace_result.errorString());
+
+        auto * aggregate_data = static_cast<AggregateDataPtr>(emplace_result.getMutableMapped());
+        chassert(aggregate_data != nullptr);
+
+        aggregateSingleRow(aggregate_data, aggregate_instructions, row_num, /*arena=*/nullptr);
+        TrackingTime::updateTimestamp(aggregate_data, session_ts_col->get64(row_num));
+
+        if (add_to_outstanding_keys)
+            outstanding_keys.emplace(k);
+
+        return aggregate_data;
+    };
+
+    /// For an existing session, if max span reaches, finalize and close the session
+    auto aggregate_and_finalize = [&](size_t row_num, const KeyGetter::KeyType & k, HybridFindResult & find_result) {
+        auto * aggregate_data = static_cast<AggregateDataPtr>(find_result.getMutableMapped());
+
+        /// Add the current row to the existing session window
+        aggregateSingleRow(aggregate_data, aggregate_instructions, row_num, /*arena=*/nullptr);
+        TrackingTime::updateTimestamp(aggregate_data, session_ts_col->get64(row_num));
+
+        if (TrackingTime::maxSpanReached(aggregate_data, params->emit_session_params->max_span_interval))
+        {
+            /// If it already reaches max span, close it avoid infinity session
+
+            /// Insert the key into the output columns.
+            KeyGetter::insertKeyIntoColumns(k, out_cols.raw_key_columns, key_sizes_ref);
+
+            /// Insert the aggregates to columns
+            insertAggregatesIntoColumns(aggregate_data, out_cols.final_aggregate_columns, /*arena=*/nullptr);
+
+            /// Close the session by removing it
+            if (auto errcode = table.removeKey(k); errcode != ErrorCodes::OK)
+                throw Exception(errcode, "Failed to remove closed session");
+
+            handled_key_set.insert(k);
+        }
+    };
+
+    /// For a new session
+    auto start_new_session = [&](size_t row_num, const KeyGetter::KeyType & k, HybridFindResult & find_result) {
+        if (find_result.isNotFound())
+        {
+            /// Start a new session
+            emplace_new_and_aggregate(row_num, k);
+        }
+        else
+        {
+            /// There is already a outstanding session and need start a new one
+            auto * aggregate_data = static_cast<AggregateDataPtr>(find_result.getMutableMapped());
+            chassert(aggregate_data != nullptr);
+
+            if (!params->emit_session_params->merge_open_sessions)
+            {
+                if (!params->emit_session_params->only_max_span)
+                {
+                    /// Insert the key into the output columns.
+                    KeyGetter::insertKeyIntoColumns(k, out_cols.raw_key_columns, key_sizes_ref);
+
+                    /// Insert the aggregates to columns
+                    insertAggregatesIntoColumns(aggregate_data, out_cols.final_aggregate_columns, /*arena=*/nullptr);
+                }
+
+                /// Close the session by removing it
+                if (auto errcode = table.removeKey(k); errcode != ErrorCodes::OK)
+                    throw Exception(errcode, "Failed to remove closed session");
+
+                handled_key_set.insert(k);
+
+                /// Start a new one
+                emplace_new_and_aggregate(row_num, k);
+            }
+            else
+            {
+                /// Merge it to the existing session window
+                aggregate_and_finalize(row_num, k, find_result);
+            }
+        }
+    };
+
+    /// For an ended session
+    auto finalize_ended_session = [&](size_t row_num, const KeyGetter::KeyType & k, HybridFindResult & find_result) {
+        if (find_result.isFound())
+        {
+            auto * aggregate_data = static_cast<AggregateDataPtr>(find_result.getMutableMapped());
+
+            /// Add the current row to the existing session window first
+            aggregateSingleRow(aggregate_data, aggregate_instructions, row_num, /*arena=*/nullptr);
+
+            TrackingTime::updateTimestamp(aggregate_data, session_ts_col->get64(row_num));
+
+            /// Finalize the session
+            if (!params->emit_session_params->only_max_span
+                || TrackingTime::maxSpanReached(aggregate_data, params->emit_session_params->max_span_interval))
+            {
+                /// Insert the key into the output columns.
+                KeyGetter::insertKeyIntoColumns(k, out_cols.raw_key_columns, key_sizes_ref);
+
+                /// Insert the aggregates to columns
+                insertAggregatesIntoColumns(aggregate_data, out_cols.final_aggregate_columns, /*arena=*/nullptr);
+            }
+
+            /// Close the session by removing it
+            if (auto errcode = table.removeKey(k); errcode != ErrorCodes::OK)
+                throw Exception(errcode, "Failed to remove closed session");
+
+            handled_key_set.insert(k);
+        }
+        else
+        {
+            /// There is no session for this key. The session end event is the only row. Finalize it
+            auto * aggregate_data = emplace_new_and_aggregate(row_num, k, /*add_to_outstanding_keys=*/false);
+
+            /// Finalize the session
+            {
+                /// Insert the key into the output columns.
+                KeyGetter::insertKeyIntoColumns(k, out_cols.raw_key_columns, key_sizes_ref);
+
+                /// Insert the aggregates to columns
+                insertAggregatesIntoColumns(aggregate_data, out_cols.final_aggregate_columns, /*arena=*/nullptr);
+            }
+
+            /// Close the session by removing it
+            if (auto errcode = table.removeKey(k); errcode != ErrorCodes::OK)
+                throw Exception(errcode, "Failed to remove closed session");
+        }
+    };
+
+    for (size_t i = 0, row = row_begin; row < row_end; ++row, ++i)
+    {
+        auto key = key_getter.getKeyHolder(row);
+        auto find_result = table.findKey(key, /*disable_spill=*/true);
+        if (find_result.hasError())
+            throw Exception::createRuntime(find_result.errcode, find_result.errorString());
+
+        if (session_start_col && session_end_col)
+        {
+            auto session_started = session_start_col->getBool(i);
+            auto session_ended = session_end_col->getBool(i);
+
+            if (session_ended)
+            {
+                /// If both session_started and session_ended are true for the same event, honor session_ended is good enough
+                finalize_ended_session(row, key, find_result);
+            }
+            else if (session_started)
+            {
+                start_new_session(row, key, find_result);
+            }
+            else
+            {
+                if (find_result.isFound())
+                {
+                    /// Session already started, add it to the existing session
+                    aggregate_and_finalize(row, key, find_result);
+                }
+                else
+                {
+                    /// Session is not started and it is not a session start event, drop it on the floor
+                }
+            }
+        }
+        else if (session_start_col)
+        {
+            auto session_started = session_start_col->getBool(i);
+            if (session_started)
+            {
+                start_new_session(row, key, find_result);
+            }
+            else
+            {
+                if (find_result.isFound())
+                {
+                    /// Session already started, add it to the existing session
+                    aggregate_and_finalize(row, key, find_result);
+                }
+                else
+                {
+                    /// There is no session for the current key, and it is not a session start event, drop the current row on the floor
+                }
+            }
+        }
+        else
+        {
+            chassert(session_end_col);
+
+            auto session_ended = session_end_col->getBool(i);
+            if (session_ended)
+            {
+                finalize_ended_session(row, key, find_result);
+            }
+            else
+            {
+                if (find_result.isFound())
+                {
+                    /// Session already started, add it to the existing session
+                    aggregate_and_finalize(row, key, find_result);
+                }
+                else
+                {
+                    /// There is no session for the current key, and it is not a session end event, drop the current row on the floor
+                }
+            }
+        }
+    }
+
+    auto rows = out_cols.raw_key_columns.front()->size();
+
+    Block block;
+    if (rows > 0)
+        block = finalizeBlock(result_block_header, std::move(out_cols), final, rows);
+
+    bool removed_expired_sessions = false;
+    Block block2 = finalizeExpiredSessions(
+        table, key_getter, outstanding_keys, handled_key_set, aggregate_instructions, /*add_expired_keys=*/false, removed_expired_sessions);
+
+    if (row_end > row_begin || removed_expired_sessions)
+        table.spillIfNecessary();
+
+    auto block_rows = block.rows();
+    auto block2_rows = block2.rows();
+
+    if (block_rows > 0 && block2_rows > 0)
+        return concatenateBlocks(std::vector{std::move(block), std::move(block2)});
+    else if (block_rows > 0)
+        return block;
+    else if (block2_rows > 0)
+        return block2;
+    else
+        return block;
+}
+
+}
 }

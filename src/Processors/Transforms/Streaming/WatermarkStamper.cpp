@@ -36,7 +36,7 @@ void WatermarkStamper::preProcess(const Block & header)
     {
         case EmitMode::None:
         case EmitMode::Tail:
-        case EmitMode::AfterKeyExpire:
+        case EmitMode::AfterSessionClose:
         {
             break;
         }
@@ -57,7 +57,7 @@ void WatermarkStamper::preProcess(const Block & header)
     }
 
     /// WITH EMIT TIMEOUT
-    if (params.mode != EmitMode::AfterKeyExpire && params.timeout_interval)
+    if (params.mode != EmitMode::AfterSessionClose && params.timeout_interval)
         initTimeoutTimer(params.timeout_interval);
 }
 

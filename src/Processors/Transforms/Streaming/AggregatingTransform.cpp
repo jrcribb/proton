@@ -251,16 +251,16 @@ Chunk AggregatingTransform::executeAndFinalizeColumns(Chunk & chunk, size_t num_
     Block finalized_block;
     switch (params->emit_mode)
     {
-        case EmitMode::AfterKeyExpire:
+        case EmitMode::AfterSessionClose:
         {
-            finalized_block = params->aggregator->executeAndFinalizeAfterKeyExpire(
-                std::move(columns), 0, num_rows, variants, key_columns, aggregate_columns, backfilling());
+            finalized_block = params->aggregator->executeAndFinalizeAfterSessionClose(
+                std::move(columns), 0, num_rows, variants, key_columns, aggregate_columns);
             break;
         }
         case EmitMode::PerEvent:
         {
             finalized_block = params->aggregator->executeAndFinalizePerRow(
-                std::move(columns), 0, num_rows, variants, key_columns, aggregate_columns, backfilling());
+                std::move(columns), 0, num_rows, variants, key_columns, aggregate_columns);
             break;
         }
         default:

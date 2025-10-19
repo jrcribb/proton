@@ -67,7 +67,7 @@ struct MemoryAggregatorParams final : public IAggregatorParams
               window_keys_num_,
               std::move(window_params_),
               max_threads_,
-              std::optional<EmitAfterKeyExpirationParams>{},
+              std::optional<EmitAfterSessionCloseParams>{},
               compile_aggregate_expressions_,
               min_count_to_compile_aggregate_expression_)
         , overflow_row(overflow_row_)

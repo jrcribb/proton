@@ -17,7 +17,7 @@ enum class EmitMode : uint8_t
 
     Tail,
 
-    AfterKeyExpire, /// Emit when either max time span reaches since seeing a key or timeout reaches when there is no new data for a key
+    AfterSessionClose, /// Emit when either session close, or max time span reaches since seeing a key or timeout reaches when there is no new data for session
 
     Periodic, /// Emit results periodically
 

@@ -484,6 +484,11 @@ public:
 
     HybridFindResults findKeys(const std::vector<K> & keys) { return findKeys(keys.begin(), keys.end(), /*disable_spill=*/false); }
 
+    HybridFindResults findKeys(const std::vector<K> & keys, bool disable_spill)
+    {
+        return findKeys(keys.begin(), keys.end(), disable_spill);
+    }
+
     /// \param disable_spill Same in emplaceKeys(keys, disable_spill)
     HybridFindResults findKeys(std::vector<K>::const_iterator keys_start, std::vector<K>::const_iterator keys_end, bool disable_spill)
     {

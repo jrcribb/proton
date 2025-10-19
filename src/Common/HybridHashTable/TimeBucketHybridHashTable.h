@@ -111,7 +111,9 @@ public:
     }
 
     /// Call shall call `spillIfNecessary()`
-    HybridFindResults findKeys(const std::vector<K> & keys)
+    HybridFindResults findKeys(const std::vector<K> & keys) { return findKeys(keys, /*disable_spill=*/true); }
+
+    HybridFindResults findKeys(const std::vector<K> & keys, bool disable_spill)
     {
         chassert(!keys.empty());
 
@@ -125,7 +127,7 @@ public:
             auto iter = bucket_tables.find(current_bucket);
             if (iter != bucket_tables.end())
             {
-                auto batch_results = iter->second->findKeys(keys.begin() + current_idx, keys.begin() + n, /*disable_spill=*/true);
+                auto batch_results = iter->second->findKeys(keys.begin() + current_idx, keys.begin() + n, disable_spill);
 
                 if (!batch_results.hasError())
                 {

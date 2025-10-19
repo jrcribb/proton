@@ -1109,6 +1109,7 @@ Possible values: non-negative numbers. Note that if the value is too small or to
     M(Int64, aggregate_state_ttl_sec, 0, "TTL in seconds for aggregation states for hybrid hash aggregation. If <= 0, no TTL", 0) \
     M(Int64, join_state_ttl_sec, 0, "TTL in seconds for join state for hybrid hash table join. If <= 0, no TTL", 0) \
     M(String, kv_options, "", "RocksDB fine tune options for hybrid hash join and aggregation", 0) \
+    M(Bool, merge_open_sessions, false, "If a open session is not closed and the session start event opens it again, merge them if true; otherwise close the existing one and start a new session", 0) \
     /** proton: ends. */
 // End of FORMAT_FACTORY_SETTINGS
 // Please add settings non-related to formats into the COMMON_SETTINGS above.

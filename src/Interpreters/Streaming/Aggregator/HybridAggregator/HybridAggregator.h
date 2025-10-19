@@ -44,18 +44,16 @@ public:
         size_t row_end,
         IAggregatedDataVariants & result,
         ColumnRawPtrs & key_columns,
-        AggregateColumns & aggregate_columns, /// Passed to not create them anew for each block
-        bool new_keys) const override;
+        AggregateColumns & aggregate_columns) const override;
 
-    /// \return finalized block if there are `expired` key
-    Block executeAndFinalizeAfterKeyExpire(
+    /// \return finalized block if there are `expired` sessions
+    Block executeAndFinalizeAfterSessionClose(
         Columns columns,
         size_t row_begin,
         size_t row_end,
         IAggregatedDataVariants & result,
         ColumnRawPtrs & key_columns,
-        AggregateColumns & aggregate_columns, /// Passed to not create them anew for each block
-        bool new_keys) const override;
+        AggregateColumns & aggregate_columns) const override;
 
     /// Converting states to blocks
     BlocksList
@@ -106,7 +104,6 @@ private:
         size_t row_begin,
         size_t row_end,
         AggregateFunctionInstruction * aggregate_instructions,
-        bool new_keys,
         std::string_view variants_id) const;
 
     Block executeAndFinalizeWithoutKeyPerRowImpl(
@@ -125,18 +122,42 @@ private:
         bool new_keys,
         std::string_view variants_id) const;
 
-    /// Process one data block, aggregate the data into a hash table and return fianlized aggregated states for expired keys.
+    /// Process one data block, aggregate the data into a hash table and return finalized aggregated states for closed sessions.
     template <typename Table, typename KeyList, typename KeyGetter>
-    Block executeAndFinalizeAfterKeyExpireImpl(
+    Block executeAndFinalizeAfterSessionCloseImpl(
         Table & table,
         KeyList & outstanding_keys,
-        const IColumn * ts_col,
+        const IColumn * session_ts_col,
+        const IColumn * session_start_col,
+        const IColumn * session_end_col,
         const KeyGetter & key_getter,
         size_t row_begin,
         size_t row_end,
         AggregateFunctionInstruction * aggregate_instructions,
-        bool new_keys,
         std::string_view variants_id) const;
+
+    template <typename Table, typename KeyList, typename KeyGetter>
+    Block executeAndFinalizeAfterSessionCondCloseImpl(
+        Table & table,
+        KeyList & outstanding_keys,
+        const IColumn * session_ts_col,
+        const IColumn * session_start_col,
+        const IColumn * session_end_col,
+        const KeyGetter & key_getter,
+        size_t row_begin,
+        size_t row_end,
+        AggregateFunctionInstruction * aggregate_instructions,
+        std::string_view variants_id) const;
+
+    template <typename Table, typename KeyList, typename KeyGetter>
+    Block finalizeExpiredSessions(
+        Table & table,
+        const KeyGetter & key_getter,
+        KeyList & outstanding_keys,
+        absl::flat_hash_set<typename KeyGetter::KeyType> & handled_key_set,
+        AggregateFunctionInstruction * aggregate_instructions,
+        bool add_expired_keys,
+        bool & removed_expired_sessions) const;
 
     template <typename KeyGetter, typename Table>
     BlocksList convertToBlocksMerged(Table & table, Table * retracts) const;

@@ -51,6 +51,7 @@ extern const int INVALID_SETTING_VALUE;
 extern const int UNSUPPORTED;
 extern const int UDA_NOT_APPLICABLE;
 extern const int WINDOW_COLUMN_NOT_REFERENCED;
+extern const int UNKNOWN_IDENTIFIER;
 }
 
 namespace
@@ -97,45 +98,44 @@ bool hasGlobalAggregationInQuery(const ASTPtr & query, const ASTSelectQuery & se
     return !data.aggregates.empty() || select_query.groupBy() != nullptr;
 }
 
-std::optional<Streaming::EmitAfterKeyExpirationParams>
-getEmitAfterKeyExpirationParams(const QueryPlan & query_plan, Streaming::EmitParamsPtr emit_params_copy, HashTableType hash_table_type)
+std::optional<Streaming::EmitAfterSessionCloseParams>
+getEmitAfterSessionCloseParams(const QueryPlan & query_plan, Streaming::EmitParamsPtr emit_params_copy, HashTableType hash_table_type)
 {
-    if (emit_params_copy->mode != Streaming::EmitMode::AfterKeyExpire)
+    if (emit_params_copy->mode != Streaming::EmitMode::AfterSessionClose)
         return {};
 
     if (hash_table_type != HashTableType::Hybrid)
         throw Exception(
             ErrorCodes::NOT_IMPLEMENTED,
-            "`EMIT AFTER KEY EXPIRE` aggregation only supports hybrid hash table, use `SETTINGS default_hash_table='hybrid' for the "
+            "`EMIT AFTER SESSION CLOSE` aggregation only supports hybrid hash table, use `SETTINGS default_hash_table='hybrid' for the "
             "query");
 
-    std::optional<size_t> key_ts_col_pos;
+    std::optional<size_t> session_ts_col_pos;
     const auto & header = query_plan.getCurrentDataStream().header;
-    if (!emit_params_copy->key_ts_col_name.empty())
+    if (!emit_params_copy->session_ts_col_name.empty())
     {
-        key_ts_col_pos = header.tryGetPositionByName(emit_params_copy->key_ts_col_name);
-        if (!key_ts_col_pos)
+        session_ts_col_pos = header.tryGetPositionByName(emit_params_copy->session_ts_col_name);
+        if (!session_ts_col_pos)
             throw Exception(
                 ErrorCodes::LOGICAL_ERROR,
-                "Timestamp column='{}' clause is missing which is required by `EMIT AFTER KEY EXPIRE IDENTIFIED BY {}`",
-                emit_params_copy->key_ts_col_name,
-                emit_params_copy->key_ts_col_name);
+                "Session timestamp column='{}' is missing which is required by `EMIT AFTER SESSION CLOSE IDENTIFIED BY`",
+                emit_params_copy->session_ts_col_name);
     }
     else
     {
         /// Try _tp_time
-        key_ts_col_pos = header.tryGetPositionByName(ProtonConsts::RESERVED_EVENT_TIME);
-        if (!key_ts_col_pos)
+        session_ts_col_pos = header.tryGetPositionByName(ProtonConsts::RESERVED_EVENT_TIME);
+        if (!session_ts_col_pos)
             throw Exception(
                 ErrorCodes::LOGICAL_ERROR,
-                "'{}' column is missing which is required by `EMIT AFTER KEY EXPIRE` clause when `IDENTIFIED BY ts_col` is not present",
+                "'{}' column is missing which is required by `EMIT AFTER SESSION CLOSE` clause when `IDENTIFIED BY ts_col` is not present",
                 ProtonConsts::RESERVED_EVENT_TIME);
     }
 
     auto [max_span_ms, timeout_ms] = emit_params_copy->keyMaxSpanAndTimeoutMs();
 
-    /// Check date type of key_ts_col
-    const auto & ts_col = header.getByPosition(key_ts_col_pos.value());
+    /// Check date type of session_ts_col
+    const auto & ts_col = header.getByPosition(session_ts_col_pos.value());
 
     /// Convert the scale / unit to the same as ts column
     UInt64 max_span = max_span_ms;
@@ -165,11 +165,47 @@ getEmitAfterKeyExpirationParams(const QueryPlan & query_plan, Streaming::EmitPar
             ErrorCodes::UNSUPPORTED, "`IDENTIFIED BY ts_col` only supports DateTime or DateTime64 types, but got '{}'", col_type);
     }
 
-    return Streaming::EmitAfterKeyExpirationParams{
-        .key_ts_col_pos = key_ts_col_pos.value(),
-        .key_max_span_interval = max_span,
+    std::optional<size_t> session_start_col_pos;
+    if (!emit_params_copy->session_start_col_name.empty())
+    {
+        session_start_col_pos = header.tryGetPositionByName(emit_params_copy->session_start_col_name);
+        if (!session_start_col_pos)
+            throw Exception(
+                ErrorCodes::UNKNOWN_IDENTIFIER,
+                "Session start column='{}' is missing which is required by `EMIT AFTER SESSION CLOSE IDENTIFIED BY`",
+                emit_params_copy->session_start_col_name);
+
+        const auto & session_start_col = header.getByPosition(session_start_col_pos.value());
+        auto start_col_type = session_start_col.type->getTypeId();
+        if (start_col_type != TypeIndex::Bool && start_col_type != TypeIndex::UInt8)
+            throw Exception(
+                ErrorCodes::UNSUPPORTED, "Session start column only supports Bool or UInt8 column types, but got '{}'", start_col_type);
+    }
+
+    std::optional<size_t> session_end_col_pos;
+    if (!emit_params_copy->session_end_col_name.empty())
+    {
+        session_end_col_pos = header.tryGetPositionByName(emit_params_copy->session_end_col_name);
+        if (!session_end_col_pos)
+            throw Exception(
+                ErrorCodes::UNKNOWN_IDENTIFIER,
+                "Session end column='{}' is missing which is required by `EMIT AFTER SESSION CLOSE IDENTIFIED BY`",
+                emit_params_copy->session_end_col_name);
+
+        const auto & session_end_col = header.getByPosition(session_end_col_pos.value());
+        auto end_col_type = session_end_col.type->getTypeId();
+        if (end_col_type != TypeIndex::Bool && end_col_type != TypeIndex::UInt8)
+            throw Exception(
+                ErrorCodes::UNSUPPORTED, "Session end column only supports Bool or UInt8 column types, but got '{}'", end_col_type);
+    }
+
+    return Streaming::EmitAfterSessionCloseParams{
+        .session_ts_col_pos = session_ts_col_pos.value(),
+        .session_start_pos = session_start_col_pos,
+        .session_end_pos = session_end_col_pos,
+        .max_span_interval = max_span,
         .timeout_interval_ms = timeout_ms,
-        .only_max_span = emit_params_copy->only_max_span,
+        .only_max_span = emit_params_copy->only_max_span_session,
     };
 }
 
@@ -569,7 +605,7 @@ void InterpreterSelectQuery::executeStreamingAggregation(
         }
         case HashTableType::Hybrid:
         {
-            auto emit_key_params = getEmitAfterKeyExpirationParams(query_plan, emit_params_copy, settings.default_hash_table.value);
+            auto emit_session_params = getEmitAfterSessionCloseParams(query_plan, emit_params_copy, settings.default_hash_table.value);
 
             params = std::make_shared<Streaming::HybridAggregatorParams>(
                 keys,
@@ -589,7 +625,7 @@ void InterpreterSelectQuery::executeStreamingAggregation(
                 settings.keep_windows,
                 window_keys_num,
                 query_info.streaming_window_params,
-                emit_key_params);
+                emit_session_params);
             break;
         }
     }
@@ -854,7 +890,7 @@ void InterpreterSelectQuery::buildWatermarkQueryPlan(QueryPlan & query_plan)
     chassert(isStreamingQuery());
 
     auto emit_params_copy = emitParams();
-    if (emit_params_copy->mode == Streaming::EmitMode::AfterKeyExpire)
+    if (emit_params_copy->mode == Streaming::EmitMode::AfterSessionClose)
         /// There is no watermark for after-key-expire-emit
         /// since each key is separately tracked
         return;

@@ -40,7 +40,7 @@ HybridAggregator::HybridAggregator(const Block & input_header_, const HybridAggr
     bucket_key_offset = hash_method.bucket_key_offset;
     has_nullable_key = hash_method.has_nullable_key;
 
-    if (params->emit_key_params)
+    if (params->emit_session_params)
     {
         /// Only support string key for now
         switch (method_chosen)
@@ -51,7 +51,7 @@ HybridAggregator::HybridAggregator(const Block & input_header_, const HybridAggr
             APPLY_FOR_HASH_KEY_VARIANTS_SINGLE_LEVEL_HYBRID(M)
 #undef M
             default:
-                throw Exception(ErrorCodes::NOT_IMPLEMENTED, "`EMIT AFTER KEY EXPIRE` only supports {} hash key", method_chosen);
+                throw Exception(ErrorCodes::NOT_IMPLEMENTED, "`EMIT AFTER SESSION CLOSE` only supports {} hash key", method_chosen);
         }
     }
 }

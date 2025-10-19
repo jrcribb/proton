@@ -25,22 +25,51 @@ void ASTEmitQuery::formatImpl(const FormatSettings & format, FormatState &, Form
         return;
     }
 
-    if (key_max_span_interval)
+    if (session_max_span_interval)
     {
-        format.ostr << (format.hilite ? hilite_keyword : "") << extra_space << "AFTER KEY EXPIRE" << (format.hilite ? hilite_none : "");
+        format.ostr << (format.hilite ? hilite_keyword : "") << extra_space << "AFTER SESSION CLOSE" << (format.hilite ? hilite_none : "");
 
-        if (key_ts_col)
+        if (session_ts_col && session_start_col && session_end_col)
         {
             format.ostr << (format.hilite ? hilite_keyword : "") << " IDENTIFIED BY " << (format.hilite ? hilite_none : "");
-            key_ts_col->format(format);
+            format.ostr << "(";
+            session_ts_col->format(format);
+            format.ostr << ", ";
+            session_start_col->format(format);
+            format.ostr << ", ";
+            session_end_col->format(format);
+            format.ostr << ")";
+        }
+        else if (session_ts_col && session_start_col)
+        {
+            format.ostr << (format.hilite ? hilite_keyword : "") << " IDENTIFIED BY " << (format.hilite ? hilite_none : "");
+            format.ostr << "(";
+            session_ts_col->format(format);
+            format.ostr << ", ";
+            session_start_col->format(format);
+            format.ostr << ", false)";
+        }
+        else if (session_ts_col && session_end_col)
+        {
+            format.ostr << (format.hilite ? hilite_keyword : "") << " IDENTIFIED BY " << (format.hilite ? hilite_none : "");
+            format.ostr << "(";
+            session_ts_col->format(format);
+            format.ostr << ", true, ";
+            session_end_col->format(format);
+            format.ostr << ")";
+        }
+        else if (session_ts_col)
+        {
+            format.ostr << (format.hilite ? hilite_keyword : "") << " IDENTIFIED BY " << (format.hilite ? hilite_none : "");
+            session_ts_col->format(format);
         }
 
-        if (only_max_span)
+        if (only_max_span_session)
             format.ostr << (format.hilite ? hilite_keyword : "") << " WITH ONLY MAXSPAN " << (format.hilite ? hilite_none : "");
         else
             format.ostr << (format.hilite ? hilite_keyword : "") << " WITH MAXSPAN " << (format.hilite ? hilite_none : "");
 
-        key_max_span_interval->format(format);
+        session_max_span_interval->format(format);
 
         if (timeout_interval)
         {
@@ -116,11 +145,11 @@ ASTPtr ASTEmitQuery::clone() const
     if (last_interval)
         ast->last_interval = last_interval->clone();
 
-    if (key_ts_col)
-        ast->key_ts_col = key_ts_col->clone();
+    if (session_ts_col)
+        ast->session_ts_col = session_ts_col->clone();
 
-    if (key_max_span_interval)
-        ast->key_max_span_interval = key_max_span_interval->clone();
+    if (session_max_span_interval)
+        ast->session_max_span_interval = session_max_span_interval->clone();
 
     return ast;
 }
@@ -155,13 +184,13 @@ void ASTEmitQuery::updateTreeHashImpl(SipHash & hash_state) const
 
     hash_state.update(proc_time);
 
-    if (key_ts_col)
-        key_ts_col->updateTreeHashImpl(hash_state);
+    if (session_ts_col)
+        session_ts_col->updateTreeHashImpl(hash_state);
 
-    if (key_max_span_interval)
-        key_max_span_interval->updateTreeHashImpl(hash_state);
+    if (session_max_span_interval)
+        session_max_span_interval->updateTreeHashImpl(hash_state);
 
-    hash_state.update(only_max_span);
+    hash_state.update(only_max_span_session);
 
     IAST::updateTreeHashImpl(hash_state);
 }

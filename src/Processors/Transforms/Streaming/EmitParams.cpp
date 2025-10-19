@@ -58,15 +58,21 @@ void mergeEmitQuerySettings(const ASTPtr & emit_query, EmitParams & params)
     {
         params.mode = EmitMode::PerEvent;
     }
-    else if (emit->key_max_span_interval)
+    else if (emit->session_max_span_interval)
     {
-        params.mode = EmitMode::AfterKeyExpire;
-        params.key_max_span_interval = extractInterval(emit->key_max_span_interval->as<ASTFunction>());
+        params.mode = EmitMode::AfterSessionClose;
+        params.session_max_span_interval = extractInterval(emit->session_max_span_interval->as<ASTFunction>());
 
-        if (emit->key_ts_col)
-            params.key_ts_col_name = emit->key_ts_col->as<ASTIdentifier>()->full_name;
+        if (emit->session_ts_col)
+            params.session_ts_col_name = emit->session_ts_col->as<ASTIdentifier>()->full_name;
 
-        params.only_max_span = emit->only_max_span;
+        if (emit->session_start_col)
+            params.session_start_col_name = emit->session_start_col->as<ASTIdentifier>()->full_name;
+
+        if (emit->session_end_col)
+            params.session_end_col_name = emit->session_end_col->as<ASTIdentifier>()->full_name;
+
+        params.only_max_span_session = emit->only_max_span_session;
     }
     /// For backward compatibility: `EMIT TIMEOUT 30s;`
     else if (emit->timeout_interval)
@@ -74,7 +80,7 @@ void mergeEmitQuerySettings(const ASTPtr & emit_query, EmitParams & params)
         if (params.window_params)
             params.mode = EmitMode::AfterWindowClose; /// Default to `AFTER WINDOW CLOSE` for window aggr query
         else
-            emit->timeout_interval.reset(); /// Ignored timeout for non-window aggr query 
+            emit->timeout_interval.reset(); /// Ignored timeout for non-window aggr query
     }
 
     if (emit->delay_interval)
@@ -90,7 +96,7 @@ void mergeEmitQuerySettings(const ASTPtr & emit_query, EmitParams & params)
 
     if (emit->timeout_interval)
     {
-        if (!params.window_params && params.mode != EmitMode::AfterKeyExpire)
+        if (!params.window_params && params.mode != EmitMode::AfterSessionClose)
             throw Exception(
                 ErrorCodes::INCORRECT_QUERY,
                 "Watermark with timeout is only supported with streaming window function or per key emit in global aggregation");
@@ -153,20 +159,20 @@ EmitParams::EmitParams(ASTPtr query, TreeRewriterResultPtr syntax_analyzer_resul
 
 std::pair<UInt64, UInt64> EmitParams::keyMaxSpanAndTimeoutMs() const
 {
-    if (mode != EmitMode::AfterKeyExpire)
-        throw Exception(ErrorCodes::LOGICAL_ERROR, "MAXSPAN interval is only available in `EMIT AFTER KEY EXPIRE`");
+    if (mode != EmitMode::AfterSessionClose)
+        throw Exception(ErrorCodes::LOGICAL_ERROR, "MAXSPAN interval is only available in `EMIT AFTER SESSION CLOSE`");
 
     UInt64 max_span_ms = 0;
-    switch (key_max_span_interval.unit)
+    switch (session_max_span_interval.unit)
     {
         case IntervalKind::Kind::Millisecond:
-            max_span_ms = key_max_span_interval.interval;
+            max_span_ms = session_max_span_interval.interval;
             break;
         case IntervalKind::Kind::Second:
-            max_span_ms = key_max_span_interval.interval * 1000;
+            max_span_ms = session_max_span_interval.interval * 1000;
             break;
         case IntervalKind::Kind::Minute:
-            max_span_ms = key_max_span_interval.interval * 1000 * 60;
+            max_span_ms = session_max_span_interval.interval * 1000 * 60;
             break;
         default:
             throw Exception(ErrorCodes::UNSUPPORTED, "MAXSPAN only supports millisecond, second or minute interval");

@@ -25,7 +25,7 @@ struct HybridAggregatorParams final : public IAggregatorParams
         size_t streaming_window_count_ = 0,
         size_t window_keys_num_ = 0,
         WindowParamsPtr window_params_ = nullptr,
-        std::optional<EmitAfterKeyExpirationParams> emit_key_params_ = {})
+        std::optional<EmitAfterSessionCloseParams> emit_session_params_ = {})
         : IAggregatorParams(
               keys_,
               aggregates_,
@@ -38,7 +38,7 @@ struct HybridAggregatorParams final : public IAggregatorParams
               window_keys_num_,
               std::move(window_params_),
               max_threads_,
-              emit_key_params_,
+              emit_session_params_,
               compile_aggregate_expressions_,
               min_count_to_compile_aggregate_expression_)
         , spill_dir_path(std::move(spill_dir_path_))

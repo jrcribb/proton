@@ -20,7 +20,7 @@ GlobalAggregatingTransformWithSessionKey::GlobalAggregatingTransformWithSessionK
 {
     chassert(params->params->group_by == IAggregatorParams::GroupBy::Other);
     if (params->aggregatorType() != AggregatorType::Hybrid)
-        throw Exception(ErrorCodes::UNSUPPORTED, "EMIT AFTER KEY EXPIRE only supports Hybrid aggregator");
+        throw Exception(ErrorCodes::UNSUPPORTED, "EMIT AFTER SESSION CLOSE only supports Hybrid aggregator");
 }
 
 String GlobalAggregatingTransformWithSessionKey::getName() const
