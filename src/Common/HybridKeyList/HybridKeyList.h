@@ -470,27 +470,6 @@ public:
     /// \return true, reloaded all keys from disk, otherwise false
     void reload() { refill(); }
 
-    int refill()
-    {
-        if (!persistentPartInited())
-            initRocks();
-
-        std::unique_ptr<rocksdb::Iterator> iterator(cf_handler->db->NewIterator(read_options, cf_handler->cf_handle));
-        for (iterator->SeekToFirst(); iterator->Valid() && oldest_keys.size() < config.max_hot_key_count; iterator->Next())
-        {
-            auto key_v = iterator->key().ToStringView();
-
-            int64_t ts = 0;
-            K key;
-            if (auto errcode = decodeKey(key_v, key, ts); errcode != ErrorCodes::OK)
-                throw DB::Exception(errcode, "Failed to deserialize key, {}", ErrorCodes::getName(errcode));
-
-            oldest_keys.emplace(std::move(key), ts);
-        }
-
-        return !iterator->Valid();
-    }
-
 private:
     void initRocks()
     {
@@ -517,6 +496,27 @@ private:
 
         rocks = std::make_shared<RocksDB>(db, std::vector<rocksdb::ColumnFamilyHandle *>{}, config.cleanup_on_disk_data, logger);
         cf_handler = rocks->getOrCreateColumnFamilyHandler(config.cf_handle_id, config.ttl);
+    }
+
+    int refill()
+    {
+        if (!persistentPartInited())
+            initRocks();
+
+        std::unique_ptr<rocksdb::Iterator> iterator(cf_handler->db->NewIterator(read_options, cf_handler->cf_handle));
+        for (iterator->SeekToFirst(); iterator->Valid() && oldest_keys.size() < config.max_hot_key_count; iterator->Next())
+        {
+            auto key_v = iterator->key().ToStringView();
+
+            int64_t ts = 0;
+            K key;
+            if (auto errcode = decodeKey(key_v, key, ts); errcode != ErrorCodes::OK)
+                throw DB::Exception(errcode, "Failed to deserialize key, {}", ErrorCodes::getName(errcode));
+
+            oldest_keys.emplace(std::move(key), ts);
+        }
+
+        return !iterator->Valid();
     }
 
     int decodeKey(std::string_view key_v, K & key, int64_t & ts) const

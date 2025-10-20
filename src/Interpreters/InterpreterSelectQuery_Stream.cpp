@@ -99,12 +99,12 @@ bool hasGlobalAggregationInQuery(const ASTPtr & query, const ASTSelectQuery & se
 }
 
 std::optional<Streaming::EmitAfterSessionCloseParams>
-getEmitAfterSessionCloseParams(const QueryPlan & query_plan, Streaming::EmitParamsPtr emit_params_copy, HashTableType hash_table_type)
+getEmitAfterSessionCloseParams(const QueryPlan & query_plan, Streaming::EmitParamsPtr emit_params_copy, const Settings & settings)
 {
     if (emit_params_copy->mode != Streaming::EmitMode::AfterSessionClose)
         return {};
 
-    if (hash_table_type != HashTableType::Hybrid)
+    if (settings.default_hash_table.value != HashTableType::Hybrid)
         throw Exception(
             ErrorCodes::NOT_IMPLEMENTED,
             "`EMIT AFTER SESSION CLOSE` aggregation only supports hybrid hash table, use `SETTINGS default_hash_table='hybrid' for the "
@@ -206,6 +206,8 @@ getEmitAfterSessionCloseParams(const QueryPlan & query_plan, Streaming::EmitPara
         .max_span_interval = max_span,
         .timeout_interval_ms = timeout_ms,
         .only_max_span = emit_params_copy->only_max_span_session,
+        .merge_open_sessions = settings.merge_open_sessions.value,
+        .include_session_end = settings.include_session_end.value,
     };
 }
 
@@ -605,7 +607,7 @@ void InterpreterSelectQuery::executeStreamingAggregation(
         }
         case HashTableType::Hybrid:
         {
-            auto emit_session_params = getEmitAfterSessionCloseParams(query_plan, emit_params_copy, settings.default_hash_table.value);
+            auto emit_session_params = getEmitAfterSessionCloseParams(query_plan, emit_params_copy, settings);
 
             params = std::make_shared<Streaming::HybridAggregatorParams>(
                 keys,

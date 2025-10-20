@@ -20,7 +20,8 @@ struct EmitAfterSessionCloseParams
     uint64_t timeout_interval_ms = 0;
     bool only_max_span = false;
     bool merge_open_sessions = false;
-    uint64_t max_tracking_keys = 0;
+    bool include_session_end = true;
+    /// uint64_t max_hot_keys = 0;
 };
 
 struct IAggregatorParams

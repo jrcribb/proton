@@ -99,7 +99,7 @@ void mergeEmitQuerySettings(const ASTPtr & emit_query, EmitParams & params)
         if (!params.window_params && params.mode != EmitMode::AfterSessionClose)
             throw Exception(
                 ErrorCodes::INCORRECT_QUERY,
-                "Watermark with timeout is only supported with streaming window function or per key emit in global aggregation");
+                "Watermark with timeout is only supported with streaming window function or emit session close in global aggregation");
 
         params.timeout_interval = extractInterval(emit->timeout_interval->as<ASTFunction>());
     }
@@ -196,6 +196,9 @@ std::pair<UInt64, UInt64> EmitParams::keyMaxSpanAndTimeoutMs() const
         default:
             throw Exception(ErrorCodes::UNSUPPORTED, "TIMEOUT only supports millisecond, second or minute interval");
     }
+
+    if (timeout_ms < max_span_ms)
+        throw Exception(ErrorCodes::UNSUPPORTED, "TIMEOUT interval shall be great or equal to MAXSPAN interval");
 
     if (timeout_ms != 0)
         return {max_span_ms, timeout_ms};

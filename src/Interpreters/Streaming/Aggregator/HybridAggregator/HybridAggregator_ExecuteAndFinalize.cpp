@@ -2,10 +2,7 @@
 #include <Interpreters/Streaming/Aggregator/HybridAggregator/TrackingTime.h>
 #include <Common/HybridHashTable/HybridKeyGetter.h>
 
-namespace DB
-{
-
-namespace Streaming
+namespace DB::Streaming
 {
 Block HybridAggregator::executeAndFinalizeWithoutKeyPerRowImpl(
     AggregateDataPtr aggregate_data, size_t row_begin, size_t row_end, AggregateFunctionInstruction * aggregate_instructions) const
@@ -600,10 +597,12 @@ template <typename Table, typename KeyList, typename KeyGetter>
         {
             auto * aggregate_data = static_cast<AggregateDataPtr>(find_result.getMutableMapped());
 
-            /// Add the current row to the existing session window first
-            aggregateSingleRow(aggregate_data, aggregate_instructions, row_num, /*arena=*/nullptr);
-
-            TrackingTime::updateTimestamp(aggregate_data, session_ts_col->get64(row_num));
+            if (params->emit_session_params->include_session_end)
+            {
+                /// Add the current row to the existing session window first
+                aggregateSingleRow(aggregate_data, aggregate_instructions, row_num, /*arena=*/nullptr);
+                TrackingTime::updateTimestamp(aggregate_data, session_ts_col->get64(row_num));
+            }
 
             /// Finalize the session
             if (!params->emit_session_params->only_max_span
@@ -628,6 +627,9 @@ template <typename Table, typename KeyList, typename KeyGetter>
         }
         else
         {
+            if (!params->emit_session_params->include_session_end)
+                return;
+
             /// There is no session for this key. The session end event is the only row. Finalize it
             auto * aggregate_data = emplace_new_and_aggregate(row_num, k, /*add_to_outstanding_keys=*/false);
 
@@ -718,7 +720,8 @@ template <typename Table, typename KeyList, typename KeyGetter>
                 }
                 else
                 {
-                    /// There is no session for the current key, and it is not a session end event, drop the current row on the floor
+                    /// Session not exists, since there is no session start cond, all events before session end are included in the session
+                    start_new_session(row, key, find_result);
                 }
             }
         }
@@ -750,5 +753,4 @@ template <typename Table, typename KeyList, typename KeyGetter>
         return block;
 }
 
-}
 }
