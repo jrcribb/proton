@@ -534,13 +534,13 @@ template <typename Table, typename KeyList, typename KeyGetter>
             /// Insert the aggregates to columns
             insertAggregatesIntoColumns(aggregate_data, out_cols.final_aggregate_columns, /*arena=*/nullptr);
 
-            /// Close the session by removing it
-            if (auto errcode = table.removeKey(k); errcode != ErrorCodes::OK)
-                throw Exception(errcode, "Failed to remove closed session");
-
             auto create_utc_ts = TrackingTime::getCreateTimestamp(aggregate_data);
             if (auto errcode = outstanding_keys.removeKey(k, create_utc_ts); errcode != ErrorCodes::OK)
                 throw Exception(errcode, "Failed to remove session key from hybrid key list, key_create_ts={}", create_utc_ts);
+
+            /// Close the session by removing it
+            if (auto errcode = table.removeKey(k); errcode != ErrorCodes::OK)
+                throw Exception(errcode, "Failed to remove closed session");
 
             handled_key_set.insert(k);
         }
@@ -570,13 +570,13 @@ template <typename Table, typename KeyList, typename KeyGetter>
                     insertAggregatesIntoColumns(aggregate_data, out_cols.final_aggregate_columns, /*arena=*/nullptr);
                 }
 
-                /// Close the session by removing it
-                if (auto errcode = table.removeKey(k); errcode != ErrorCodes::OK)
-                    throw Exception(errcode, "Failed to remove closed session from hybrid hash table");
-
                 auto create_utc_ts = TrackingTime::getCreateTimestamp(aggregate_data);
                 if (auto errcode = outstanding_keys.removeKey(k, create_utc_ts); errcode != ErrorCodes::OK)
                     throw Exception(errcode, "Failed to remove session key from hybrid key list, key_create_ts={}", create_utc_ts);
+
+                /// Close the session by removing it
+                if (auto errcode = table.removeKey(k); errcode != ErrorCodes::OK)
+                    throw Exception(errcode, "Failed to remove closed session from hybrid hash table");
 
                 handled_key_set.insert(k);
 
@@ -615,13 +615,13 @@ template <typename Table, typename KeyList, typename KeyGetter>
                 insertAggregatesIntoColumns(aggregate_data, out_cols.final_aggregate_columns, /*arena=*/nullptr);
             }
 
-            /// Close the session by removing it
-            if (auto errcode = table.removeKey(k); errcode != ErrorCodes::OK)
-                throw Exception(errcode, "Failed to remove closed session from hybrid hash table");
-
             auto create_utc_ts = TrackingTime::getCreateTimestamp(aggregate_data);
             if (auto errcode = outstanding_keys.removeKey(k, create_utc_ts); errcode != ErrorCodes::OK)
                 throw Exception(errcode, "Failed to remove session key from hybrid key list, key_create_ts={}", create_utc_ts);
+
+            /// Close the session by removing it
+            if (auto errcode = table.removeKey(k); errcode != ErrorCodes::OK)
+                throw Exception(errcode, "Failed to remove closed session from hybrid hash table");
 
             handled_key_set.insert(k);
         }

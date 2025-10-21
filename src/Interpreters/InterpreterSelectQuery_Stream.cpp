@@ -246,6 +246,10 @@ void InterpreterSelectQuery::processEmits()
         if (emit->as<ASTEmitQuery &>().stream_mode.value_or(ASTEmitQuery::StreamMode::STREAM) == ASTEmitQuery::StreamMode::CHANGELOG)
             query_info.force_emit_changelog = true;
 
+        /// For hybrid hash table for `EMIT AFTER SESSION CLOSE`
+        if (emit->as<ASTEmitQuery &>().emitAfterSessionClose() && settings.default_hash_table.value != HashTableType::Hybrid)
+            context->setSetting("default_hash_table", std::string{"hybrid"});
+
         /// After handling, update setting for context.
         if (getSelectQuery().settings())
             InterpreterSetQuery(getSelectQuery().settings(), context).executeForCurrentContext();

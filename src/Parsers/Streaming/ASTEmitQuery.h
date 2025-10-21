@@ -48,6 +48,8 @@ public:
     /// Only emit session keys whose span >= max span
     bool only_max_span_session = false;
 
+    bool emitAfterSessionClose() const noexcept { return session_max_span_interval != nullptr; }
+
     String getID(char) const override { return "Emit"; }
 
     ASTPtr clone() const override;

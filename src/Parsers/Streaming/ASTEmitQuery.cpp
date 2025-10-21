@@ -25,7 +25,7 @@ void ASTEmitQuery::formatImpl(const FormatSettings & format, FormatState &, Form
         return;
     }
 
-    if (session_max_span_interval)
+    if (emitAfterSessionClose())
     {
         format.ostr << (format.hilite ? hilite_keyword : "") << extra_space << "AFTER SESSION CLOSE" << (format.hilite ? hilite_none : "");
 
