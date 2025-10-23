@@ -46,16 +46,19 @@ void HybridAggregator::initStates(HybridAggregatedDataVariants & result) const
         {
             case TrackingUpdatesType::UpdatesWithRetract:
             {
+                init_table(result.table, "main");
                 init_table(result.retracts, "retracts");
-                [[fallthrough]];
+                break;
             }
             case TrackingUpdatesType::Updates:
             {
+                init_table(result.table, "main");
+
                 auto config = getSubConfig(result.getID(), "changes");
                 config.installNoOpCallbacks();
                 config.validate();
                 result.updates.init(method_chosen, std::move(config), result.key_sizes, logger, bucket_key_offset);
-                [[fallthrough]];
+                break;
             }
             case TrackingUpdatesType::None:
             {

@@ -135,7 +135,7 @@ ALWAYS_INLINE BlocksList HybridAggregator::convertToBlocksImpl(Table & table, Ta
         case TrackingUpdatesType::Updates:
             return convertToBlocksForUpdates<KeyGetter>(table, updates, clear_updates);
         case TrackingUpdatesType::UpdatesWithRetract:
-            return convertToBlocksForRetracts<KeyGetter>(table, updates, retracts);
+            return convertToBlocksForRetracts<KeyGetter>(table, retracts);
         case TrackingUpdatesType::None:
             return convertToBlocksForAll<KeyGetter>(table);
     }
@@ -353,9 +353,23 @@ BlocksList HybridAggregator::convertToBlocksForUpdates(Table & table, Table * up
 }
 
 template <typename KeyGetter, typename Table>
-BlocksList HybridAggregator::convertToBlocksForRetracts(Table & table, Table * updates, Table * retracts) const
+BlocksList HybridAggregator::convertToBlocksForRetracts(Table & table, Table * retracts) const
 {
-    assert(updates && retracts);
+    chassert(retracts);
+
+    /// A special case: If there is no retract key, it means it is the first conversion (Retract is not enabled yet),
+    /// convert all current state as normal
+    if (retracts->empty())
+    {
+        auto blocks = convertToBlocksForAll<KeyGetter>(table);
+        for (auto & block : blocks)
+        {
+            auto delta_col = ColumnInt8::create(block.rows(), static_cast<Int8>(1));
+            auto delta_col_type = DataTypeFactory::instance().get(TypeIndex::Int8);
+            block.insert(ColumnWithTypeAndName{std::move(delta_col), delta_col_type, ProtonConsts::RESERVED_DELTA_FLAG});
+        }
+        return blocks;
+    }
 
     auto rows = table.approximateCount();
     /// +1 for nullKeyData, if `data` doesn't have it - not a problem, just some memory for one excessive row will be preallocated
@@ -389,7 +403,7 @@ BlocksList HybridAggregator::convertToBlocksForRetracts(Table & table, Table * u
 
     BlocksList blocks;
 
-    auto do_retract = [&](const KeyGetter::KeyType & key) {
+    auto do_retract = [&](const KeyGetter::KeyType & key, auto & retract_value) {
         auto find_result = table.findKey(key, /*disable_spill=*/true);
         if (find_result.hasError())
             throw Exception::createRuntime(find_result.errcode, find_result.errorString());
@@ -397,19 +411,12 @@ BlocksList HybridAggregator::convertToBlocksForRetracts(Table & table, Table * u
         if (!find_result.isFound())
             throw Exception(ErrorCodes::LOGICAL_ERROR, "Updated key is not found in source hash table");
 
-        auto retracts_find_result = retracts->findKey(key, /*disable_spill=*/true);
-        if (retracts_find_result.hasError())
-            throw Exception::createRuntime(retracts_find_result.errcode, retracts_find_result.errorString());
-
-        if (retracts_find_result.isFound())
+        auto retract = static_cast<ConstAggregateDataPtr>(retract_value.getMapped());
+        if (!TrackingCount::empty(retract + tracking_count_offset)) [[likely]]
         {
-            auto retract = static_cast<ConstAggregateDataPtr>(retracts_find_result.getMapped());
-            if (!TrackingCount::empty(retract + tracking_count_offset)) [[likely]]
-            {
-                /// Retract row
-                KeyGetter::insertKeyIntoColumns(key, retract_out_cols.raw_key_columns, key_sizes_ref);
-                retract_places.push_back(retract);
-            }
+            /// Retract row
+            KeyGetter::insertKeyIntoColumns(key, retract_out_cols.raw_key_columns, key_sizes_ref);
+            retract_places.push_back(retract);
         }
 
         /// return source mapped value
@@ -421,19 +428,19 @@ BlocksList HybridAggregator::convertToBlocksForRetracts(Table & table, Table * u
         {
             blocks.emplace_back(insertResultsIntoColumns(retract_places, std::move(retract_out_cols), /*arena=*/nullptr));
             auto retract_delta_col = ColumnInt8::create(retract_places.size(), static_cast<Int8>(-1));
-            blocks.back().insert(ColumnWithTypeAndName{std::move(retract_delta_col), delta_col_type, "_tp_delta"});
+            blocks.back().insert(ColumnWithTypeAndName{std::move(retract_delta_col), delta_col_type, ProtonConsts::RESERVED_DELTA_FLAG});
             blocks.back().setRetract();
         }
 
         blocks.emplace_back(insertResultsIntoColumns(places, std::move(out_cols), /*arena=*/nullptr));
         auto delta_col = ColumnInt8::create(places.size(), static_cast<Int8>(1));
-        blocks.back().insert(ColumnWithTypeAndName{std::move(delta_col), delta_col_type, "_tp_delta"});
+        blocks.back().insert(ColumnWithTypeAndName{std::move(delta_col), delta_col_type, ProtonConsts::RESERVED_DELTA_FLAG});
 
         table.spillIfNecessary(places.size());
     };
 
-    auto insert_columns = [&](const KeyGetter::KeyType & key) {
-        auto place = do_retract(key);
+    auto insert_columns = [&](const KeyGetter::KeyType & key, auto retract_value, bool flush) {
+        auto place = do_retract(key, retract_value);
         if (!TrackingCount::empty(place + tracking_count_offset)) [[likely]]
         {
             /// Regular row
@@ -447,22 +454,23 @@ BlocksList HybridAggregator::convertToBlocksForRetracts(Table & table, Table * u
         }
 
         /// If reached max block size, finalize the block and start a new one
-        if (places.size() >= max_block_size)
+        if (flush || places.size() >= max_block_size)
         {
             do_insert_columns();
             init_out_cols();
         }
     };
 
-    auto errcode = updates->forEachKey(insert_columns);
+    auto done_callback = [&]() {
+        if (!places.empty())
+            do_insert_columns();
+    };
+
+    auto errcode = retracts->forBatchValue(max_block_size, insert_columns, done_callback);
     if (errcode != ErrorCodes::OK)
         throw Exception(errcode, "Failed to convert aggregate states to blocks, error_message'{}'", ErrorCodes::getName(errcode));
 
-    if (!places.empty())
-        do_insert_columns();
-
-    /// After conversion, we need clear updates and retracts for next round of emit
-    updates->clear();
+    /// After conversion, we need clear retracts for next round of emit
     retracts->clear();
 
     return blocks;

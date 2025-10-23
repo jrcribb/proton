@@ -157,7 +157,7 @@ private:
     BlocksList convertToBlocksForUpdates(Table & table, Table * updates, bool clear_updates) const;
 
     template <typename KeyGetter, typename Table>
-    BlocksList convertToBlocksForRetracts(Table & table, Table * retracts, Table * updates) const;
+    BlocksList convertToBlocksForRetracts(Table & table, Table * retracts) const;
 
     template <typename KeyGetter, typename Table>
     BlocksList parallelConvertToBlocks(

@@ -158,15 +158,6 @@ template <typename Table, typename KeyGetter>
         for (size_t row = row_begin; auto & emplace_result : emplace_results.results)
             places[row++] = static_cast<AggregateDataPtr>(emplace_result.getMutableMapped());
 
-        if (updates)
-        {
-            auto updates_emplace_results = new_keys ? updates->emplaceNewKeys(keys) : updates->emplaceKeys(keys);
-            if (updates_emplace_results.hasError())
-                throw Exception::createRuntime(updates_emplace_results.errorCode(), updates_emplace_results.errorString());
-
-            assert(updates_emplace_results.results.size() == rows);
-        }
-
         if (retracts)
         {
             auto retracts_emplace_results = new_keys ? retracts->emplaceNewKeys(keys) : retracts->emplaceKeys(keys);
@@ -186,6 +177,14 @@ template <typename Table, typename KeyGetter>
                     TrackingCount::merge(dst_place + tracking_count_offset, src_place + tracking_count_offset);
                 }
             }
+        }
+        else if (updates)
+        {
+            auto updates_emplace_results = new_keys ? updates->emplaceNewKeys(keys) : updates->emplaceKeys(keys);
+            if (updates_emplace_results.hasError())
+                throw Exception::createRuntime(updates_emplace_results.errorCode(), updates_emplace_results.errorString());
+
+            chassert(updates_emplace_results.results.size() == rows);
         }
     }
 
