@@ -273,7 +273,7 @@ template <typename Table, typename KeyGetter>
         updates->logMetrics(/*throttling_sec=*/30, "aggr-updates", variants_id);
 
     if (retracts)
-        updates->logMetrics(/*throttling_sec=*/30, "aggr-retracts", variants_id);
+        retracts->logMetrics(/*throttling_sec=*/30, "aggr-retracts", variants_id);
 
     return need_finalization;
 }
