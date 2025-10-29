@@ -401,7 +401,7 @@ Block HybridAggregator::finalizeExpiredSessions(
     const KeyGetter &,
     KeyList & outstanding_keys,
     absl::flat_hash_set<typename KeyGetter::KeyType> & handled_key_set,
-    AggregateFunctionInstruction * aggregate_instructions,
+    [[maybe_unused]] AggregateFunctionInstruction * aggregate_instructions,
     bool add_expired_keys,
     bool & removed_expired_session) const
 {
@@ -484,7 +484,7 @@ template <typename Table, typename KeyList, typename KeyGetter>
     size_t row_begin,
     size_t row_end,
     AggregateFunctionInstruction * aggregate_instructions,
-    std::string_view variants_id) const
+    [[maybe_unused]] std::string_view variants_id) const
 {
     constexpr bool final = true;
     Block result_block_header = getHeader(final);

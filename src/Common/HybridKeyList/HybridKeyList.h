@@ -467,7 +467,7 @@ public:
 
     bool persistentPartInited() const noexcept { return cf_handler != nullptr; }
 
-    /// \return true, reloaded all keys from disk, otherwise false
+    /// reloaded all keys from disk
     void reload() { refill(); }
 
 private:

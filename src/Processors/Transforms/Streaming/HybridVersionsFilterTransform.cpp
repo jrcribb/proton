@@ -257,6 +257,7 @@ void HybridVersionsFilterTransform::createHashTable(
 
     config.base_conf.spill_dir_path.swap(spill_dir);
     config.base_conf.max_hot_key_count = max_hot_key_count;
+    config.base_conf.kv_options = kv_options;
     config.value_object_size = sizeof(Field);
     config.align_value_object_size = alignof(Field);
     config.value_constructor = [](void * data) { new (data) Field; };
