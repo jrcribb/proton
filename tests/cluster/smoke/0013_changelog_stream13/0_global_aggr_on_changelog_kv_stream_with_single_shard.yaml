@@ -5,7 +5,6 @@ tags:
 - single shard
 - checkpoint
 - emit changelog
-- bug # https://github.com/timeplus-io/proton-enterprise/issues/10548
 description: sum_distinct and count_distinct for changelog_kv stream with single shard.
 cluster:
 - p1k1
@@ -24,7 +23,7 @@ steps:
 - name: '12181627214'
   type: stream
   query_id: '12181627214'
-  query: subscribe to select sum_distinct(val), sum(val), count_distinct(val), count(val), _tp_delta from v_12181627 emit changelog settings checkpoint_interval=1;
+  query: subscribe to select sum_distinct(val), sum(val), count_distinct(val), count(val), _tp_delta from v_12181627 emit changelog periodic 1ms settings checkpoint_interval=1;
   schema:
   - name: sum_distinct(val)
     type: int64
@@ -69,27 +68,27 @@ steps:
 - type: query
   sql: insert into v_12181627(id, val) values (4, 40)(5, 40);
 - type: wait
-  time: 2
+  time: 1
 
 - type: query
   sql: insert into v_12181627(id, val, _tp_delta) values (4, 40, -1)(50, 40, -1);
 - type: wait
-  time: 2
+  time: 1
 
 - type: query
   sql: insert into v_12181627(id, val) values (4, 40)(5, 50);
 - type: wait
-  time: 2
+  time: 1
 
 - type: query
   sql: insert into v_12181627(id, val, _tp_delta) values (4, 40, -1)(50, 50, -1);
 - type: wait
-  time: 2
+  time: 1
 
 - type: query
   sql: kill query where query_id='12181627214' sync
 - type: wait
-  time: 3
+  time: 2
 
 - type: query
   sql: unsubscribe to '12181627214'

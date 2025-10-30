@@ -821,28 +821,12 @@ bool MemoryHashJoin::alwaysReturnsEmptySet() const
 
 size_t MemoryHashJoin::getTotalRowCount() const
 {
-    size_t res = 0;
-    /// FIXME
-    //    for (const auto & map : right_data.buffered_data->maps)
-    //    {
-    //        joinDispatch(kind, strictness, map, [&](auto, auto, auto & map_) { res += map_.getTotalRowCount(right_data.buffered_data->type); });
-    //    }
-
-    return res;
+    return right_data.buffered_data->getJoinMetrics().total_rows + left_data.buffered_data->getJoinMetrics().total_rows;
 }
 
 size_t MemoryHashJoin::getTotalByteCount() const
 {
-    size_t res = 0;
-    /// FIXME
-
-    //    for (const auto & map : right_data.buffered_data->maps)
-    //    {
-    //        joinDispatch(kind, strictness, map, [&](auto, auto, auto & map_) { res += map_.getTotalByteCountImpl(right_data.buffered_data->type); });
-    //    }
-    //    res += right_data.buffered_data->pool.size();
-
-    return res;
+    return right_data.buffered_data->getJoinMetrics().totalBytes() + left_data.buffered_data->getJoinMetrics().totalBytes();
 }
 
 bool MemoryHashJoin::addJoinedBlock(const Block & block, bool /*check_limits*/)

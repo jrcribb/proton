@@ -1,13 +1,28 @@
-#include <DataTypes/DataTypeFactory.h>
 #include <Interpreters/Streaming/Aggregator/HybridAggregator/HybridAggregator.h>
+#include <Interpreters/Streaming/Aggregator/HybridAggregator/TrackingCount.h>
+
+#include <DataTypes/DataTypeFactory.h>
 
 namespace DB::Streaming
 {
 
 [[nodiscard]] bool HybridAggregator::executeWithoutKeyImpl(
-    HybridAggregatedDataVariants & result, size_t row_begin, size_t row_end, AggregateFunctionInstruction * aggregate_instructions) const
+    HybridAggregatedDataVariants & result,
+    size_t row_begin,
+    size_t row_end,
+    AggregateFunctionInstruction * aggregate_instructions,
+    bool tracking_retracts) const
 {
     auto * place = result.without_key.get();
+
+    /// Save current state for retraction before adding values
+    if (tracking_retracts && !result.without_key_retracts)
+    {
+        result.initWithoutKeyRetractStates(total_size_of_aggregate_states, align_aggregate_states);
+        auto * dst_place = result.without_key_retracts.get();
+        copyAggregateStates(dst_place, place, /*arena=*/nullptr);
+        TrackingCount::merge(dst_place + tracking_count_offset, place + tracking_count_offset);
+    }
 
     /// Adding values
     bool should_finalize = false;
@@ -43,47 +58,21 @@ namespace DB::Streaming
         }
     }
 
+    if (trackingStateCount())
+        TrackingCount::addBatchSinglePlace(
+            row_begin, row_end, place + tracking_count_offset, aggregate_instructions ? aggregate_instructions->delta_column : nullptr);
+
     return should_finalize;
 }
 
 /// \param merged_variants if \param data_variants is merged which means it is temporary used to convert to blocks
-BlocksList
-HybridAggregator::convertToBlocksWithoutKey(HybridAggregatedDataVariants & data_variants, bool merged_variants, bool final_) const
+BlocksList HybridAggregator::convertToBlocksWithoutKey(HybridAggregatedDataVariants & data_variants, bool final_) const
 {
     if (params->tracking_updates_type == TrackingUpdatesType::UpdatesWithRetract)
-    {
-        if (merged_variants)
-            return convertToBlocksWithoutKeyForRetractsMerged(data_variants, final_);
-        else
-            return convertToBlocksWithoutKeyForRetracts(data_variants, final_);
-    }
+        return convertToBlocksWithoutKeyForRetracts(data_variants, final_);
 
     auto res_header = params->getHeader(input_header, final_);
     return BlocksList{doConvertOnePlace(data_variants.without_key.get(), res_header, final_)};
-}
-
-BlocksList HybridAggregator::convertToBlocksWithoutKeyForRetractsMerged(HybridAggregatedDataVariants & data_variants, bool final_) const
-{
-    assert(params->tracking_updates_type == TrackingUpdatesType::UpdatesWithRetract);
-
-    auto res_header = params->getHeader(input_header, final_);
-    BlocksList blocks;
-    if (data_variants.without_key_retracts)
-    {
-        blocks.push_back(doConvertOnePlace(data_variants.without_key_retracts.get(), res_header, final_));
-        auto retract_delta_col = ColumnInt8::create(blocks.back().rows(), static_cast<Int8>(-1));
-        auto delta_col_type = DataTypeFactory::instance().get(TypeIndex::Int8);
-        blocks.back().insert(ColumnWithTypeAndName{std::move(retract_delta_col), std::move(delta_col_type), "_tp_delta"});
-    }
-
-    blocks.push_back(doConvertOnePlace(data_variants.without_key.get(), res_header, final_));
-    {
-        auto delta_col = ColumnInt8::create(blocks.back().rows(), static_cast<Int8>(1));
-        auto delta_col_type = DataTypeFactory::instance().get(TypeIndex::Int8);
-        blocks.back().insert(ColumnWithTypeAndName{std::move(delta_col), std::move(delta_col_type), "_tp_delta"});
-    }
-
-    return blocks;
 }
 
 BlocksList HybridAggregator::convertToBlocksWithoutKeyForRetracts(HybridAggregatedDataVariants & data_variants, bool final_) const
@@ -98,16 +87,7 @@ BlocksList HybridAggregator::convertToBlocksWithoutKeyForRetracts(HybridAggregat
         auto retract_delta_col = ColumnInt8::create(blocks.back().rows(), static_cast<Int8>(-1));
         auto delta_col_type = DataTypeFactory::instance().get(TypeIndex::Int8);
         blocks.back().insert(ColumnWithTypeAndName{std::move(retract_delta_col), std::move(delta_col_type), "_tp_delta"});
-        /// overwrite with current aggregate states
-        destroyAggregateStates(data_variants.without_key_retracts.get());
-        createAggregateStates(data_variants.without_key_retracts.get());
-        mergeAggregateStates(data_variants.without_key_retracts.get(), data_variants.without_key.get(), /*arena=*/nullptr);
-    }
-    else
-    {
-        /// Save the aggregate states for retraction
-        data_variants.initWithoutKeyRetractStates(total_size_of_aggregate_states, align_aggregate_states);
-        mergeAggregateStates(data_variants.without_key_retracts.get(), data_variants.without_key.get(), /*arena=*/nullptr);
+        data_variants.resetRetractWithoutKey();
     }
 
     blocks.push_back(doConvertOnePlace(data_variants.without_key.get(), res_header, final_));

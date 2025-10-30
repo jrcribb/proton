@@ -28,8 +28,8 @@ void StorageMaterializedView::read(
 {
     /// The behavior of querying a MV is same as querying the underlying stream`
 
-    /// Read remote storage
-    if (isVirtualStorage())
+    /// Read remote inner storage
+    if (usesInnerStorage() && isVirtualStorage())
     {
         readRemote(query_plan, column_names, storage_snapshot, query_info, local_context, processed_stage);
         return;

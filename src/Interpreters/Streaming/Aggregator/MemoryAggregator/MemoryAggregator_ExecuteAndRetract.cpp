@@ -57,7 +57,7 @@ std::pair<bool, bool> MemoryAggregator::executeAndRetractOnBlock(
             retract_data = aggregate_data;
             if (!TrackingUpdatesWithRetract::empty(result.without_key))
             {
-                mergeAggregateStates(retract_data, result.without_key, result.retract_pool.get());
+                copyAggregateStates(retract_data, result.without_key, result.retract_pool.get());
                 TrackingUpdatesWithRetract::merge(retract_data, result.without_key);
             }
         }
@@ -148,7 +148,7 @@ bool MemoryAggregator::executeAndRetractImpl(
             retract_data = tmp_retract;
             if (!TrackingUpdatesWithRetract::empty(aggregate_data))
             {
-                mergeAggregateStates(retract_data, aggregate_data, result.retract_pool.get());
+                copyAggregateStates(retract_data, aggregate_data, result.retract_pool.get());
                 TrackingUpdatesWithRetract::merge(retract_data, aggregate_data);
             }
         }

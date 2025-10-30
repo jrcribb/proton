@@ -101,10 +101,10 @@ private:
         HybridAggregatedDataVariants & result,
         size_t row_begin,
         size_t row_end,
-        AggregateFunctionInstruction * aggregate_instructions) const;
+        AggregateFunctionInstruction * aggregate_instructions,
+        bool tracking_retracts) const;
 
-    BlocksList convertToBlocksWithoutKey(HybridAggregatedDataVariants & data_variants, bool merged_variants, bool final_) const;
-    BlocksList convertToBlocksWithoutKeyForRetractsMerged(HybridAggregatedDataVariants & data_variants, bool final_) const;
+    BlocksList convertToBlocksWithoutKey(HybridAggregatedDataVariants & data_variants, bool final_) const;
     BlocksList convertToBlocksWithoutKeyForRetracts(HybridAggregatedDataVariants & data_variants, bool final_) const;
     Block doConvertOnePlace(AggregateDataPtr data, const Block & res_header, bool final_) const;
 
@@ -157,7 +157,7 @@ private:
     BlocksList convertToBlocksForUpdates(Table & table, Table * updates, bool clear_updates) const;
 
     template <typename KeyGetter, typename Table>
-    BlocksList convertToBlocksForRetracts(Table & table, Table * retracts, Table * updates) const;
+    BlocksList convertToBlocksForRetracts(Table & table, Table * retracts) const;
 
     template <typename KeyGetter, typename Table>
     BlocksList parallelConvertToBlocks(
@@ -197,7 +197,13 @@ private:
     void createAggregateStates(AggregateDataPtr aggregate_data) const;
     void destroyAggregateStates(AggregateDataPtr aggregate_data) const;
     void serializeAggregateStates(ConstAggregateDataPtr place, WriteBuffer & wb) const;
-    void deserializeAggregateStates(AggregateDataPtr place, ReadBuffer & rb, VersionType version = HybridAggregatedDataVariants::version) const;
+
+    /// \param version and \param old_aggregates_size are used for deserialization of old aggregate states
+    void deserializeAggregateStates(
+        AggregateDataPtr place,
+        ReadBuffer & rb,
+        VersionType version = HybridAggregatedDataVariants::version,
+        std::optional<size_t> old_aggregates_size = {}) const;
 
     void saveAggregateStatesToRetract(AggregateDataPtr place) const;
 
@@ -221,12 +227,8 @@ private:
 
     template <typename KeyGetter, typename Table>
     void mergeRetracts(
-        Table & dst,
-        Table * dst_retracts,
-        const std::vector<Table *> & srcs,
-        const std::vector<Table *> & src_updates,
-        const std::vector<Table *> & src_retracts,
-        Arena & arena) const;
+        Table & dst, Table * dst_retracts, const std::vector<Table *> & srcs, const std::vector<Table *> & src_retracts, Arena & arena)
+        const;
 
 private:
     friend struct HybridAggregatedDataVariants;

@@ -1259,7 +1259,11 @@ JoinPtr SelectQueryExpressionAnalyzer::appendJoin(
 std::shared_ptr<DirectKeyValueJoin> tryKeyValueJoin(std::shared_ptr<TableJoin> analyzed_join, const Block & right_sample_block);
 
 static std::shared_ptr<IJoin> chooseJoinAlgorithm(
-    std::shared_ptr<TableJoin> analyzed_join, const ColumnsWithTypeAndName & left_sample_columns, std::unique_ptr<QueryPlan> & joined_plan, ContextPtr context)
+    std::shared_ptr<TableJoin> analyzed_join,
+    const ColumnsWithTypeAndName & left_sample_columns,
+    std::unique_ptr<QueryPlan> & joined_plan,
+    bool streaming,
+    ContextPtr context)
 {
     const auto & settings = context->getSettings();
 
@@ -1300,9 +1304,55 @@ static std::shared_ptr<IJoin> chooseJoinAlgorithm(
         analyzed_join->isEnabledAlgorithm(JoinAlgorithm::PARALLEL_HASH))
     {
         tried_algorithms.push_back(toString(JoinAlgorithm::HASH));
-        if (analyzed_join->allowParallelHashJoin())
-            return std::make_shared<ConcurrentHashJoin>(context, analyzed_join, settings.max_threads, right_sample_block);
-        return std::make_shared<HashJoin>(analyzed_join, right_sample_block);
+
+        /// proton: starts. Enable hybrid hash table at right side for case `Stream join Table`
+        if (streaming && settings.default_hash_join.value == HashJoinType::Hybrid)
+        {
+            const auto & tables = analyzed_join->getTablesWithColumns();
+            assert(tables.size() == 2);
+
+            /// In order to reuse `HybridHashJoin`, simulate enrichment join via Append join table(Append)
+            auto left_join_stream_desc = std::make_shared<Streaming::JoinStreamDescription>(
+                tables[0],
+                Block{},
+                Streaming::DataStreamSemantic::Append,
+                settings.keep_versions,
+                settings.join_latency_threshold,
+                settings.join_quiesce_threshold_ms);
+
+            Streaming::DataStreamSemanticEx right_stream_semantic{Streaming::DataStreamSemantic::Append};
+            right_stream_semantic.streaming = false;
+            auto right_join_stream_desc = std::make_shared<Streaming::JoinStreamDescription>(
+                tables[1],
+                right_sample_block,
+                right_stream_semantic,
+                settings.keep_versions,
+                settings.join_latency_threshold,
+                settings.join_quiesce_threshold_ms);
+
+            if (analyzed_join->allowParallelHashJoin())
+                return std::make_shared<Streaming::ConcurrentHashJoin>(
+                    analyzed_join,
+                    settings.max_threads,
+                    std::move(left_join_stream_desc),
+                    std::move(right_join_stream_desc),
+                    context->getSpillDirForCurrentQuery("join"),
+                    settings.max_hot_keys);
+
+            return std::make_shared<Streaming::HybridHashJoin>(
+                analyzed_join,
+                std::move(left_join_stream_desc),
+                std::move(right_join_stream_desc),
+                context->getSpillDirForCurrentQuery("join"),
+                settings.max_hot_keys);
+        }
+        else
+        {
+            if (analyzed_join->allowParallelHashJoin())
+                return std::make_shared<ConcurrentHashJoin>(context, analyzed_join, settings.max_threads, right_sample_block);
+            return std::make_shared<HashJoin>(analyzed_join, right_sample_block);
+        }
+        /// proton: ends.
     }
 
     if (analyzed_join->isEnabledAlgorithm(JoinAlgorithm::FULL_SORTING_MERGE))
@@ -1572,7 +1622,7 @@ JoinPtr SelectQueryExpressionAnalyzer::makeJoin(
     if (syntax->streaming && joined_plan->isStreaming())
         join = chooseJoinAlgorithmStreaming(analyzed_join);
     else
-        join = chooseJoinAlgorithm(analyzed_join, left_columns, joined_plan, getContext());
+        join = chooseJoinAlgorithm(analyzed_join, left_columns, joined_plan, syntax->streaming, getContext());
     /// proton : ends
 
     return join;

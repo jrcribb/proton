@@ -27,5 +27,16 @@
 === Multi-shard aggr with emit changelog results ===
 >>> Pure memory aggr without key: ❌ (FIXME)
 >>> Pure memory aggr: ❌ (FIXME)
->>> Hybrid aggr without key: ❌ (FIXME)
->>> Hybrid aggr: ❌ (FIXME)
+>>> Hybrid aggr without key:
+1	1	1	1
+1	1	1	-1
+1	1	2	1
+1	1	2	-1
+1	2	5	1
+>>> Hybrid aggr:
+1	k1	k1	1	1
+1	k1	k1	1	-1
+1	k1	k2	2	1
+1	k1	k2	2	-1
+1	k1	k3	3	1
+2	t1	t2	2	1

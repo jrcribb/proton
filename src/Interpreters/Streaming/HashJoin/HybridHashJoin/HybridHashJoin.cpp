@@ -212,13 +212,13 @@ void HybridHashJoin::cancel()
 
 size_t HybridHashJoin::getTotalRowCount() const
 {
-    return 0;
+    return right_data.index->approximateCount() + left_data.index->approximateCount();
 }
 
 /// Sum size in bytes of all buffers, used for JOIN maps and for all memory pools.
 size_t HybridHashJoin::getTotalByteCount() const
 {
-    return 0;
+    return right_data.index->getBufferSizeInBytes() + left_data.index->getBufferSizeInBytes();
 }
 
 bool HybridHashJoin::alwaysReturnsEmptySet() const

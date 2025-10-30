@@ -95,7 +95,7 @@ class FillingRightJoinSideTransform : public IProcessor
 {
 public:
     FillingRightJoinSideTransform(Block input_header, JoinPtr join_);
-    String getName() const override { return "FillingRightJoinSide"; }
+    String getName() const override;
 
     InputPort * addTotalsPort();
 

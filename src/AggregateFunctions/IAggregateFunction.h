@@ -189,8 +189,10 @@ public:
         throw Exception(ErrorCodes::NOT_IMPLEMENTED, "Method negate is not supported for {}", getName());
     }
 
-    /// Move state from rhs to target place
-    virtual void move(AggregateDataPtr __restrict place, AggregateDataPtr rhs, Arena * arena) const
+    /// Copy state from rhs to target place, it behaves the same way as merge(),
+    /// The difference is that copy() does not affect \rhs state,
+    /// while the merge() method may cause \rhs state to change, such as Streaming::AggregateFunctionDistinct
+    virtual void copy(AggregateDataPtr __restrict place, ConstAggregateDataPtr rhs, Arena * arena) const
     {
         merge(place, rhs, arena);
     }

@@ -302,7 +302,7 @@ void DatabaseOrdinary::loadTableFromMetadata(ContextMutablePtr local_context, co
     }
     catch (const Exception & ex)
     {
-        LOG_INFO(log, "Failed to load table, error={} ddl={}", ex.message(), queryToString(create_query, true));
+        LOG_ERROR(log, "Failed to load table, error={} ddl={}", ex.message(), queryToString(create_query, true));
     }
 }
 

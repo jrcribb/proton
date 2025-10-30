@@ -240,6 +240,15 @@ ALWAYS_INLINE void IAggregator::mergeAggregateStates(
     }
 }
 
+ALWAYS_INLINE void IAggregator::copyAggregateStates(AggregateDataPtr dst, ConstAggregateDataPtr src, Arena * arena) const
+{
+    chassert(src);
+    chassert(dst);
+
+    for (size_t i = 0; i < params->aggregates_size; ++i)
+        aggregate_functions[i]->copy(dst + offsets_of_aggregate_states[i], src + offsets_of_aggregate_states[i], arena);
+}
+
 ALWAYS_INLINE void IAggregator::doDestroyAggregateStates(AggregateDataPtr place) const
 {
     if (!all_aggregates_has_trivial_destructor && place)

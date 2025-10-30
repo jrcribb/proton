@@ -295,7 +295,8 @@ private:
     void destroyAggregateStates(AggregateDataPtr & place) const;
 
     void serializeAggregateStates(const AggregateDataPtr & place, WriteBuffer & wb) const;
-    void deserializeAggregateStates(AggregateDataPtr & place, ReadBuffer & rb, Arena * arena) const;
+    /// \param old_aggregates_size is used for deserialization of old aggregate states
+    void deserializeAggregateStates(AggregateDataPtr & place, ReadBuffer & rb, Arena * arena, std::optional<size_t> old_aggregates_size = {}) const;
 
     /// \return true means execution must be aborted, false means normal
     bool checkAndProcessResult(MemoryAggregatedDataVariants & result) const;

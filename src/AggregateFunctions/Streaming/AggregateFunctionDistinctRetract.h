@@ -33,7 +33,7 @@ struct AggregateFunctionDistinctRetractGenericData
 
     AggregateFunctionDistinctRetractGenericData() : map(INTERNAL_MAP_SIZE) { }
 
-    void merge(const Self & rhs)
+    void merge(const Self & rhs, bool move_rhs)
     {
         for (auto next = extra_data_since_last_finalize.begin(); next != extra_data_since_last_finalize.end();)
         {
@@ -68,10 +68,13 @@ struct AggregateFunctionDistinctRetractGenericData
 
         map.merge(rhs.map);
 
-        uintptr_t merged_place = reinterpret_cast<uintptr_t>(&rhs);
-        auto find_place = std::find(merged_places.begin(), merged_places.end(), merged_place);
-        if (find_place == merged_places.end())
-            merged_places.emplace_back(merged_place);
+        if (move_rhs)
+        {
+            uintptr_t merged_place = reinterpret_cast<uintptr_t>(&rhs);
+            auto find_place = std::find(merged_places.begin(), merged_places.end(), merged_place);
+            if (find_place == merged_places.end())
+                merged_places.emplace_back(merged_place);
+        }
     }
 
     void serialize(WriteBuffer & buf) const
@@ -209,8 +212,14 @@ public:
 
     void merge(AggregateDataPtr __restrict place, ConstAggregateDataPtr rhs, Arena * arena) const override
     {
-        this->data(place).merge(this->data(rhs));
+        this->data(place).merge(this->data(rhs), /*move_rhs=*/true);
         nested_func->merge(getNestedPlace(place), getNestedPlace(rhs), arena);
+    }
+
+    void copy(AggregateDataPtr __restrict place, ConstAggregateDataPtr rhs, Arena * arena) const override
+    {
+        this->data(place).merge(this->data(rhs), /*move_rhs=*/false);
+        nested_func->copy(getNestedPlace(place), getNestedPlace(rhs), arena);
     }
 
     void serialize(ConstAggregateDataPtr __restrict place, WriteBuffer & buf, std::optional<size_t> /* version */) const override

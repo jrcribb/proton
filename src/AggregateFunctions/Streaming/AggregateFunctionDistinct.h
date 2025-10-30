@@ -103,7 +103,7 @@ struct AggregateFunctionDistinctSingleNumericData
             extra_data_since_last_finalize.emplace_back(vec[row_num]);
     }
 
-    void merge(const Self & rhs, Arena *)
+    void merge(const Self & rhs, Arena *, bool move_rhs)
     {
         /// Deduplicate owned extra data based on rhs, also make sure it doesn't exist in rhs extra data
         for (auto it = extra_data_since_last_finalize.begin(); it != extra_data_since_last_finalize.end();)
@@ -133,10 +133,13 @@ struct AggregateFunctionDistinctSingleNumericData
 
         set.merge(rhs.set);
 
-        uintptr_t merged_place = reinterpret_cast<uintptr_t>(&rhs);
-        auto find_place = std::find(merged_places.begin(), merged_places.end(), merged_place);
-        if (find_place == merged_places.end())
-            merged_places.emplace_back(merged_place);
+        if (move_rhs)
+        {
+            uintptr_t merged_place = reinterpret_cast<uintptr_t>(&rhs);
+            auto find_place = std::find(merged_places.begin(), merged_places.end(), merged_place);
+            if (find_place == merged_places.end())
+                merged_places.emplace_back(merged_place);
+        }
     }
 
     void serialize(WriteBuffer & buf) const
@@ -181,7 +184,7 @@ struct AggregateFunctionDistinctGenericData
 
     bool use_extra_data = false;
 
-    void merge(const Self & rhs, Arena * arena)
+    void merge(const Self & rhs, Arena * arena, bool move_rhs)
     {
         Set::LookupResult it;
         bool inserted;
@@ -216,10 +219,13 @@ struct AggregateFunctionDistinctGenericData
 
         set.merge(rhs.set);
 
-        uintptr_t merged_place = reinterpret_cast<uintptr_t>(&rhs);
-        auto find_place = std::find(merged_places.begin(), merged_places.end(), merged_place);
-        if (find_place == merged_places.end())
-            merged_places.emplace_back(merged_place);
+        if (move_rhs)
+        {
+            uintptr_t merged_place = reinterpret_cast<uintptr_t>(&rhs);
+            auto find_place = std::find(merged_places.begin(), merged_places.end(), merged_place);
+            if (find_place == merged_places.end())
+                merged_places.emplace_back(merged_place);
+        }
     }
 
     void serialize(WriteBuffer & buf) const
@@ -382,7 +388,7 @@ struct AggregateFunctionDistinctGenericDataWithoutArena
         return argument_columns;
     }
 
-    void merge(const AggregateFunctionDistinctGenericDataWithoutArena & rhs, Arena *)
+    void merge(const AggregateFunctionDistinctGenericDataWithoutArena & rhs, Arena *, bool move_rhs)
     {
         /// Deduplicate owned extra data based on rhs, also make sure it doesn't exist in rhs extra data
         for (auto next = extra_data_since_last_finalize.begin(); next != extra_data_since_last_finalize.end();)
@@ -412,10 +418,13 @@ struct AggregateFunctionDistinctGenericDataWithoutArena
 
         set.insert(rhs.set.begin(), rhs.set.end());
 
-        uintptr_t merged_place = reinterpret_cast<uintptr_t>(&rhs);
-        auto find_place = std::find(merged_places.begin(), merged_places.end(), merged_place);
-        if (find_place == merged_places.end())
-            merged_places.emplace_back(merged_place);
+        if (move_rhs)
+        {
+            uintptr_t merged_place = reinterpret_cast<uintptr_t>(&rhs);
+            auto find_place = std::find(merged_places.begin(), merged_places.end(), merged_place);
+            if (find_place == merged_places.end())
+                merged_places.emplace_back(merged_place);
+        }
     }
 
     void serialize(WriteBuffer & buf) const
@@ -488,7 +497,13 @@ public:
 
     void merge(AggregateDataPtr __restrict place, ConstAggregateDataPtr rhs, Arena * arena) const override
     {
-        this->data(place).merge(this->data(rhs), arena);
+        this->data(place).merge(this->data(rhs), arena, /*move_rhs=*/true);
+        nested_func->merge(getNestedPlace(place), getNestedPlace(rhs), arena);
+    }
+
+    void copy(AggregateDataPtr __restrict place, ConstAggregateDataPtr rhs, Arena * arena) const override
+    {
+        this->data(place).merge(this->data(rhs), arena, /*move_rhs=*/false);
         nested_func->merge(getNestedPlace(place), getNestedPlace(rhs), arena);
     }
 

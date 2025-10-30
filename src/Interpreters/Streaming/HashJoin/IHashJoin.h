@@ -15,6 +15,7 @@ public:
     virtual void postInit(const Block & left_header, const Block & output_header_, UInt64 join_max_cached_bytes_) = 0;
 
     virtual void transformHeader(Block & header) = 0;
+    virtual const Block & getOutputHeader() const = 0;
 
     /// For non-bidirectional hash join
     virtual void insertRightBlock(Block right_block) = 0;

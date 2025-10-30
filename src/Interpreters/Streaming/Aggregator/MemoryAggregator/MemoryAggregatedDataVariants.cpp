@@ -144,7 +144,7 @@ void MemoryAggregatedDataVariants::serialize(WriteBuffer & wb, const IAggregator
 
     writeIntBinary<UInt8>(static_cast<UInt8>(memory_aggregator.params->tracking_updates_type), wb);
 
-    writeVarUInt(memory_aggregator.params->aggregates.size(), wb); /// Added in V4
+    writeVarUInt(memory_aggregator.params->aggregates_size, wb); /// Added in V4
 
     auto state_serializer = [&memory_aggregator](auto place, auto & wb_) {
         chassert(place);
@@ -251,14 +251,19 @@ void MemoryAggregatedDataVariants::deserialize(ReadBuffer & rb, const IAggregato
             magic_enum::enum_name(memory_aggregator.params->tracking_updates_type));
 
     /// [aggregates_size] was added in V4
+    size_t recovered_aggregates_size = memory_aggregator.params->aggregates_size;
     if (recovered_version >= 4)
     {
-        size_t recovered_aggregates_size = 0;
         readVarUInt(recovered_aggregates_size, rb);
-        /// TODO: supports for adding aggregates
+        if (recovered_aggregates_size > memory_aggregator.params->aggregates_size)
+            throw Exception(
+                ErrorCodes::RECOVER_CHECKPOINT_FAILED,
+                "Failed to recover aggregation checkpoint. Number of aggregation functions are not compatible, checkpointed={}, current={}",
+                recovered_aggregates_size,
+                memory_aggregator.params->aggregates_size);
     }
 
-    auto state_deserializer = [this, &memory_aggregator, recovered_version](auto & place, auto & rb_, Arena *) {
+    auto state_deserializer = [this, &memory_aggregator, recovered_version, recovered_aggregates_size](auto & place, auto & rb_, Arena *) {
         place = nullptr; /// exception-safety - if you can not allocate memory or create states, then destructors will not be called.
         auto * aggregate_data
             = aggregates_pool->alignedAlloc(memory_aggregator.totalSizeOfAggregatedStates(), memory_aggregator.alignOfAggregatedStates());
@@ -288,7 +293,7 @@ void MemoryAggregatedDataVariants::deserialize(ReadBuffer & rb, const IAggregato
                         /// whether add() or negate(), ensure it is not empty
                         TrackingUpdates::data(retract_place).updates = std::numeric_limits<int64_t>::max();
 
-                    memory_aggregator.deserializeAggregateStates(retract_place, rb_, retract_pool.get());
+                    memory_aggregator.deserializeAggregateStates(retract_place, rb_, retract_pool.get(), recovered_aggregates_size);
                 }
                 break;
             }
@@ -301,7 +306,7 @@ void MemoryAggregatedDataVariants::deserialize(ReadBuffer & rb, const IAggregato
                 break;
         }
 
-        memory_aggregator.deserializeAggregateStates(place, rb_, aggregates_pool);
+        memory_aggregator.deserializeAggregateStates(place, rb_, aggregates_pool, recovered_aggregates_size);
     };
 
     /// [aggr-func-state-without-key]
