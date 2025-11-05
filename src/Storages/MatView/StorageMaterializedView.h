@@ -162,7 +162,14 @@ private:
         std::atomic<uint64_t> written_bytes;
         std::atomic<uint64_t> written_rows;
 
+        /// For delta-based CPU tracking (real-time usage)
+        mutable std::atomic<Int64> last_cpu_microseconds{0};
+        mutable std::atomic<Int64> last_elapsed_microseconds{0};
+
         std::vector<std::string> processors_last_error_message;
+
+        /// Cached static pipeline data (collected once when pipeline is built)
+        std::vector<UInt64> cached_thread_ids;
     };
 
     struct Metrics
@@ -171,6 +178,8 @@ private:
         std::pair<String, Int64> last_err_msg_and_ts;
         Int64 recover_times;
         Int64 memory_usage;
+        Float64 cpu_usage_percentage;
+        std::vector<UInt64> thread_ids;
         UInt64 ckpt_storage_size;
         CheckpointRequestMetricsPtr ckpt_request_metrics;
         Streaming::StreamingSourceMetricsPtrs source_metrics;
@@ -286,7 +295,7 @@ public:
     UInt64 writtenBytes(bool reset = true, bool external_ingress = false) override;
     UInt64 writtenRows(bool reset = true, bool external_ingress = false) override;
 
-    std::shared_ptr<Metrics> getMetrics() const;
+    Metrics getMetrics() const;
 
     /// Pause/Resume/Abort/Recover the background pipeline execution
     /// \return error code
@@ -340,8 +349,16 @@ private:
 
     void logToDLQ(const std::vector<std::shared_ptr<Streaming::ISource>> &);
 
+    struct PipelineMetrics
+    {
+        Int64 memory_usage = 0;
+        Float64 cpu_usage_percentage = 0.0;
+        std::vector<UInt64> thread_ids;
+    };
+
     /// Internal Metrics methods
-    Int64 getMemoryUsage() const;
+    /// Get all pipeline metrics in a single call (efficient)
+    PipelineMetrics getPipelineMetrics() const;
     Streaming::StreamingSourceMetricsPtrs getStreamingSourceMetrics() const;
     CheckpointRequestMetricsPtr getCheckpointRequestMetrics() const;
     UInt64 getLogStoreDiskSize() const;
