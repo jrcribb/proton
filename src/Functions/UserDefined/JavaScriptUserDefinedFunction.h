@@ -1,9 +1,13 @@
 #pragma once
 
+#include "config.h"
+
+#if USE_V8
+
 #include <Cluster/Protocol/UserDefinedFunctionDescriptor.h>
 #include <Functions/UserDefined/UserDefinedFunctionBase.h>
 
-#include <v8.h>
+#include <V8/V8Includes.h>
 
 namespace DB
 {
@@ -46,3 +50,5 @@ private:
 };
 
 }
+
+#endif

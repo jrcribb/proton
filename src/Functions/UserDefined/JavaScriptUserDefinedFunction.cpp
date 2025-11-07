@@ -1,3 +1,7 @@
+#include "config.h"
+
+#if USE_V8
+
 #include <Functions/UserDefined/JavaScriptUserDefinedFunction.h>
 
 #include <V8/ConvertDataTypes.h>
@@ -33,7 +37,7 @@ JavaScriptExecutionContext::JavaScriptExecutionContext(const String & name, cons
     /// check heap limit
     V8::checkHeapLimit(isolate.get(), ctx->getSettingsRef().javascript_max_memory_bytes, ctx->getSettingsRef().v8_log_interval_ms, logger);
 
-    auto init_functions = [&](v8::Isolate * isolate_, v8::Local<v8::Context> & ctx_, v8::TryCatch & try_catch, v8::Local<v8::Value> &) {
+    auto init_functions = [&](v8::Isolate * isolate_, v8::Local<v8::Context> & ctx_, [[maybe_unused]] v8::TryCatch & try_catch, [[maybe_unused]] v8::Local<v8::Value> &) {
         v8::Local<v8::Value> function_val;
         if (!ctx_->Global()->Get(ctx_, V8::to_v8(isolate_, name)).ToLocal(&function_val) || !function_val->IsFunction())
             throw Exception(ErrorCodes::UDF_COMPILE_ERROR, "the JavaScript UDF {} is invalid", name);
@@ -98,3 +102,5 @@ ColumnPtr JavaScriptUserDefinedFunction::userDefinedExecuteImpl(
 }
 
 }
+
+#endif // USE_V8

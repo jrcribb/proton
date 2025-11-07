@@ -1,3 +1,7 @@
+#include "config.h"
+
+#if USE_V8
+
 #include <AggregateFunctions/AggregateFunctionJavaScriptAdapter.h>
 
 #include <Cluster/Protocol/UserDefinedFunctionDescriptor.h>
@@ -45,7 +49,7 @@ JavaScriptBlueprint::JavaScriptBlueprint(const String & name, const String & sou
     /// Analyze if this UDA's definition to initialize the blueprint
     auto init_and_validate = [&](v8::Isolate * isolate_,
                                  v8::Local<v8::Context> & local_ctx,
-                                 v8::TryCatch & try_catch,
+                                 [[maybe_unused]] v8::TryCatch & try_catch,
                                  v8::Local<v8::Value> & blueprint) {
         if (!blueprint->IsObject())
         {
@@ -402,6 +406,8 @@ void AggregateFunctionJavaScriptAdapter::merge(AggregateDataPtr __restrict place
     };
     V8::run(blueprint.isolate.get(), blueprint.global_context, std::move(merge_func));
 }
+
+#endif
 
 size_t AggregateFunctionJavaScriptAdapter::getEmitTimes(ConstAggregateDataPtr __restrict place) const
 {

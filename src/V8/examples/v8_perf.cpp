@@ -4,7 +4,7 @@
 #include <V8/Utils.h>
 #include <base/ClockUtils.h>
 #include <base/scope_guard.h>
-#include <v8.h>
+#include <V8/V8Includes.h>
 #include <Common/logger_useful.h>
 
 #include <Poco/AutoPtr.h>
@@ -639,7 +639,12 @@ int main(int argc, char ** argv)
     isolateparams.array_buffer_allocator_shared
         = std::shared_ptr<v8::ArrayBuffer::Allocator>(v8::ArrayBuffer::Allocator::NewDefaultAllocator());
     auto * isolate = v8::Isolate::New(isolateparams);
-    isolate->AddMessageListenerWithErrorLevel(messageHandler, v8::Isolate::kMessageAll);
+    {
+        v8::Locker locker(isolate);
+        v8::Isolate::Scope isolate_scope(isolate);
+        v8::HandleScope handle_scope(isolate);
+        isolate->AddMessageListenerWithErrorLevel(messageHandler, v8::Isolate::kMessageAll);
+    }
     global_isolate = isolate;
 
     SCOPE_EXIT({ isolate->Dispose(); });

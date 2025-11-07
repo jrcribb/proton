@@ -102,7 +102,9 @@
 #include <Interpreters/TelemetryCollector.h>
 #include <Server/RestRouterHandlers/RestRouterFactory.h>
 #include <Task/TaskScheduler.h>
+#if USE_V8
 #include <V8/Modules/DictionaryAccess/CacheDictionaryBridge.h>
+#endif
 #include <Common/getNumberOfPhysicalCPUCores.h>
 
 #if USE_AWS_MSK_IAM || USE_AWS_S3
@@ -111,7 +113,9 @@
 
 #include <Poco/Net/NetworkInterface.h>
 
-#include <v8.h>
+#if USE_V8
+#include <V8/V8Includes.h>
+#endif
 
 bool LOG_PANIC_ABORT = true;
 
@@ -417,7 +421,7 @@ Poco::Net::SocketAddress Server::socketBindListen(Poco::Net::ServerSocket & sock
 }
 
 void Server::createServer(
-    Poco::Util::AbstractConfiguration & config,
+    [[maybe_unused]] Poco::Util::AbstractConfiguration & config,
     const std::string & listen_host,
     const char * port_name,
     uint64_t port,
@@ -529,37 +533,12 @@ std::string Server::getDefaultPath() const
 {
     return getCanonicalPath(config().getString("path", DBMS_DEFAULT_PATH));
 }
+/// proton: ends
 
 std::string Server::getDefaultCorePath() const
 {
     return getDefaultPath() + "cores";
 }
-
-/// init v8 engine for the whole proton process
-void Server::initV8()
-{
-    if (v8_initialized)
-        return;
-
-    /// init default platform which enable a work thread pool and the default pool size is: the number of CPU processors -1
-    platform = v8::platform::NewDefaultPlatform();
-    v8::V8::InitializePlatform(platform.get());
-    v8::V8::Initialize();
-
-    DB::V8::CacheDictionaryBridge::instance().initialize(global_context);
-    v8_initialized = true;
-}
-
-void Server::disposeV8()
-{
-    if (!v8_initialized)
-        return;
-
-    v8::V8::Dispose();
-    v8::V8::DisposePlatform();
-    v8_initialized = false;
-}
-/// proton: ends
 
 void Server::defineOptions(Poco::Util::OptionSet & options)
 {
@@ -1237,7 +1216,7 @@ try
         config_path,
         include_from_path,
         config().getString("path", ""),
-        [&](ConfigurationPtr config, bool initial_loading)
+        [&](ConfigurationPtr config, [[maybe_unused]] bool initial_loading)
         {
             Settings::checkNoSettingNamesAtTopLevel(*config, config_path);
 
@@ -1452,8 +1431,7 @@ try
 
         /// Materialized View shutdown operation depends on V8,
         /// we should dispose V8 after shutdown DatabaseCatelog
-        if (v8_initialized)
-            disposeV8();
+        maybeDisposeV8();
         /// proton: end.
 
         LOG_DEBUG(log, "Shut down storages.");

@@ -1,9 +1,13 @@
 #pragma once
 
+#include "config.h"
+
+#if USE_V8
+
 #include <AggregateFunctions/IAggregateFunction.h>
 #include <Cluster/Protocol/UserDefinedFunctionDescriptor.h>
 
-#include <v8.h>
+#include <V8/V8Includes.h>
 
 #include <atomic>
 #include <chrono>
@@ -165,3 +169,5 @@ private:
     bool canLogV8Memory() const;
 };
 }
+
+#endif
