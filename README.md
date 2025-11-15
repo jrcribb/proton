@@ -51,31 +51,23 @@ curl https://install.timeplus.com/oss | sh
   
 - **Lightweight.** Timeplus Proton is a single binary (\<500MB). No JVM or any other dependencies. You can also run it with Docker, or on an AWS t2.nano instance (1 vCPU and 0.5 GiB memory).
   
-- **Powered by the fast, resource efficient and mature [ClickHouse](https://github.com/clickhouse/clickhouse).** Timeplus Proton extends the historical data, storage, and computing functionality of ClickHouse with stream processing. Thousands of SQL functions are available in Timeplus Proton. Billions of rows are queried in milliseconds.
+- **Powered by the fast, resource efficient [ClickHouse](https://github.com/clickhouse/clickhouse).** Timeplus Proton extends the historical data, storage, and computing functionality of ClickHouse with stream processing. Thousands of SQL functions are available in Timeplus Proton. Billions of rows are queried in milliseconds.
   
 - **Best streaming SQL engine for [Kafka](https://kafka.apache.org/) or [Redpanda](https://redpanda.com/).** Query the live data in Kafka or other compatible streaming data platforms, with [external streams](https://docs.timeplus.com/proton-kafka).
 
 See our [architecture](https://docs.timeplus.com/architecture) doc for technical details and our [FAQ](https://docs.timeplus.com/proton-faq) for more information.
-
-## How is it different from ClickHouse
-
-ClickHouse is an extremely performant Data Warehouse built for fast analytical queries on large amounts of data. While it does support ingesting data from streaming sources such as Apache Kafka, it is itself not a stream processing engine which can transform and join streaming event data based on time-based semantics to detect patterns that need to be acted upon as soon as it happens. ClickHouse also has incremental materialized view capability but is limited to creating materialized view off of ingestion of blocks to a single table. Proton uses ClickHouse as a table store engine inside of each stream (alongside a Write Ahead Log and other data structures) and uses to unify real-time and historical data together to detect signals in the data. In addition, Proton can act as an advanced data pre-processor for ClickHouse (and similar systems) where the bulk of the data preparation and batching is done ahead of ingestion. See [Timeplus and ClickHouse](https://www.timeplus.com/timeplus-and-clickhouse) for more details on this.
 
  ## Use Cases
 
 Timeplus Proton empowers you to build a wide range of real-time applications and data pipelines.
 Common use cases include:
 
-*   **Streaming ETL & Data Preparation**: Efficiently ingest data from sources like Kafka, perform in-flight transformations (filtering, enrichment, masking), and route it to downstream systems, including data warehouses like ClickHouse, other Kafka topics, or analytical stores.
+*   **Real-time Analytics ETL/Pipeline**: Efficiently ingest live data from sources like Kafka, perform in-pipeline transformations (filtering, enrichment, masking), and route it to downstream systems, including data warehouses like ClickHouse, other Kafka topics, or analytical stores.
 
-*   **Real-time Analytics & Dashboards**: Continuously transform and aggregate high-volume streaming data (e.g., user activity, IoT sensor data, application logs) to populate live dashboards, enabling immediate operational insights and data-driven decisions.
+*   **Real-time Telemetry Pipeline and Alerting**: Process and route logs, metrics, and traces with in-pipeline noise reduction, real-time alerts before forwarding to Splunk, Elastic, or S3.
 
-*   **Real-time Monitoring & Alerting**: Define complex event patterns and continuous queries to monitor key performance indicators (KPIs), detect anomalies or threshold breaches in real-time, and trigger immediate alerts or automated actions.
-
-*   **Personalization & Recommendation Engines**: Analyze streaming user interaction data (clicks, views,purchases) to update user profiles dynamically and serve personalized content or product recommendations with low latency.
-
-*   **Log Analytics & Observability**: Process and analyze application and system logs as they are generated to gain insights into system behavior, troubleshoot issues faster, and improve overall observability.
-
+*   **Real-time Feature Pipeline for AI/ML**: Compute real-time features using low-latency, high-throughput streaming SQL and materialized views with support for backfill and advanced windowing over live data. 
+    
 ## Demo
 
 2-minute short video👇. Check out [the full video at YouTube](https://youtu.be/vi4Yl6L4_Dw?t=283).
@@ -109,10 +101,9 @@ Please check [Server Ports](https://docs.timeplus.com/proton-ports) to determine
 
 The [Docker Compose stack](https://github.com/timeplus-io/proton/tree/develop/examples/ecommerce) demonstrates how to read/write data in Kafka/Redpanda with external streams.
 
-### Timeplus Cloud:
+### Demo:
 
-Don't want to setup by yourself? Try Timeplus in [Cloud](https://demo.timeplus.cloud/)
-
+Don't want to setup by yourself? Try Timeplus Demo (https://demos.timeplus.com/)
 
 ### Usage
 SQL is the main interface. You can start a new terminal window with `proton client` to start the SQL shell.
