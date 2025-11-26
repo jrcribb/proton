@@ -1,0 +1,51 @@
+(Single shard)
+=== memory aggr with group by key ===
+k1	10
+k2	20
+k3	30
+k4	40
+k3	300
+=== memory aggr without group by key ===
+10
+30
+60
+100
+370
+=== hybrid aggr with group by key ===
+k1	10
+k2	20
+k3	30
+k4	40
+k3	300
+=== hybrid aggr without group by key ===
+10
+30
+60
+100
+370
+-------------------------------------------------
+(Multi shards)
+=== memory aggr with group by key ===
+k1	10
+k2	20
+k3	30
+k4	40
+k3	300
+=== memory aggr without group by key ===
+10
+30
+60
+100
+370
+=== hybrid aggr with group by key ===
+k1	10
+k2	20
+k3	30
+k4	40
+k3	300
+=== hybrid aggr without group by key ===
+10
+30
+60
+100
+370

@@ -63,9 +63,9 @@ SERDE struct TrackingCount
         }
     }
 
-    void merge(const TrackingCount & rhs) { count += rhs.count; }
-    void serialize(WriteBuffer & wb) const { DB::writeVarUInt(count, wb); }
-    void deserialize(ReadBuffer & rb) { DB::readVarUInt(count, rb); }
+    ALWAYS_INLINE void merge(const TrackingCount & rhs) { count += rhs.count; }
+    ALWAYS_INLINE void serialize(WriteBuffer & wb) const { DB::writeVarUInt(count, wb); }
+    ALWAYS_INLINE void deserialize(ReadBuffer & rb) { DB::readVarUInt(count, rb); }
 
     uint64_t count = 0;
 };

@@ -27,7 +27,8 @@ SELECT Device,
 FROM connect_stage_events
 GROUP BY Device
 EMIT AFTER SESSION CLOSE WITH MAXSPAN 1s AND TIMEOUT 2s
-SETTINGS default_hash_table='hybrid';
+SETTINGS default_hash_table='hybrid'
+STORAGE_SETTINGS flush_threshold_count=1;
 
 CREATE MATERIALIZED VIEW 99109_only_mv
 AS
@@ -43,7 +44,8 @@ SELECT Device,
 FROM connect_stage_events
 GROUP BY Device
 EMIT AFTER SESSION CLOSE WITH ONLY MAXSPAN 1s AND TIMEOUT 2s
-SETTINGS default_hash_table='hybrid';
+SETTINGS default_hash_table='hybrid'
+STORAGE_SETTINGS flush_threshold_count=1;
 
 CREATE MATERIALIZED VIEW 99109_with_session_start_col_mv
 AS
@@ -59,7 +61,8 @@ SELECT Device,
 FROM connect_stage_events
 GROUP BY Device
 EMIT AFTER SESSION CLOSE IDENTIFIED BY (_tp_time, session_start, false) WITH MAXSPAN 1s AND TIMEOUT 2s
-SETTINGS default_hash_table='hybrid';
+SETTINGS default_hash_table='hybrid'
+STORAGE_SETTINGS flush_threshold_count=1;
 
 CREATE MATERIALIZED VIEW 99109_with_session_end_col_mv
 AS
@@ -75,7 +78,8 @@ SELECT Device,
 FROM connect_stage_events
 GROUP BY Device
 EMIT AFTER SESSION CLOSE IDENTIFIED BY (_tp_time, true, session_end) WITH MAXSPAN 1s AND TIMEOUT 2s
-SETTINGS default_hash_table='hybrid';
+SETTINGS default_hash_table='hybrid'
+STORAGE_SETTINGS flush_threshold_count=1;
 
 CREATE MATERIALIZED VIEW 99109_with_session_start_and_end_col_mv
 AS
@@ -91,7 +95,8 @@ SELECT Device,
 FROM connect_stage_events
 GROUP BY Device
 EMIT AFTER SESSION CLOSE IDENTIFIED BY (_tp_time, session_start, session_end) WITH MAXSPAN 1s AND TIMEOUT 2s
-SETTINGS default_hash_table='hybrid';
+SETTINGS default_hash_table='hybrid'
+STORAGE_SETTINGS flush_threshold_count=1;
 
 CREATE MATERIALIZED VIEW 99109_merge_open_sessions
 AS
@@ -107,7 +112,8 @@ SELECT Device,
 FROM connect_stage_events
 GROUP BY Device
 EMIT AFTER SESSION CLOSE IDENTIFIED BY (_tp_time, session_start, session_end) WITH MAXSPAN 1s AND TIMEOUT 2s
-SETTINGS merge_open_sessions = true, default_hash_table='hybrid';
+SETTINGS merge_open_sessions = true, default_hash_table='hybrid'
+STORAGE_SETTINGS flush_threshold_count=1;
 
 CREATE MATERIALIZED VIEW 99109_merge_exclude_session_end
 AS
@@ -123,7 +129,8 @@ SELECT Device,
 FROM connect_stage_events
 GROUP BY Device
 EMIT AFTER SESSION CLOSE IDENTIFIED BY (_tp_time, session_start, session_end) WITH MAXSPAN 1s AND TIMEOUT 2s
-SETTINGS include_session_end = false, default_hash_table='hybrid';
+SETTINGS include_session_end = false, default_hash_table='hybrid'
+STORAGE_SETTINGS flush_threshold_count=1;
 
 CREATE MATERIALIZED VIEW 99109_consecutive_fails
 AS
@@ -139,7 +146,8 @@ SELECT Device,
 FROM connect_stage_events
 GROUP BY Device, Type
 EMIT AFTER SESSION CLOSE IDENTIFIED BY (_tp_time, session_start, session_end) WITH MAXSPAN 1s AND TIMEOUT 2s
-SETTINGS include_session_end = false, merge_open_sessions=true, default_hash_table='hybrid';
+SETTINGS include_session_end = false, merge_open_sessions=true, default_hash_table='hybrid'
+STORAGE_SETTINGS flush_threshold_count=1;
 
 SELECT sleep(2) format Null;
 
@@ -196,7 +204,7 @@ INSERT INTO devices (Device, Type, Subtype, _tp_time) VALUES ('dev1', 'dhcp', 's
 INSERT INTO devices (Device, Type, Subtype, _tp_time) VALUES ('dev1', 'dns', 'success', '2025-01-01 00:00:00.006');
 INSERT INTO devices (Device, Type, Subtype, _tp_time) VALUES ('dev1', 'connection', 'success', '2025-01-01 00:00:01.100');
 
-SELECT sleep(2) format Null;
+SELECT sleep(3) format Null;
 
 SELECT '-------99109_mv---------';
 SELECT Device, events, fails, session_start_ts, session_end_ts FROM table(99109_mv) ORDER BY _tp_time ASC;

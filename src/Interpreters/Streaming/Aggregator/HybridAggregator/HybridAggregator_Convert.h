@@ -526,6 +526,9 @@ BlocksList HybridAggregator::mergeAndConvertToBlocks(
     if (many_data_variants.size() == 1)
         return convertToBlocks(*many_data_variants.back(), max_threads, cparams);
 
+    if (std::ranges::all_of(many_data_variants, [](const auto & data_variants) { return data_variants->empty(); }))
+        return {};
+
     SCOPE_EXIT({
         bool clear_states = cparams.type == AggregatingConvertType::Normal && cparams.clear_state;
         if (clear_states)
@@ -804,22 +807,45 @@ void HybridAggregator::mergeUpdates(
             continue;
 
         /// FIXME, batch
-        src_updates[i]->forEachKey([&](const Table::KeyType & key) {
-            auto find_result = srcs[i]->findKey(key, /*disable_spill=*/false);
-            if (find_result.hasError())
-                throw Exception::createRuntime(find_result.errcode, find_result.errorString());
+        if (trackingStateCount())
+        {
+            src_updates[i]->forEachKey([&](const Table::KeyType & key) {
+                auto find_result = srcs[i]->findKey(key, /*disable_spill=*/false);
+                if (find_result.hasError())
+                    throw Exception::createRuntime(find_result.errcode, find_result.errorString());
 
-            if (find_result.isNotFound())
-                throw Exception(ErrorCodes::LOGICAL_ERROR, "Key is not found in main hybrid hash table");
+                if (find_result.isNotFound())
+                    throw Exception(ErrorCodes::LOGICAL_ERROR, "Key is not found in main hybrid hash table");
 
-            auto emplace_result = dst.emplaceKey(key, /*disable_spill=*/false);
-            if (emplace_result.hasError())
-                throw Exception::createRuntime(emplace_result.errorCode(), emplace_result.errorString());
+                auto emplace_result = dst.emplaceKey(key, /*disable_spill=*/false);
+                if (emplace_result.hasError())
+                    throw Exception::createRuntime(emplace_result.errorCode(), emplace_result.errorString());
 
-            auto src_mapped = static_cast<ConstAggregateDataPtr>(find_result.getMapped());
-            auto dst_mapped = static_cast<AggregateDataPtr>(emplace_result.getMutableMapped());
-            mergeAggregateStates(dst_mapped, src_mapped, &arena);
-        });
+                auto src_mapped = static_cast<ConstAggregateDataPtr>(find_result.getMapped());
+                auto dst_mapped = static_cast<AggregateDataPtr>(emplace_result.getMutableMapped());
+                mergeAggregateStates(dst_mapped, src_mapped, &arena);
+                TrackingCount::merge(dst_mapped + tracking_count_offset, src_mapped + tracking_count_offset);
+            });
+        }
+        else
+        {
+            src_updates[i]->forEachKey([&](const Table::KeyType & key) {
+                auto find_result = srcs[i]->findKey(key, /*disable_spill=*/false);
+                if (find_result.hasError())
+                    throw Exception::createRuntime(find_result.errcode, find_result.errorString());
+
+                if (find_result.isNotFound())
+                    throw Exception(ErrorCodes::LOGICAL_ERROR, "Key is not found in main hybrid hash table");
+
+                auto emplace_result = dst.emplaceKey(key, /*disable_spill=*/false);
+                if (emplace_result.hasError())
+                    throw Exception::createRuntime(emplace_result.errorCode(), emplace_result.errorString());
+
+                auto src_mapped = static_cast<ConstAggregateDataPtr>(find_result.getMapped());
+                auto dst_mapped = static_cast<AggregateDataPtr>(emplace_result.getMutableMapped());
+                mergeAggregateStates(dst_mapped, src_mapped, &arena);
+            });
+        }
     }
 }
 
