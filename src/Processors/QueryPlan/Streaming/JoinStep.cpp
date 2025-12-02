@@ -55,14 +55,7 @@ void JoinStep::describePipeline(FormatSettings & settings) const
 
 String JoinStep::getName() const
 {
-    auto hash_join = std::dynamic_pointer_cast<IHashJoin>(join);
-    switch (hash_join->type())
-    {
-        case HashJoinType::Memory:
-            return "StreamingJoin";
-        case HashJoinType::Hybrid:
-            return "HybridStreamingJoin";
-    }
+    return join->getName();
 }
 
 }

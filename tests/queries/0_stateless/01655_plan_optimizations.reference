@@ -127,13 +127,17 @@ Filter
 3
 > one condition of filter is pushed down before LEFT JOIN
 Join
+Join
 Filter column: notEquals(number, 1)
+Join
 Join
 0	0
 3	3
 > one condition of filter is pushed down before INNER JOIN
 Join
+Join
 Filter column: notEquals(number, 1)
+Join
 Join
 3	3
 > filter is pushed down before UNION

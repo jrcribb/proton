@@ -1,0 +1,101 @@
+Expression ((Projection + Before ORDER BY))
+Header: id uint64
+        value_1 string
+        rhs.id uint64
+        rhs.value_1 string
+Actions: INPUT :: 0 -> id uint64 : 0
+         INPUT :: 1 -> value_1 string : 1
+         INPUT :: 2 -> rhs.id uint64 : 2
+         INPUT :: 3 -> rhs.value_1 string : 3
+Positions: 0 1 2 3
+  Join (JOIN FillRightFirst)
+  Header: id uint64
+          value_1 string
+          rhs.value_1 string
+          rhs.id uint64
+  Type: INNER
+  Strictness: ALL
+  Algorithm: HashJoin
+  Clauses: [(id) = (rhs.id)]
+    Expression (Before JOIN)
+    Header: id uint64
+            value_1 string
+    Actions: INPUT :: 0 -> id uint64 : 0
+             INPUT :: 1 -> value_1 string : 1
+    Positions: 0 1
+      ReadFromMergeTree (default.test_table_1)
+      Header: id uint64
+              value_1 string
+      ReadType: Default
+      Parts: 1
+      Granules: 1
+    Expression ((Joined actions + (Rename joined columns + (Projection + Before ORDER BY))))
+    Header: rhs.id uint64
+            rhs.value_1 string
+    Actions: INPUT : 0 -> id uint64 : 0
+             INPUT : 1 -> value_1 string : 1
+             ALIAS id :: 0 -> rhs.id uint64 : 2
+             ALIAS value_1 :: 1 -> rhs.value_1 string : 0
+    Positions: 2 0
+      ReadFromMergeTree (default.test_table_2)
+      Header: id uint64
+              value_1 string
+      ReadType: Default
+      Parts: 1
+      Granules: 1
+--
+Expression ((Projection + Before ORDER BY))
+Header: id uint64
+        value_1 string
+        rhs.id uint64
+        rhs.value_1 string
+Actions: INPUT :: 0 -> id uint64 : 0
+         INPUT :: 1 -> value_1 string : 1
+         INPUT :: 2 -> rhs.id uint64 : 2
+         INPUT :: 3 -> rhs.value_1 string : 3
+Positions: 0 1 2 3
+  Join (JOIN FillRightFirst)
+  Header: id uint64
+          value_1 string
+          value_2 uint64
+          rhs.value_1 string
+          rhs.value_2 uint64
+          rhs.id uint64
+  Type: INNER
+  Strictness: ASOF
+  Algorithm: HashJoin
+  ASOF inequality: LESS
+  Clauses: [(id, value_2) = (rhs.id, rhs.value_2)]
+    Expression (Before JOIN)
+    Header: id uint64
+            value_1 string
+            value_2 uint64
+    Actions: INPUT :: 0 -> id uint64 : 0
+             INPUT :: 1 -> value_1 string : 1
+             INPUT :: 2 -> value_2 uint64 : 2
+    Positions: 0 1 2
+      ReadFromMergeTree (default.test_table_1)
+      Header: id uint64
+              value_1 string
+              value_2 uint64
+      ReadType: Default
+      Parts: 1
+      Granules: 1
+    Expression ((Joined actions + (Rename joined columns + (Projection + Before ORDER BY))))
+    Header: rhs.id uint64
+            rhs.value_2 uint64
+            rhs.value_1 string
+    Actions: INPUT : 0 -> id uint64 : 0
+             INPUT : 1 -> value_1 string : 1
+             INPUT : 2 -> value_2 uint64 : 2
+             ALIAS id :: 0 -> rhs.id uint64 : 3
+             ALIAS value_1 :: 1 -> rhs.value_1 string : 0
+             ALIAS value_2 :: 2 -> rhs.value_2 uint64 : 1
+    Positions: 3 1 0
+      ReadFromMergeTree (default.test_table_2)
+      Header: id uint64
+              value_1 string
+              value_2 uint64
+      ReadType: Default
+      Parts: 1
+      Granules: 1

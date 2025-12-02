@@ -174,6 +174,12 @@ void StorageDictionary::shutdown(bool /*dropping*/)
     removeDictionaryConfigurationFromRepository();
 }
 
+std::shared_ptr<const IDictionary> StorageDictionary::getDictionary() const
+{
+    auto registered_dictionary_name = location == Location::SameDatabaseAndNameAsDictionary ? getStorageID().getInternalDictionaryName() : dictionary_name;
+    return getContext()->getExternalDictionariesLoader().getDictionary(registered_dictionary_name, getContext());
+}
+
 void StorageDictionary::startup()
 {
     auto global_context = getContext();

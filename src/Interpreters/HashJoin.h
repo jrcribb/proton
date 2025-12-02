@@ -152,6 +152,7 @@ public:
 
     ~HashJoin() override;
 
+    std::string getName() const override { return "HashJoin"; }
     const TableJoin & getTableJoin() const override { return *table_join; }
 
     bool isCloneSupported() const override

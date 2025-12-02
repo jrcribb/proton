@@ -124,7 +124,7 @@ private:
     const size_t default_max_bytes = 0;
     const bool join_use_nulls = false;
     const size_t max_joined_block_rows = 0;
-    MultiEnum<JoinAlgorithm> join_algorithm = MultiEnum<JoinAlgorithm>(JoinAlgorithm::AUTO);
+    std::vector<JoinAlgorithm> join_algorithms;
     const size_t partial_merge_join_rows_in_right_blocks = 0;
     const size_t partial_merge_join_left_table_buffer_bytes = 0;
     const size_t max_files_to_merge = 0;
@@ -217,7 +217,7 @@ public:
         : size_limits(limits)
         , default_max_bytes(0)
         , join_use_nulls(use_nulls)
-        , join_algorithm(JoinAlgorithm::DEFAULT)
+        , join_algorithms({JoinAlgorithm::DEFAULT})
     {
         clauses.emplace_back().key_names_right = key_names_right;
         table_join.kind = kind;
@@ -236,16 +236,13 @@ public:
 
     ActionsDAGPtr createJoinedBlockActions(ContextPtr context) const;
 
+    const std::vector<JoinAlgorithm> & getEnabledJoinAlgorithms() const { return join_algorithms; }
+
+    static bool isEnabledAlgorithm(const std::vector<JoinAlgorithm> & join_algorithms, JoinAlgorithm val);
+
     bool isEnabledAlgorithm(JoinAlgorithm val) const
     {
-        /// When join_algorithm = 'default' (not specified by user) we use hash or direct algorithm.
-        /// It's behaviour that was initially supported
-        bool is_enabled_by_default = val == JoinAlgorithm::DEFAULT
-                                  || val == JoinAlgorithm::HASH
-                                  || val == JoinAlgorithm::DIRECT;
-        if (join_algorithm.isSet(JoinAlgorithm::DEFAULT) && is_enabled_by_default)
-            return true;
-        return join_algorithm.isSet(val);
+        return isEnabledAlgorithm(join_algorithms, val);
     }
 
     bool allowParallelHashJoin() const;

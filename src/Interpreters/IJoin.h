@@ -53,6 +53,8 @@ class IJoin
 public:
     virtual ~IJoin() = default;
 
+    virtual std::string getName() const = 0;
+
     virtual const TableJoin & getTableJoin() const = 0;
 
     /// Returns true if clone is supported

@@ -27,6 +27,7 @@ public:
         std::pair<Block, std::vector<size_t>> right_sample_block_with_storage_column_names_,
         size_t index_id_ = ProtonConsts::PRIMARY_KEY_INDEX_ID);
 
+    std::string getName() const override { return "DirectKeyValueJoin"; }
     const TableJoin & getTableJoin() const override { return *table_join; }
 
     bool addJoinedBlock(const Block &, bool) override;

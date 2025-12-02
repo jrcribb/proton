@@ -13,6 +13,10 @@ Positions: 0 1 2 3
           value string
           rhs.value string
           rhs.id uint64
+  Type: INNER
+  Strictness: ALL
+  Algorithm: HashJoin
+  Clauses: [(id) = (rhs.id)]
     Filter (( + Before JOIN))
     Header: id uint64
             value string
@@ -63,6 +67,10 @@ Positions: 0 1 2 3
           value string
           rhs.value string
           rhs.id uint64
+  Type: INNER
+  Strictness: ALL
+  Algorithm: HashJoin
+  Clauses: [(id) = (rhs.id)]
     Filter (( + Before JOIN))
     Header: id uint64
             value string
@@ -113,6 +121,10 @@ Positions: 0 1 2 3
           value string
           rhs.value string
           rhs.id uint64
+  Type: INNER
+  Strictness: ALL
+  Algorithm: HashJoin
+  Clauses: [(id) = (rhs.id)]
     Filter (( + Before JOIN))
     Header: id uint64
             value string

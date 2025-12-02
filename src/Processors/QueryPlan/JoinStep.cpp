@@ -2,6 +2,9 @@
 #include <QueryPipeline/QueryPipelineBuilder.h>
 #include <Processors/Transforms/JoiningTransform.h>
 #include <Interpreters/IJoin.h>
+#include <Interpreters/TableJoin.h>
+#include <IO/Operators.h>
+#include <Common/JSONBuilder.h>
 #include <Common/typeid_cast.h>
 
 namespace DB
@@ -10,6 +13,29 @@ namespace DB
 namespace ErrorCodes
 {
     extern const int LOGICAL_ERROR;
+}
+
+namespace
+{
+
+std::vector<std::pair<String, String>> describeJoinActions(const JoinPtr & join)
+{
+    std::vector<std::pair<String, String>> description;
+    const auto & table_join = join->getTableJoin();
+
+    description.emplace_back("Type", toString(table_join.kind()));
+    description.emplace_back("Strictness", toString(table_join.strictness()));
+    description.emplace_back("Algorithm", join->getName());
+
+    if (table_join.strictness() == JoinStrictness::Asof)
+        description.emplace_back("ASOF inequality", toString(table_join.getAsofInequality()));
+
+    if (!table_join.getClauses().empty())
+        description.emplace_back("Clauses", table_join.formatClauses(table_join.getClauses(), true /*short_format*/));
+
+    return description;
+}
+
 }
 
 JoinStep::JoinStep(
@@ -64,6 +90,20 @@ bool JoinStep::allowPushDownToRight() const
 void JoinStep::describePipeline(FormatSettings & settings) const
 {
     IQueryPlanStep::describePipeline(processors, settings);
+}
+
+void JoinStep::describeActions(FormatSettings & settings) const
+{
+    String prefix(settings.offset, ' ');
+
+    for (const auto & [name, value] : describeJoinActions(join))
+        settings.out << prefix << name << ": " << value << '\n';
+}
+
+void JoinStep::describeActions(JSONBuilder::JSONMap & map) const
+{
+    for (const auto & [name, value] : describeJoinActions(join))
+        map.add(name, value);
 }
 
 void JoinStep::updateInputStream(const DataStream & new_input_stream_, size_t idx)
@@ -145,5 +185,18 @@ void FilledJoinStep::updateOutputStream()
         input_streams.front(), JoiningTransform::transformHeader(input_streams.front().header, join), getDataStreamTraits());
 }
 
+void FilledJoinStep::describeActions(FormatSettings & settings) const
+{
+    String prefix(settings.offset, ' ');
+
+    for (const auto & [name, value] : describeJoinActions(join))
+        settings.out << prefix << name << ": " << value << '\n';
+}
+
+void FilledJoinStep::describeActions(JSONBuilder::JSONMap & map) const
+{
+    for (const auto & [name, value] : describeJoinActions(join))
+        map.add(name, value);
+}
 
 }

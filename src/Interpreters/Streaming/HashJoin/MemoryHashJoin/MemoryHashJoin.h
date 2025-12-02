@@ -98,6 +98,8 @@ public:
 
     ~MemoryHashJoin() noexcept override;
 
+    std::string getName() const override { return "MemoryHashJoin"; }
+
     HashJoinType type() const noexcept override { return HashJoinType::Memory; }
 
     /// Do post initialization
