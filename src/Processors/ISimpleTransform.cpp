@@ -89,12 +89,13 @@ void ISimpleTransform::work()
     /// proton: starts.
     auto start_ns = MonotonicNanoseconds::now();
     metrics.processed_bytes += input_data.chunk.bytes();
+    metrics.processed_rows += input_data.chunk.rows();
     /// proton: ends.
     try
     {
         transform(input_data.chunk, output_data.chunk);
 
-        metrics.processing_time_ns += MonotonicNanoseconds::now() - start_ns;
+        metrics.processed_time_ns += MonotonicNanoseconds::now() - start_ns;
         /// proton: ends.
     }
     catch (const DB::Exception & ex)

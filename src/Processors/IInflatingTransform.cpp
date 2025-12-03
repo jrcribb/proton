@@ -88,6 +88,7 @@ void IInflatingTransform::work()
 
         /// proton: starts.
         metrics.processed_bytes += current_chunk.bytes();
+        metrics.processed_rows += current_chunk.rows();
         /// proton: ends.
 
         consume(std::move(current_chunk));
@@ -95,7 +96,7 @@ void IInflatingTransform::work()
         can_generate = canGenerate();
     }
     /// proton: starts.
-    metrics.processing_time_ns += MonotonicNanoseconds::now() - start_ns;
+    metrics.processed_time_ns += MonotonicNanoseconds::now() - start_ns;
     /// proton: ends.
 }
 

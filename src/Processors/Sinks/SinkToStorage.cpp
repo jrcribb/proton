@@ -1,6 +1,9 @@
 #include <DataTypes/NestedUtils.h>
 #include <IO/Progress.h>
 #include <Processors/Sinks/SinkToStorage.h>
+/// proton: starts
+#include <base/ClockUtils.h>
+/// proton: ends
 
 namespace DB
 {
@@ -26,14 +29,23 @@ void SinkToStorage::onConsume(Chunk chunk)
       */
     Nested::validateArraySizes(getHeader().cloneWithColumns(chunk.getColumns()));
 
+    auto start_ns = MonotonicNanoseconds::now();
+    auto bytes = chunk.bytes();
+    auto rows = chunk.getNumRows();
     consume(chunk.clone());
 
     /// Process progress if consumption succeeded
     if (progress_callback)
-        progress_callback(Progress(WriteProgress(chunk.getNumRows(), chunk.bytes())));
+        progress_callback(Progress(WriteProgress(rows, bytes)));
 
     if (!lastBlockIsDuplicate())
         cur_chunk = std::move(chunk);
+
+    /// proton: starts. Update processor metrics
+    metrics.processed_bytes += bytes;
+    metrics.processed_rows += rows;
+    metrics.processed_time_ns += MonotonicNanoseconds::now() - start_ns;
+    /// proton: ends
 }
 
 SinkToStorage::GenerateResult SinkToStorage::onGenerate()

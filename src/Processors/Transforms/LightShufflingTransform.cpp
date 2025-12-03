@@ -122,11 +122,12 @@ void LightShufflingTransform::work()
     auto start_ns = MonotonicNanoseconds::now();
     {
         metrics.processed_bytes += current_chunk.bytes();
+        metrics.processed_rows += current_chunk.rows();
 
         consume(std::move(current_chunk));
     }
 
-    metrics.processing_time_ns += MonotonicNanoseconds::now() - start_ns;
+    metrics.processed_time_ns += MonotonicNanoseconds::now() - start_ns;
 }
 
 void LightShufflingTransform::consume(Chunk chunk)

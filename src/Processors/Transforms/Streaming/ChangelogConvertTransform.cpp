@@ -142,6 +142,12 @@ void ChangelogConvertTransform::work()
         std::rethrow_exception(input_data.exception);
 
     const auto & chunk = input_data.chunk;
+
+    auto start_ns = MonotonicNanoseconds::now();
+    metrics.processed_bytes += chunk.bytes();
+    metrics.processed_rows += chunk.rows();
+    SCOPE_EXIT({ metrics.processed_time_ns += MonotonicNanoseconds::now() - start_ns; });
+
     if (auto ckpt_ctx = chunk.getCheckpointContext(); ckpt_ctx)
     {
         assert(chunk.rows() == 0);
@@ -184,7 +190,7 @@ void ChangelogConvertTransform::work()
         transformEmptyChunk();
 
     /// Every 30 seconds, log metrics
-    if (MonotonicMilliseconds::now() - last_log_ts > log_metrics_interval_ms)
+    if (auto now = MonotonicMilliseconds::now(); now - last_log_ts > log_metrics_interval_ms)
     {
         size_t hash_total_row_count = index.getTotalRowCount();
         size_t hash_total_row_refs_bytes = hash_total_row_count * sizeof(RefCountDataBlock<LightChunk>);
@@ -205,7 +211,7 @@ void ChangelogConvertTransform::work()
             late_rows,
             source_chunks.empty() ? 0 : source_chunks.begin()->refCount());
 
-        last_log_ts = MonotonicMilliseconds::now();
+        last_log_ts = now;
     }
 }
 

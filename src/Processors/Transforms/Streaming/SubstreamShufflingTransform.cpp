@@ -119,11 +119,12 @@ void SubstreamShufflingTransform::work()
     auto start_ns = MonotonicNanoseconds::now();
     {
         metrics.processed_bytes += current_chunk.bytes();
+        metrics.processed_rows += current_chunk.rows();
 
         consume(std::move(current_chunk));
     }
 
-    metrics.processing_time_ns += MonotonicNanoseconds::now() - start_ns;
+    metrics.processed_time_ns += MonotonicNanoseconds::now() - start_ns;
 }
 
 void SubstreamShufflingTransform::consume(Chunk chunk)
@@ -155,7 +156,7 @@ void SubstreamShufflingTransform::consume(Chunk chunk)
             shuffled_output_chunks[output_idx].push_back(chunk.clone());
     }
 
-    if (MonotonicMilliseconds::now() - last_log_ts > log_metrics_interval_ms)
+    if (auto now = MonotonicMilliseconds::now(); now - last_log_ts > log_metrics_interval_ms)
     {
         size_t total_buffered_bytes = 0;
         for (auto & output_chunks : shuffled_output_chunks)
@@ -175,7 +176,7 @@ void SubstreamShufflingTransform::consume(Chunk chunk)
                 shuffled_output_chunks | std::ranges::views::transform([](const auto & chunks) { return std::to_string(chunks.size()); }),
                 ", "));
 
-        last_log_ts = MonotonicMilliseconds::now();
+        last_log_ts = now;
     }
 }
 

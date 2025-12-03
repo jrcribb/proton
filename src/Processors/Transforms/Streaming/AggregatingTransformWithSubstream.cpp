@@ -154,6 +154,7 @@ void AggregatingTransformWithSubstream::work()
     Stopwatch stopwatch;
     auto chunk_bytes = current_chunk.bytes();
     metrics.processed_bytes += chunk_bytes;
+    metrics.processed_rows += num_rows;
 
     if (likely(!is_consume_finished))
     {
@@ -171,7 +172,7 @@ void AggregatingTransformWithSubstream::work()
     /// Remember to reset `read_current_chunk`
     read_current_chunk = false;
 
-    metrics.processing_time_ns += stopwatch.elapsedNanoseconds();
+    metrics.processed_time_ns += stopwatch.elapsedNanoseconds();
 
     logAggregatingMetrics();
 }

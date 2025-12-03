@@ -127,6 +127,7 @@ public:
 
             /// proton: starts.
             metrics.processed_bytes += state.input_chunk.chunk.bytes();
+            metrics.processed_rows += state.input_chunk.chunk.rows();
             /// proton: ends.
 
             algorithm.consume(state.input_chunk, state.next_input_to_read);
@@ -161,7 +162,7 @@ public:
         }
 
         /// proton: starts.
-        metrics.processing_time_ns += MonotonicNanoseconds::now() - start_ns;
+        metrics.processed_time_ns += MonotonicNanoseconds::now() - start_ns;
         /// proton: ends.
     }
 

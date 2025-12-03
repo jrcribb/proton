@@ -94,6 +94,7 @@ void IOutputFormat::work()
         case Main:
             /// proton: starts.
             metrics.processed_bytes += current_chunk.bytes();
+            metrics.processed_rows += current_chunk.rows();
             /// proton: ends.
             result_rows += current_chunk.getNumRows();
             result_bytes += current_chunk.allocatedBytes();
@@ -119,7 +120,7 @@ void IOutputFormat::work()
     has_input = false;
 
     /// proton: starts.
-    metrics.processing_time_ns += MonotonicNanoseconds::now() - start_ns;
+    metrics.processed_time_ns += MonotonicNanoseconds::now() - start_ns;
     /// proton: ends.
 }
 

@@ -104,6 +104,7 @@ void IAccumulatingTransform::work()
     {
         /// proton: starts.
         metrics.processed_bytes += current_input_chunk.bytes();
+        metrics.processed_rows += current_input_chunk.rows();
         /// proton: ends.
 
         consume(std::move(current_input_chunk));
@@ -117,7 +118,7 @@ void IAccumulatingTransform::work()
     }
 
     /// proton: starts.
-    metrics.processing_time_ns += MonotonicNanoseconds::now() - start_ns;
+    metrics.processed_time_ns += MonotonicNanoseconds::now() - start_ns;
     /// proton: ends.
 }
 

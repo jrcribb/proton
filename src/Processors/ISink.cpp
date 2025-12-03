@@ -50,6 +50,7 @@ void ISink::work()
         /// proton: starts.
         auto start_ns = MonotonicNanoseconds::now();
         metrics.processed_bytes += current_chunk.bytes();
+        metrics.processed_rows += current_chunk.rows();
 
         if (current_chunk.requestCheckpoint())
             checkpoint(current_chunk.getCheckpointContext());
@@ -59,7 +60,7 @@ void ISink::work()
         consume(std::move(current_chunk));
 
         /// proton: starts.
-        metrics.processing_time_ns += MonotonicNanoseconds::now() - start_ns;
+        metrics.processed_time_ns += MonotonicNanoseconds::now() - start_ns;
         /// proton: ends.
     }
     else if (!was_on_finish_called)
