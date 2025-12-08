@@ -38,7 +38,6 @@
 
 #include <IO/ReadBufferFromS3.h>
 #include <IO/WriteBufferFromS3.h>
-#include <IO/WriteBufferWithNextCallback.h>
 
 #include <Formats/FormatFactory.h>
 #include <Formats/ReadSchemaUtils.h>
@@ -62,6 +61,10 @@
 #include <Processors/ISource.h>
 #include <Processors/Sinks/SinkToStorage.h>
 #include <QueryPipeline/Pipe.h>
+
+/// proton: starts
+#include <IO/WriteBufferDecorator.h>
+/// proton: ends
 
 namespace fs = std::filesystem;
 
@@ -800,8 +803,6 @@ public:
         /// The timer should only start when data start flowing.
         upload_idle_timer.stop();
 
-        next_callback = [this](size_t total_data_size) { current_total_size = total_data_size; };
-
         if (max_upload_idle_seconds > 0)
             timer_pool.scheduleOrThrowOnError([this, max_upload_idle_seconds]() {
                 while (true)
@@ -862,9 +863,21 @@ public:
         if (cancelled)
             return;
 
-        if (current_total_size >= min_upload_file_size && current_total_size > 0)
-            /// Properly finalize the format writer and complete the current upload.
-            finalize();
+        if (writer)
+        {
+            WriteBuffer * out_buf = write_buf.get();
+            if (auto * decorator = dynamic_cast<WriteBufferWithOwnMemoryDecorator *>(out_buf); decorator != nullptr)
+            {
+                /// Get the nested buffer to check the compressed data size
+                out_buf = decorator->getNestedBuffer();
+            }
+
+            if (out_buf->count() >= min_upload_file_size && out_buf->count() > 0)
+            {
+                /// Properly finalize the format writer and complete the current upload.
+                finalize();
+            }
+        }
 
         if (!writer)
         {
@@ -884,18 +897,16 @@ public:
             }
 
             write_buf = wrapWriteBufferWithCompressionMethod(
-                std::make_unique<WriteBufferWithNextCallback>(
-                    std::make_unique<WriteBufferFromS3>(
-                        s3_configuration.client,
-                        bucket,
-                        current_key,
-                        DBMS_DEFAULT_BUFFER_SIZE,
-                        s3_configuration.request_settings,
-                        std::move(blob_log),
-                        std::nullopt,
-                        threadPoolCallbackRunner<void>(IOThreadPool::get(), "S3ParallelWrite"),
-                        context->getWriteSettings()),
-                    next_callback),
+                std::make_unique<WriteBufferFromS3>(
+                    s3_configuration.client,
+                    bucket,
+                    current_key,
+                    DBMS_DEFAULT_BUFFER_SIZE,
+                    s3_configuration.request_settings,
+                    std::move(blob_log),
+                    std::nullopt,
+                    threadPoolCallbackRunner<void>(IOThreadPool::get(), "S3ParallelWrite"),
+                    context->getWriteSettings()),
                 compression_method,
                 3);
             writer
@@ -905,6 +916,7 @@ public:
         /// proton: ends
 
         writer->write(getHeader().cloneWithColumns(chunk.detachColumns()));
+
         /// proton: starts
         /// Restart the timer when there are new data, because we are calculating the idle time.
         upload_idle_timer.start();
@@ -975,7 +987,6 @@ private:
         write_buf->finalize();
 
         /// proton: starts
-        current_total_size = 0;
         upload_idle_timer.reset();
         /// proton: ends
     }
@@ -1000,7 +1011,6 @@ private:
     bool cancelled = false;
     std::mutex cancel_mutex;
     /// proton: starts
-    size_t current_total_size = 0;
     UInt64 min_upload_file_size = 0;
 
     ASTPtr file_exprssion_ast;
@@ -1008,8 +1018,6 @@ private:
     bool stopped = false;
     ThreadPool timer_pool;
     Stopwatch upload_idle_timer;
-
-    std::function<void(size_t)> next_callback;
     /// proton: ends
 };
 
