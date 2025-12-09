@@ -11,7 +11,7 @@
 namespace DB
 {
 
-struct StreamStateLogElement
+struct IntrospectionStateLogElement
 {
     uint64_t node_id;
     String database;
@@ -25,18 +25,21 @@ struct StreamStateLogElement
 
     Field _tp_time;
 
-    static std::string name() { return "StreamStateLog"; }
+    static std::string name() { return "IntrospectionStateLog"; }
     static NamesAndTypesList getNamesAndTypes();
     static NamesAndAliases getNamesAndAliases() { return {}; }
     void appendToBlock(MutableColumns & columns) const;
 };
 
-class StreamStateLog : public SystemLog<StreamStateLogElement>
+using AddElem
+    = std::function<void(const StorageID & storage_id, std::string_view name, UInt64 value, String string_value, String dimension)>;
+
+class IntrospectionStateLog : public SystemLog<IntrospectionStateLogElement>
 {
-    using SystemLog<StreamStateLogElement>::SystemLog;
+    using SystemLog<IntrospectionStateLogElement>::SystemLog;
 
 public:
-    StreamStateLog(
+    IntrospectionStateLog(
         ContextPtr context_,
         const String & database_name_,
         const String & table_name_,
@@ -50,8 +53,11 @@ public:
     void stopCollectStates();
 
 private:
+    friend class StorageSystemLocalSystemStates;
+
     void collectStates();
-    void doCollectStates();
+
+    static void doCollectStates(AddElem add_elem, ContextPtr local_context, LoggerPtr log_);
 
     size_t collect_interval_milliseconds;
     std::atomic_flag stopped;

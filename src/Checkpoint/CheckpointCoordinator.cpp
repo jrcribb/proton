@@ -139,9 +139,9 @@ void CheckpointCoordinator::registerQuery(
     const String & query,
     CheckpointSettingsPtr ckpt_settings,
     std::weak_ptr<PipelineExecutor> executor,
-    std::optional<Int64> recovered_ckpt_epoch)
+    std::optional<CheckpointEpoch> recovered_ckpt_epoch)
 {
-    chassert(ckpt_ctx->epoch == 0);
+    chassert(ckpt_ctx->epoch.empty());
     const auto & qid = ckpt_ctx->qid;
     const auto & ckpt_storage = getCheckpointStorage(ckpt_settings->replication_type);
     if (!ckpt_storage.isLocal() && !ckpt_ctx->extra_ctx)
@@ -314,7 +314,7 @@ void CheckpointCoordinator::doRemoveCheckpoint(CheckpointContextPtr ckpt_ctx) no
         if (!ckpt_ctx->storage.isLocal())
             local_ckpt_storage->remove(ckpt_ctx);
 
-        if (ckpt_ctx->epoch == 0)
+        if (ckpt_ctx->epoch.empty())
             LOG_INFO(logger, "Cleaned checkpoints for query={}", ckpt_ctx->qid);
     }
     catch (...)
@@ -388,7 +388,30 @@ UInt64 CheckpointCoordinator::getStorageSize(CheckpointContextPtr ckpt_ctx) cons
     if (!ckpt_ctx)
         return 0;
 
-    return ckpt_ctx->storage.getStorageSize(ckpt_ctx);
+    /// Return cached storage size if exists and not expired (30 mins)
+    {
+        std::scoped_lock lock(mutex);
+        auto iter = queries.find(ckpt_ctx->qid);
+        if (iter == queries.end())
+            return 0;
+
+        if (DB::MonotonicSeconds::now() - iter->second->last_cached_ts <= 30 * 60) /// 30 mins
+            return iter->second->cached_storage_size;
+    }
+
+    auto storage_size = ckpt_ctx->storage.getStorageSize(ckpt_ctx);
+
+    /// Update cached storage size
+    {
+        std::scoped_lock lock(mutex);
+        auto iter = queries.find(ckpt_ctx->qid);
+        if (iter != queries.end())
+        {
+            iter->second->cached_storage_size = storage_size;
+            iter->second->last_cached_ts = DB::MonotonicSeconds::now();
+        }
+    }
+    return storage_size;
 }
 
 PathSizes CheckpointCoordinator::getStorageStat(CheckpointContextPtr ckpt_ctx) const

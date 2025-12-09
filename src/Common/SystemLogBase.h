@@ -26,13 +26,13 @@
     M(TransactionsInfoLogElement) \
     M(ProcessorProfileLogElement) \
     M(TextLogElement) \
-    M(FilesystemCacheLogElement)    \
-    M(AsynchronousInsertLogElement)  \
+    M(FilesystemCacheLogElement) \
+    M(AsynchronousInsertLogElement) \
     M(FilesystemReadPrefetchesLogElement) \
-    M(BlobStorageLogElement)   \
+    M(BlobStorageLogElement) \
     M(PipelineMetricLogElement) \
     M(StreamMetricLogElement) \
-    M(StreamStateLogElement) \
+    M(IntrospectionStateLogElement) \
     M(MaterializedViewDLQElement)
 
 namespace Poco

@@ -1,4 +1,4 @@
-#include <Interpreters/StreamStateLog.h>
+#include <Interpreters/IntrospectionStateLog.h>
 
 #include <Bootstrap/Globals.h>
 #include <Cluster/Common/TimeWheel/TimerService.h>
@@ -36,7 +36,7 @@ bool ignoreDatabase(const String & name)
     return black_list.contains(name);
 }
 
-StreamStateLogElement makeStreamStateLogElement(
+IntrospectionStateLogElement makeIntrospectionStateLogElement(
     uint64_t node_id,
     const StorageID & storage_id,
     std::string_view state_name,
@@ -44,7 +44,7 @@ StreamStateLogElement makeStreamStateLogElement(
     String state_string_value,
     String dimension)
 {
-    StreamStateLogElement elem;
+    IntrospectionStateLogElement elem;
 
     elem.node_id = node_id;
     elem.database = storage_id.getDatabaseName();
@@ -61,9 +61,6 @@ StreamStateLogElement makeStreamStateLogElement(
 
     return elem;
 }
-
-using AddElem = std::function<void(
-    const StorageID &, /*state_name*/ std::string_view, /*state_value*/ UInt64, /*state_string_value*/ String, /*dimension*/ String)>;
 
 void addStreamLog(const StorageStream * stream, const AddElem & add_elem)
 {
@@ -168,16 +165,14 @@ void addMaterializedViewLog(const StorageMaterializedView * mv, const AddElem & 
         /*state_string_value=*/fmt::format("{:.1f}%", metrics.cpu_usage_percentage),
         /*dimension=*/mv_type);
 
-    /// Thread IDs for the MatView execution
-    /// state_value: Store thread count
-    /// state_string_value: Store comma-separated thread IDs
-    if (!metrics.thread_ids.empty())
+    auto pipeline_metrics = mv->getPipelineMetrics();
+    if (!pipeline_metrics.empty())
     {
         add_elem(
             storage_id,
-            "thread_ids",
-            metrics.thread_ids.size(),
-            /*state_string_value=*/fmt::format("{}", fmt::join(metrics.thread_ids, ",")),
+            "pipeline",
+            /*state_value*/ 0,
+            /*state_string_value=*/pipeline_metrics,
             /*dimension=*/mv_type);
     }
 
@@ -357,7 +352,7 @@ namespace ErrorCodes
 extern const int CANNOT_CREATE_TIMER;
 }
 
-NamesAndTypesList StreamStateLogElement::getNamesAndTypes()
+NamesAndTypesList IntrospectionStateLogElement::getNamesAndTypes()
 {
     return {
         {"node_id", std::make_shared<DataTypeUInt64>()},
@@ -373,7 +368,7 @@ NamesAndTypesList StreamStateLogElement::getNamesAndTypes()
     };
 }
 
-void StreamStateLogElement::appendToBlock(MutableColumns & columns) const
+void IntrospectionStateLogElement::appendToBlock(MutableColumns & columns) const
 {
     size_t column_idx = 0;
 
@@ -388,18 +383,18 @@ void StreamStateLogElement::appendToBlock(MutableColumns & columns) const
     columns[column_idx++]->insert(_tp_time);
 }
 
-StreamStateLog::StreamStateLog(
+IntrospectionStateLog::IntrospectionStateLog(
     ContextPtr context_,
     const String & database_name_,
     const String & table_name_,
     const String & storage_def_,
     size_t flush_interval_milliseconds_)
-    : SystemLog<StreamStateLogElement>(context_, database_name_, table_name_, storage_def_, flush_interval_milliseconds_)
+    : SystemLog<IntrospectionStateLogElement>(context_, database_name_, table_name_, storage_def_, flush_interval_milliseconds_)
 {
     is_force_prepare_tables = true;
 }
 
-void StreamStateLog::startCollectStates(int64_t collect_interval_milliseconds_)
+void IntrospectionStateLog::startCollectStates(int64_t collect_interval_milliseconds_)
 {
     collect_interval_milliseconds = collect_interval_milliseconds_;
 
@@ -408,7 +403,7 @@ void StreamStateLog::startCollectStates(int64_t collect_interval_milliseconds_)
         throw Exception(ErrorCodes::CANNOT_CREATE_TIMER, "Failed to add collect metrics task to timer");
 }
 
-void StreamStateLog::stopCollectStates()
+void IntrospectionStateLog::stopCollectStates()
 {
     if (stopped.test_and_set())
         return;
@@ -417,35 +412,36 @@ void StreamStateLog::stopCollectStates()
         timer_task->cancel();
 }
 
-void StreamStateLog::shutdown()
+void IntrospectionStateLog::shutdown()
 {
     stopCollectStates();
     stopFlushThread();
 }
 
-void StreamStateLog::collectStates()
+void IntrospectionStateLog::collectStates()
 {
-    try
-    {
-        doCollectStates();
-    }
-    catch (...)
-    {
-        tryLogCurrentException(log, "Failed to collect stream states");
-    }
-}
-
-void StreamStateLog::doCollectStates()
-{
-    /// List all storages [in the specified database]
-    Databases databases = DatabaseCatalog::instance().getDatabases();
-    auto context = getContext();
-    auto node_id = context->getNodeID();
+    auto local_context = getContext();
+    auto node_id = local_context->getNodeID();
 
     auto add_elem
         = [this, node_id](const StorageID & storage_id, std::string_view name, UInt64 value, String string_value, String dimension) {
-              this->add(makeStreamStateLogElement(node_id, storage_id, name, value, std::move(string_value), std::move(dimension)));
+              this->add(makeIntrospectionStateLogElement(node_id, storage_id, name, value, std::move(string_value), std::move(dimension)));
           };
+
+    try
+    {
+        doCollectStates(add_elem, std::move(local_context), log);
+    }
+    catch (...)
+    {
+        tryLogCurrentException(log, "Failed to collect introspection states");
+    }
+}
+
+void IntrospectionStateLog::doCollectStates(AddElem add_elem, ContextPtr local_context, LoggerPtr log_)
+{
+    /// List all storages [in the specified database]
+    Databases databases = DatabaseCatalog::instance().getDatabases();
 
     uint32_t num_running_mvs = 0, num_running_shards = 0;
     for (const auto & [database_name, database] : databases)
@@ -456,18 +452,32 @@ void StreamStateLog::doCollectStates()
         if (!database->canContainMergeTreeTables())
             continue;
 
-        for (auto iterator = database->getTablesIterator(context); iterator->isValid(); iterator->next())
+        for (auto iterator = database->getTablesIterator(local_context); iterator->isValid(); iterator->next())
         {
-            const auto & storage = iterator->table();
-            if (!storage || !storage->isReady() || storage->isVirtualStorage())
-                continue;
-
             try
             {
+                const auto & storage = iterator->table();
+                if (!storage)
+                    continue;
+
+                bool ready = false;
+                try
+                {
+                    ready = storage->isReady();
+                }
+                catch (...)
+                {
+                    tryLogCurrentException(log_, "Skip storage due to isReady() failure");
+                    continue;
+                }
+
+                if (!ready || storage->isVirtualStorage())
+                    continue;
+
                 if (const auto * storage_stream = dynamic_cast<StorageStream *>(storage.get()))
                 {
                     addStreamLog(storage_stream, add_elem);
-                    num_running_shards += storage_stream->getShards();
+                    num_running_shards += static_cast<uint32_t>(storage_stream->getPhysicalShards());
                 }
                 else if (const auto * storage_external_stream = dynamic_cast<StorageExternalStream *>(storage.get()))
                 {
@@ -491,20 +501,35 @@ void StreamStateLog::doCollectStates()
                     addAlertLog(storage_alert, add_elem);
                 }
             }
-            catch (const Exception & ex)
+            catch (...)
             {
-                LOG_ERROR(log, "Failed to collect stream states for {}, error={}", storage->getStorageID().getNameForLogs(), ex.message());
+                tryLogCurrentException(log_, "Skip storage due to metrics collection failure");
             }
         }
     }
 
-    const_cast<Context *>(getContext().get())->setTotalMaterializedViews(num_running_mvs);
-    const_cast<Context *>(getContext().get())->setTotalShards(num_running_shards);
+    auto * mutable_context = const_cast<Context *>(local_context.get());
+    mutable_context->setTotalMaterializedViews(num_running_mvs);
+    mutable_context->setTotalShards(num_running_shards);
 
-    addDictionaryLog(context, add_elem);
+    try
+    {
+        addDictionaryLog(local_context, add_elem);
+    }
+    catch (...)
+    {
+        tryLogCurrentException(log_, "AddDictionaryLog failed");
+    }
 
 #if USE_PYTHON_UDF
-    addPythonPackageLog(context, add_elem);
+    try
+    {
+        addPythonPackageLog(local_context, add_elem);
+    }
+    catch (...)
+    {
+        tryLogCurrentException(log_, "AddPythonPackageLog failed");
+    }
 #endif
 }
 

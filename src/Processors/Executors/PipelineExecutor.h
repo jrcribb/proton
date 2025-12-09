@@ -6,6 +6,7 @@
 
 /// proton : starts
 #include <Checkpoint/CheckpointContextFwd.h>
+#include <Checkpoint/CheckpointEpoch.h>
 #include <Core/ExecuteMode.h>
 /// proton : ends
 
@@ -72,7 +73,8 @@ public:
     bool checkpointRegistered() const;
     bool requireExplicitCancel() const { return checkpointRegistered(); }
 
-    String getStats() const;
+    /// Pipeline DAG stats, proton: added
+    String getStats(const std::vector<UInt64> & thread_ids) const;
 
     bool hasProcessedNewDataSinceLastCheckpoint() const noexcept;
 
@@ -91,7 +93,7 @@ public:
 
 private:
     /// Recover the query graph from storage
-    std::pair<Int64, CheckpointSettingsPtr> recover(CheckpointContextPtr ckpt_ctx);
+    std::pair<CheckpointEpoch, CheckpointSettingsPtr> recover(CheckpointContextPtr ckpt_ctx);
     /// proton: ends.
 
 private:
