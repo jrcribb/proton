@@ -18,7 +18,8 @@ public:
         const std::string & database_name_,
         const std::string & url_,
         const DatabaseApacheIcebergSettings & settings_,
-        ASTPtr database_engine_definition_);
+        ASTPtr database_engine_definition_,
+        bool attach);
 
     String getEngineName() const override { return "Iceberg"; }
     bool configureTableEngine(ASTCreateQuery &) const override;
@@ -53,7 +54,7 @@ protected:
 private:
     void validateSettings();
     void parseStorageCredentials();
-    void initCatalog();
+    void initCatalog() const;
     /*std::shared_ptr<StorageObjectStorage::Configuration> getConfiguration(DatabaseIcebergStorageType type) const;*/
     std::string getStorageEndpointForTable(const Apache::Iceberg::TableMetadata & table_metadata) const;
 
@@ -64,6 +65,7 @@ private:
     /// Database engine definition taken from initial CREATE DATABASE query.
     const ASTPtr database_engine_definition;
 
+    mutable std::mutex catalog_impl_mutex;
     mutable Apache::Iceberg::CatalogPtr catalog_impl;
 
     std::shared_ptr<Apache::Iceberg::IStorageCredentials> storage_credentials;

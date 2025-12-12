@@ -49,6 +49,7 @@ extern const DatabaseApacheIcebergSettingsString credential;
 namespace ErrorCodes
 {
 extern const int BAD_ARGUMENTS;
+extern const int CANNOT_CREATE_DATABASE;
 extern const int INVALID_SETTING_VALUE;
 extern const int SUPPORT_IS_DISABLED;
 extern const int UNKNOWN_DATABASE;
@@ -84,7 +85,8 @@ DatabaseApacheIceberg::DatabaseApacheIceberg(
     const std::string & database_name_,
     const std::string & url_,
     const DatabaseApacheIcebergSettings & settings_,
-    ASTPtr database_engine_definition_)
+    ASTPtr database_engine_definition_,
+    bool attach)
     : IDatabase(database_name_)
     , url(url_)
     , settings(settings_)
@@ -93,12 +95,23 @@ DatabaseApacheIceberg::DatabaseApacheIceberg(
 {
     validateSettings();
     parseStorageCredentials();
-    initCatalog();
-    if (!getCatalog()->existsNamespace(getDatabaseName()))
-        throw DB::Exception(DB::ErrorCodes::UNKNOWN_DATABASE, "Namespace {} does not exist in the catalog", getDatabaseName());
+
+    try
+    {
+        initCatalog();
+        if (!getCatalog()->existsNamespace(getDatabaseName()))
+            throw DB::Exception(DB::ErrorCodes::UNKNOWN_DATABASE, "Namespace {} does not exist in the catalog", getDatabaseName());
+    }
+    catch (...)
+    {
+        if (attach)
+            tryLogCurrentException(log);
+        else
+            throw;
+    }
 }
 
-void DatabaseApacheIceberg::initCatalog()
+void DatabaseApacheIceberg::initCatalog() const
 {
     switch (settings[DatabaseApacheIcebergSetting::catalog_type].value)
     {
@@ -188,6 +201,10 @@ void DatabaseApacheIceberg::parseStorageCredentials()
 
 Apache::Iceberg::CatalogPtr DatabaseApacheIceberg::getCatalog() const
 {
+    std::lock_guard lock(catalog_impl_mutex);
+    if (catalog_impl == nullptr)
+        initCatalog();
+
     return catalog_impl;
 }
 
@@ -282,17 +299,29 @@ DatabaseTablesIteratorPtr
 DatabaseApacheIceberg::getTablesIterator(ContextPtr context_, const FilterByNameFunction & filter_by_table_name) const
 {
     Tables tables;
-    auto catalog = getCatalog();
-    const auto iceberg_tables = catalog->getTables(getDatabaseName());
 
-    for (const auto & table_name : iceberg_tables)
+    /// Do not allow to throw here, because this might be, for example, a query to system.tables.
+    /// It must not fail on case of some postgres error unless get_tables_ignore_error is false.
+    try
     {
-        if (filter_by_table_name && !filter_by_table_name(table_name))
-            continue;
+        auto catalog = getCatalog();
+        const auto iceberg_tables = catalog->getTables(getDatabaseName());
 
-        auto storage = tryGetTable(table_name, context_);
-        [[maybe_unused]] bool inserted = tables.emplace(table_name, storage).second;
-        chassert(inserted);
+        for (const auto & table_name : iceberg_tables)
+        {
+            if (filter_by_table_name && !filter_by_table_name(table_name))
+                continue;
+
+            auto storage = tryGetTable(table_name, context_);
+            [[maybe_unused]] bool inserted = tables.emplace(table_name, storage).second;
+            chassert(inserted);
+        }
+    }
+    catch (...)
+    {
+        if (!context_->getSettingsRef().get_tables_ignore_error)
+            throw;
+        tryLogCurrentException(__PRETTY_FUNCTION__);
     }
 
     return std::make_unique<DatabaseTablesSnapshotIterator>(std::move(tables), getDatabaseName());
@@ -466,7 +495,16 @@ void registerDatabaseIceberg(DatabaseFactory & factory)
         if (database_engine_define->settings != nullptr)
             database_settings.loadFromQuery(*database_engine_define);
 
-        return std::make_shared<DatabaseApacheIceberg>(args.database_name, url, database_settings, database_engine_define->clone());
+        try
+        {
+            return std::make_shared<DatabaseApacheIceberg>(
+                args.database_name, url, database_settings, database_engine_define->clone(), args.create_query.attach);
+        }
+        catch (...)
+        {
+            const auto & exception_message = getCurrentExceptionMessage(true);
+            throw Exception(ErrorCodes::CANNOT_CREATE_DATABASE, "Cannot create Iceberg database, because {}", exception_message);
+        }
     };
     factory.registerDatabase("Iceberg", create_fn, {.supports_arguments = true, .supports_settings = true});
 }
