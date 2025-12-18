@@ -24,7 +24,7 @@ ManyAggregatedData::ManyAggregatedData(AggregatorType aggregator_type, const std
     rows_since_last_finalizations.emplace_back(std::make_unique<std::atomic<UInt64>>(0));
     variants_mutexes.emplace_back(std::make_unique<std::timed_mutex>());
     aggregating_transforms.resize(variants.size());
-    rocks_holders.resize(variants.size());
+    rocks.resize(variants.size());
 }
 
 ManyAggregatedData::ManyAggregatedData(AggregatorType aggregator_type, size_t num_threads)
@@ -54,7 +54,7 @@ ManyAggregatedData::ManyAggregatedData(AggregatorType aggregator_type, size_t nu
     }
 
     aggregating_transforms.resize(variants.size());
-    rocks_holders.resize(variants.size());
+    rocks.resize(variants.size());
 }
 
 }

@@ -81,8 +81,7 @@ Block MemoryAggregator::executeAndFinalizePerRow(
     size_t row_end,
     IAggregatedDataVariants & variants_result,
     ColumnRawPtrs & key_columns,
-    AggregateColumns & aggregate_columns,
-    bool /*new_keys*/) const
+    AggregateColumns & aggregate_columns) const
 {
     if (unlikely(row_end <= row_begin))
         return {};
@@ -120,33 +119,32 @@ Block MemoryAggregator::executeAndFinalizePerRow(
                 result.aggregates_pools);
         }
 #define M(NAME, IS_TWO_LEVEL) \
-        case MemoryAggregatedDataVariants::Type::NAME: \
-        { \
-            return executeAndFinalizePerRowImpl( \
-                *result.NAME, \
-                row_begin, \
-                row_end, \
-                key_columns, \
-                aggregate_functions_instructions.data(), \
-                result.aggregates_pool, \
-                result.aggregates_pools); \
-        }
+    case MemoryAggregatedDataVariants::Type::NAME: \
+    { \
+        return executeAndFinalizePerRowImpl( \
+            *result.NAME, \
+            row_begin, \
+            row_end, \
+            key_columns, \
+            aggregate_functions_instructions.data(), \
+            result.aggregates_pool, \
+            result.aggregates_pools); \
+    }
 
-    APPLY_FOR_AGGREGATED_VARIANTS_STREAMING(M)
+            APPLY_FOR_AGGREGATED_VARIANTS_STREAMING(M)
 #undef M
         default:
             throw Exception(ErrorCodes::UNSUPPORTED, "Unknown MemoryAggregatedDataVariants type: {}", result.type);
     }
 }
 
-Block MemoryAggregator::executeAndFinalizeAfterKeyExpire(
+Block MemoryAggregator::executeAndFinalizeAfterSessionClose(
     Columns columns,
     size_t row_begin,
     size_t row_end,
     IAggregatedDataVariants & result,
     ColumnRawPtrs & key_columns,
-    AggregateColumns & aggregate_columns, /// Passed to not create them anew for each block
-    bool new_keys) const
+    AggregateColumns & aggregate_columns) const
 {
     (void)columns;
     (void)row_begin;
@@ -154,8 +152,7 @@ Block MemoryAggregator::executeAndFinalizeAfterKeyExpire(
     (void)result;
     (void)key_columns;
     (void)aggregate_columns;
-    (void)new_keys;
-    throw Exception(ErrorCodes::NOT_IMPLEMENTED, "`EMIT AFTER KEY EXPIRE` is not supported by memory aggregator yet");
+    throw Exception(ErrorCodes::NOT_IMPLEMENTED, "`EMIT AFTER SESSION CLOSE` is not supported by memory aggregator yet");
 }
 
 }

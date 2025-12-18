@@ -1,6 +1,9 @@
 #include <Parsers/Streaming/ASTEmitQuery.h>
 #include <Parsers/Streaming/ParserEmitQuery.h>
 
+#include <Parsers/ASTFunction.h>
+#include <Parsers/ASTIdentifier.h>
+#include <Parsers/ASTLiteral.h>
 #include <Parsers/CommonParsers.h>
 #include <Parsers/ExpressionListParsers.h>
 
@@ -81,24 +84,29 @@ bool ParserEmitQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected, [
     }
 
     /// EMIT [STREAM] AFTER KEY EXPIRE [IDENTIFIED BY ts_col] WITH [ONLY] MAXSPAN <interval> [AND TIMEOUT <interval>]
-    if (ParserKeyword("AFTER KEY EXPIRE").ignore(pos, expected))
+    /// EMIT [STREAM] AFTER SESSION CLOSE [IDENTIFIED BY (ts_col, session_start_col, session_end_col)] WITH [ONLY] MAXSPAN <interval> [AND TIMEOUT <interval>]
+    if (ParserKeyword("AFTER SESSION CLOSE").ignore(pos, expected) || ParserKeyword("AFTER KEY EXPIRE").ignore(pos, expected))
     {
         if (ParserKeyword("IDENTIFIED BY").ignore(pos, expected))
         {
-            ParserIdentifier ts_col_p;
-            if (!ts_col_p.parse(pos, query->key_ts_col, expected))
+            ParserExpression session_expr;
+            ASTPtr session_node = nullptr;
+            if (!session_expr.parse(pos, session_node, expected))
+                return false;
+
+            if (!extractSessionColumns(session_node, query))
                 return false;
         }
 
         if (!ParserKeyword("WITH MAXSPAN").ignore(pos, expected))
         {
             if (ParserKeyword("WITH ONLY MAXSPAN").ignore(pos, expected))
-                query->only_max_span = true;
+                query->only_max_span_session = true;
             else
                 return false;
         }
 
-        if (!interval_alias_p.parse(pos, query->key_max_span_interval, expected))
+        if (!interval_alias_p.parse(pos, query->session_max_span_interval, expected))
             return false;
 
         /// [AND TIMEOUT INTERVAL '5' SECONDS]
@@ -192,6 +200,101 @@ bool ParserEmitQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected, [
     }
 
     node = std::move(query);
+    return true;
+}
+
+bool ParserEmitQuery::extractSessionColumns(ASTPtr session_expr, std::shared_ptr<ASTEmitQuery> emit)
+{
+    if (!session_expr)
+        return false;
+
+    /// There are 2 cases:
+    /// 1) IDENTIFIED BY ts_col
+    /// 2) IDENTIFIED BY (ts_col, start_col, end_col)
+    ///    a) (ts_col, start_col, end_col)
+    ///    b) (ts_col, start_col, false)
+    ///    c) (ts_col, true, end_col)
+    ///    d) (ts_col, true, false) => same as 1)
+    const auto * expr_func = session_expr->as<ASTFunction>();
+    if (expr_func && expr_func->name == "tuple_cast")
+    {
+        if (!expr_func->arguments)
+            /// Empty tuple, expect at least 1
+            return false;
+
+        if (expr_func->arguments->children.size() == 3)
+        {
+            if (const auto * ts_col = expr_func->arguments->children[0]->as<ASTIdentifier>(); !ts_col)
+                throw Exception(ErrorCodes::SYNTAX_ERROR, "The first element in `IDENTIFIED BY` tuple is expected be a column identifier");
+
+            emit->session_ts_col = expr_func->arguments->children[0];
+
+            if (const auto * start_col = expr_func->arguments->children[1]->as<ASTIdentifier>(); start_col)
+            {
+                /// a) or b)
+                emit->session_start_col = expr_func->arguments->children[1];
+            }
+            else if (const auto * start_col_lit = expr_func->arguments->children[1]->as<ASTLiteral>(); start_col_lit)
+            {
+                /// c) or d), it has to be true
+                bool is_true = false;
+                if (!start_col_lit->value.tryGet(is_true) || !is_true)
+                    throw Exception(
+                        ErrorCodes::SYNTAX_ERROR,
+                        "The second element in `IDENTIFIED BY` tuple is expected be a column identifier or `true` literal");
+            }
+            else
+            {
+                throw Exception(
+                    ErrorCodes::SYNTAX_ERROR,
+                    "The second element in `IDENTIFIED BY` tuple is expected be a column identifier or `true` literal");
+            }
+
+            if (const auto * end_col = expr_func->arguments->children[2]->as<ASTIdentifier>(); end_col)
+            {
+                /// a) or c)
+                emit->session_end_col = expr_func->arguments->children[2];
+            }
+            else if (const auto * end_col_lit = expr_func->arguments->children[2]->as<ASTLiteral>(); end_col_lit)
+            {
+                /// b) or d), it has to be false
+                bool is_true = false;
+                if (!end_col_lit->value.tryGet(is_true) || is_true)
+                    throw Exception(
+                        ErrorCodes::SYNTAX_ERROR,
+                        "The third element in `IDENTIFIED BY` tuple is expected be a column identifier or `false` literal");
+            }
+            else
+            {
+                throw Exception(
+                    ErrorCodes::SYNTAX_ERROR,
+                    "The third element in `IDENTIFIED BY` tuple is expected be a column identifier or `false` literal");
+            }
+        }
+        else if (expr_func->arguments->children.size() == 1)
+        {
+            if (const auto * ts_col = expr_func->arguments->children.back()->as<ASTIdentifier>(); !ts_col)
+                throw Exception(ErrorCodes::SYNTAX_ERROR, "The first element in `IDENTIFIED BY` tuple is expected be a column identifier");
+
+            emit->session_ts_col = expr_func->arguments->children.back();
+        }
+        else
+        {
+            throw Exception(
+                ErrorCodes::SYNTAX_ERROR,
+                "`IDENTIFIED BY` tuple is expected to have 1 or 3 columns in `EMIT AFTER SESSION CLOSE`, got {} elements",
+                expr_func->arguments->children.size());
+        }
+    }
+    else
+    {
+        /// 1) IDENTIFIED BY ts_col, expected it is an identifier
+        if (const auto * ts_col = session_expr->as<ASTIdentifier>(); !ts_col)
+            throw Exception(ErrorCodes::SYNTAX_ERROR, "The first element in `IDENTIFIED BY` tuple is expected be a column identifier");
+
+        emit->session_ts_col = session_expr;
+    }
+
     return true;
 }
 

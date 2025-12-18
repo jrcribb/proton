@@ -7,7 +7,7 @@
 #include <Parsers/ASTFunction.h>
 #include <Parsers/ASTIdentifier.h>
 #include <Parsers/ASTLiteral.h>
-#include <Parsers/Streaming/ASTSessionRangeComparision.h>
+#include <Parsers/Streaming/ASTSessionBoundary.h>
 #include <Processors/Chunk.h>
 #include <Common/ProtonCommon.h>
 #include <Common/intExp.h>
@@ -381,13 +381,13 @@ ASTs checkAndExtractSessionArguments(const ASTFunction * func_ast)
         if (i < args.size())
         {
             /// OPT-1: Handle range comparison
-            if (auto * range_comparison = args[i]->as<ASTSessionRangeComparision>())
+            if (const auto * boundary = args[i]->as<ASTSessionBoundary>())
             {
-                assert(range_comparison->children.size() == 2);
-                start_condition = range_comparison->children[0];
-                end_condition = range_comparison->children[1];
-                start_with_inclusion = std::make_shared<ASTLiteral>(range_comparison->start_with_inclusion);
-                end_with_inclusion = std::make_shared<ASTLiteral>(range_comparison->end_with_inclusion);
+                assert(boundary->children.size() == 2);
+                start_condition = boundary->children[0];
+                end_condition = boundary->children[1];
+                start_with_inclusion = std::make_shared<ASTLiteral>(boundary->start_with_inclusion);
+                end_with_inclusion = std::make_shared<ASTLiteral>(boundary->end_with_inclusion);
                 ++i;
             }
             /// OPT-2: handle start/end prediction

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Cluster/Common/LogTrack.h>
 #include <IO/ReadBuffer.h>
 #include <IO/ReadBufferFromString.h>
 #include <IO/ReadHelpers.h>
@@ -11,22 +12,23 @@
 #include <Common/Exception.h>
 #include <Common/HybridHashTable/HybridMappedValue.h>
 #include <Common/MemoryHelpers.h>
-#include <Common/Rocks/RocksHandler.h>
+/// #include <Common/MemoryTrackerBlockerInThread.h>
+#include <base/ClockUtils.h>
+#include <Common/HybridConfig.h>
+#include <Common/Rocks/RocksDB.h>
 #include <Common/Stopwatch.h>
 #include <Common/logger_useful.h>
 
 #include <absl/container/flat_hash_map.h>
 #include <absl/container/flat_hash_set.h>
+#include <fmt/format.h>
 #include <rocksdb/convenience.h>
 #include <rocksdb/db.h>
-#include <rocksdb/filter_policy.h>
 #include <rocksdb/slice_transform.h>
 #include <rocksdb/statistics.h>
-#include <rocksdb/table.h>
-#include <rocksdb/utilities/db_ttl.h>
+#include <rocksdb/utilities/memory_util.h>
 
 #include <ranges>
-#include <fmt/format.h>
 
 namespace DB
 {
@@ -47,11 +49,7 @@ struct HybridHashTableConfig
 {
     void validate()
     {
-        if (spill_dir_path.empty())
-            throw DB::Exception(ErrorCodes::INVALID_CONFIG_PARAMETER, "HybridHashTable: spill to disk folder is not configured");
-
-        if (max_hot_key_count == 0)
-            max_hot_key_count = std::numeric_limits<size_t>::max();
+        base_conf.validate();
 
         if (!value_constructor)
             throw DB::Exception(ErrorCodes::INVALID_CONFIG_PARAMETER, "HybridHashTable: value constructor is not setup");
@@ -71,91 +69,22 @@ struct HybridHashTableConfig
         /// Please note when value_object_size is zero, std::malloc(0) still returns a valid address,
         /// we actually need this unique address for tracking etc purposes
         value_object_size = 0;
-        value_constructor = ([](void * /*data*/) { });
-        value_destructor = ([](void * /*data*/) { });
+        value_constructor = ([](void * /*data*/) {});
+        value_destructor = ([](void * /*data*/) {});
         value_serializer = ([](const void * /*data*/, WriteBuffer &) { return DB::ErrorCodes::OK; });
         value_deserializer = ([](void * /*data*/, ReadBuffer &) { return DB::ErrorCodes::OK; });
     }
 
-    rocksdb::Options getRocksOptions() const
-    {
-        rocksdb::Options options;
-        options.atomic_flush = true;
-        /// options.num_levels = 3;
-        options.create_if_missing = true;
-        options.create_missing_column_families = true;
-        options.statistics = rocksdb::CreateDBStatistics();
-        options.info_log_level = rocksdb::ERROR_LEVEL;
-
-        options.compression = rocksdb::CompressionType::kLZ4Compression;
-
-        rocksdb::Options merged_options;
-        if (auto status = rocksdb::GetDBOptionsFromString(rocksdb::ConfigOptions{}, options, db_options, &merged_options); !status.ok())
-            merged_options = options;
-
-        rocksdb::BlockBasedTableOptions table_options;
-
-        if (use_hash_index)
-        {
-            table_options.data_block_hash_table_util_ratio = 0.75;
-            table_options.data_block_index_type = rocksdb::BlockBasedTableOptions::DataBlockIndexType::kDataBlockBinaryAndHash;
-        }
-        else
-        {
-            table_options.data_block_index_type = rocksdb::BlockBasedTableOptions::DataBlockIndexType::kDataBlockBinarySearch;
-        }
-
-        table_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, false));
-        merged_options.table_factory.reset(rocksdb::NewBlockBasedTableFactory(table_options));
-
-        return merged_options;
-    }
+    rocksdb::Options getRocksOptions() const { return base_conf.getRocksOptions(); }
 
     HybridHashTableConfig getSubConfig(std::string_view sub_id, bool unshared = false) const
     {
-        chassert(!sub_id.empty());
         HybridHashTableConfig new_config = *this;
-
-        /// If `rocks_handler_getter` is set, use a sub-handler with `sub_id`; otherwise, use a new one with `spill_dir_path`.
-        if (new_config.rocks_handler_getter)
-        {
-            new_config.handle_id = handle_id.empty() ? sub_id : fmt::format("{}-{}", handle_id, sub_id);
-
-            if (unshared)
-            {
-                new_config.spill_dir_path = fmt::format("{}-{}", spill_dir_path, new_config.handle_id);
-                new_config.handle_id = "";
-                new_config.rocks_handler_getter = nullptr;
-            }
-        }
-        else
-        {
-            new_config.spill_dir_path = fmt::format("{}-{}", spill_dir_path, sub_id);
-        }
-
+        new_config.base_conf = base_conf.getSubConfig(sub_id, unshared);
         return new_config;
     }
 
-    /// spill_dir_path_ file system path which holds for spill-to-disk key / values
-    std::string spill_dir_path;
-    /// db_options_ spill-to-disk (rocks) db options
-    std::string db_options;
-
-    /// If `rocks_handler_getter` is set, we will get rocks handler by it
-    std::string handle_id{};
-    std::function<RocksHandlerPtr(const std::string & id)> rocks_handler_getter{};
-
-    /// When ttl <= 0, it means infinity
-    int32_t ttl = -1;
-
-    /// If \use_hash_index is true, Binary & hash index will be used, otherwise only binary search will be used.
-    /// Hash index usually have better point query perf but will occupy more space
-    bool use_hash_index = false;
-
-    /// When in-memory keys count exceed this threshold, spill to disk
-    size_t max_hot_key_count = 10'000;
-    /// cleanup_on_disk_data_ if true, during dtor, cleanup spill-to-disk data, otherwise keep it around
-    bool cleanup_on_disk_data = true;
+    HybridConfig base_conf;
 
     /// Value object size is used to allocate enough memory to hold the object
     size_t value_object_size = 0;
@@ -242,6 +171,7 @@ struct HybridFindResult
     bool hasError() const noexcept { return errcode != ErrorCodes::OK; }
     std::string errorString() const noexcept { return fmt::format("errcode={} message={}", errcode, ErrorCodes::getName(errcode)); }
     bool isFound() const noexcept { return value.isValid(); }
+    bool isNotFound() const noexcept { return !value.isValid(); }
 
     HybridMappedValue value;
     int errcode = ErrorCodes::OK;
@@ -343,8 +273,8 @@ public:
         , logger(logger_)
     {
         chassert(key_serializer && key_deserializer);
-        if (std::filesystem::exists(config.spill_dir_path)
-            && !config.rocks_handler_getter) /// If unshared rocks directory already exists, init rocks eagerly, otherwise in a lazy way
+        if (std::filesystem::exists(config.base_conf.spill_dir_path) && !config.base_conf.rocks_cf_handler_getter)
+            /// If unshared rocks directory already exists, init rocks eagerly, otherwise in a lazy way
             reload();
     }
 
@@ -362,10 +292,10 @@ public:
 
     const HybridHashTableConfig & getConfig() const noexcept { return config; }
 
-    RocksPtr getRocksHolder() const
+    RocksDBPtr getRocksDB() const
     {
         if (persistentPartInited())
-            return rocks_handler->getRocksHolder();
+            return cf_handler->getRocksDB();
         else
             return nullptr;
     }
@@ -376,10 +306,10 @@ public:
             return;
 
         /// For shared rocks, we just destroy current handler and column family
-        if (!rocks && rocks_handler && config.cleanup_on_disk_data)
-            rocks_handler->destroy();
+        if (!rocks && cf_handler && config.base_conf.cleanup_on_disk_data)
+            cf_handler->destroy();
 
-        rocks_handler.reset();
+        cf_handler.reset();
         rocks.reset();
     }
 
@@ -387,7 +317,7 @@ public:
 
     void clear()
     {
-        if (!config.cleanup_on_disk_data)
+        if (!config.base_conf.cleanup_on_disk_data)
             /// If we like to retain the data around, flush them to disk
             bulkSpill(recent_keys.size());
         else
@@ -399,7 +329,7 @@ public:
 
         metrics = HybridHashTableMetrics{};
 
-        rocks_handler.reset();
+        cf_handler.reset();
         rocks.reset();
     }
 
@@ -418,17 +348,18 @@ public:
 
         chassert(recent_keys.size() == hot_key_values.size());
 
-        return emplaceNewKey(key);
+        return emplaceNewKey(key, disable_spill);
     }
 
-    HybridEmplaceResult emplaceNewKey(const K & key)
+    HybridEmplaceResult emplaceNewKey(const K & key, bool disable_spill)
     {
         ++metrics.write_total;
         ++metrics.write_new;
 
         auto & entry = insert(key, constructValue());
 
-        spillIfNecessary(/*current_batch_size=*/1);
+        if (!disable_spill)
+            spillIfNecessary(/*current_batch_size=*/1);
 
         chassert(recent_keys.size() == hot_key_values.size());
 
@@ -554,6 +485,11 @@ public:
 
     HybridFindResults findKeys(const std::vector<K> & keys) { return findKeys(keys.begin(), keys.end(), /*disable_spill=*/false); }
 
+    HybridFindResults findKeys(const std::vector<K> & keys, bool disable_spill)
+    {
+        return findKeys(keys.begin(), keys.end(), disable_spill);
+    }
+
     /// \param disable_spill Same in emplaceKeys(keys, disable_spill)
     HybridFindResults findKeys(std::vector<K>::const_iterator keys_start, std::vector<K>::const_iterator keys_end, bool disable_spill)
     {
@@ -602,7 +538,7 @@ public:
         {
             auto scan_options = read_options;
             scan_options.fill_cache = false;
-            std::unique_ptr<rocksdb::Iterator> iter{rocks_handler->db->NewIterator(scan_options, rocks_handler->cf_handle)};
+            std::unique_ptr<rocksdb::Iterator> iter{cf_handler->db->NewIterator(scan_options, cf_handler->cf_handle)};
             for (iter->SeekToFirst(); iter->Valid(); iter->Next())
             {
                 K k;
@@ -651,7 +587,7 @@ public:
 
             auto scan_options = read_options;
             scan_options.fill_cache = false;
-            std::unique_ptr<rocksdb::Iterator> iter{rocks_handler->db->NewIterator(scan_options, rocks_handler->cf_handle)};
+            std::unique_ptr<rocksdb::Iterator> iter{cf_handler->db->NewIterator(scan_options, cf_handler->cf_handle)};
             for (iter->SeekToFirst(); iter->Valid(); iter->Next())
             {
                 K k;
@@ -719,7 +655,7 @@ public:
 
             auto scan_options = read_options;
             scan_options.fill_cache = false;
-            std::unique_ptr<rocksdb::Iterator> iter{rocks_handler->db->NewIterator(scan_options, rocks_handler->cf_handle)};
+            std::unique_ptr<rocksdb::Iterator> iter{cf_handler->db->NewIterator(scan_options, cf_handler->cf_handle)};
             for (iter->SeekToFirst(); iter->Valid(); iter->Next())
             {
                 K k;
@@ -777,7 +713,7 @@ public:
                     return errcode;
             }
 
-            if (auto status = rocks_handler->db->Delete(write_options, rocks_handler->cf_handle, {key_data.data(), key_data.size()});
+            if (auto status = cf_handler->db->Delete(write_options, cf_handler->cf_handle, {key_data.data(), key_data.size()});
                 !status.ok())
             {
                 LOG_ERROR(logger, "Failed to delete key on disk, status='{}'", status.ToString());
@@ -816,10 +752,10 @@ public:
                 keys_data.push_back(std::move(key_data));
             }
 
-            rocksdb::WriteBatch batch{static_cast<size_t>(approx_keys_size * 1.2)};
+            rocksdb::WriteBatch batch{static_cast<size_t>(approx_keys_size * 1.5)};
             for (const auto & key_data : keys_data)
             {
-                auto status = batch.Delete(rocks_handler->cf_handle, {key_data.data(), key_data.size()});
+                auto status = batch.Delete(cf_handler->cf_handle, {key_data.data(), key_data.size()});
                 if (!status.ok())
                 {
                     LOG_ERROR(logger, "Failed to add key/value to batch, status='{}'", status.ToString());
@@ -827,7 +763,7 @@ public:
                 }
             }
 
-            if (auto status = rocks_handler->db->Write(write_options, &batch); !status.ok())
+            if (auto status = cf_handler->db->Write(write_options, &batch); !status.ok())
             {
                 LOG_ERROR(logger, "Failed to spill key/values to disk, status='{}'", status.ToString());
                 return ErrorCodes::ROCKSDB_ERROR;
@@ -848,19 +784,19 @@ public:
         /// Layout: version, cleanup_on_disk_data, batch_size1, key1, value1, key2, value2, batch_size2, ..., empty_batch_size(end), metrics
         writeBinary(version, wb);
 
-        writeBinary<bool>(config.cleanup_on_disk_data, wb);
+        writeBinary<bool>(config.base_conf.cleanup_on_disk_data, wb);
 
         if (persistentPartInited() && !full_cached)
         {
             /// Flush all hot keys to disk
             const_cast<Self *>(this)->flush();
 
-            /// loop each serialized key / value from rocks_handler->db
+            /// loop each serialized key / value from cf_handler->db
             String batch_data;
             WriteBufferFromString batch_buf(batch_data);
             size_t batch_size = 0;
             constexpr size_t max_batch_size = 10'000;
-            std::unique_ptr<rocksdb::Iterator> iter{rocks_handler->db->NewIterator(read_options, rocks_handler->cf_handle)};
+            std::unique_ptr<rocksdb::Iterator> iter{cf_handler->db->NewIterator(read_options, cf_handler->cf_handle)};
             for (iter->SeekToFirst(); iter->Valid(); iter->Next())
             {
                 writeString(iter->key().ToStringView(), batch_buf);
@@ -940,10 +876,10 @@ public:
 
                 insert(key, std::move(value_ptr));
 
-                if (hot_key_values.size() >= config.max_hot_key_count)
+                if (hot_key_values.size() >= config.base_conf.max_hot_key_count)
                 {
                     size_t remaining_num_keys = batch_num - i - 1;
-                    bulkSpill(std::min(config.max_hot_key_count, remaining_num_keys));
+                    bulkSpill(std::min(config.base_conf.max_hot_key_count, remaining_num_keys));
                 }
             }
         } while (batch_num > 0);
@@ -962,7 +898,7 @@ public:
 
         UInt64 estimated_keys = 0;
         if (persistentPartInited())
-            rocks_handler->db->GetIntProperty(rocks_handler->cf_handle, "rocksdb.estimate-num-keys", &estimated_keys);
+            cf_handler->db->GetIntProperty(cf_handler->cf_handle, "rocksdb.estimate-num-keys", &estimated_keys);
 
         return hot_key_values.size() + estimated_keys;
     }
@@ -971,7 +907,7 @@ public:
     {
         UInt64 disk_size = 0;
         if (persistentPartInited())
-            rocks_handler->db->GetIntProperty(rocks_handler->cf_handle, "rocksdb.total-sst-files-size", &disk_size);
+            cf_handler->db->GetIntProperty(cf_handler->cf_handle, "rocksdb.total-sst-files-size", &disk_size);
 
         return disk_size;
     }
@@ -982,7 +918,7 @@ public:
 
     size_t getBufferSizeInCells() const noexcept { return hot_key_values.capacity(); }
 
-    int spillIfNecessary() { return spillIfNecessary(config.max_hot_key_count); }
+    int spillIfNecessary() { return spillIfNecessary(config.base_conf.max_hot_key_count); }
 
     void flush()
     {
@@ -991,6 +927,7 @@ public:
             throw DB::Exception(status, "Failed to flush hot keys to disk");
 
         /// After flushing, always expects rocks instance here
+        /// In case, no keys in this table
         if (!persistentPartInited())
             initRocks();
 
@@ -1014,11 +951,11 @@ public:
             /// NOTE: If \old_value_deserializer exists, it means the stored value is in the old format,
             /// and we always reload all old key values ​​and then store them in the current value format.
             const auto * value_deserializer = old_value_deserializer ? &old_value_deserializer : &config.value_deserializer;
-            if (old_value_deserializer || approximateCount() <= config.max_hot_key_count)
+            if (old_value_deserializer || approximateCount() <= config.base_conf.max_hot_key_count)
             {
                 auto scan_options = read_options;
                 scan_options.fill_cache = false;
-                std::unique_ptr<rocksdb::Iterator> iter{rocks_handler->db->NewIterator(scan_options, rocks_handler->cf_handle)};
+                std::unique_ptr<rocksdb::Iterator> iter{cf_handler->db->NewIterator(scan_options, cf_handler->cf_handle)};
                 for (iter->SeekToFirst(); iter->Valid(); iter->Next())
                 {
                     K k;
@@ -1042,7 +979,7 @@ public:
     int spillIfNecessary(size_t current_batch_size)
     {
         auto hot_keys_size = recent_keys.size();
-        if (hot_keys_size <= config.max_hot_key_count || hot_keys_size <= current_batch_size)
+        if (hot_keys_size <= config.base_conf.max_hot_key_count || hot_keys_size <= current_batch_size)
             return ErrorCodes::OK;
 
         /// After emplaceKey(s), this current batch of keys will be hot (moved to the tail of recent_keys)
@@ -1050,56 +987,107 @@ public:
         /// the hot keys in the current batch won't be spilled since they are keys clients like to manipulate.
         /// So the maximum keys to spill is `hot_key_values.size() - current_batch_size`.
         /// It also indicates the total hot keys in memory sometimes can exceed config.max_hot_key_count
-        auto max_keys_to_spill = std::min(hot_keys_size - current_batch_size, hot_keys_size - config.max_hot_key_count);
+        auto max_keys_to_spill = std::min(hot_keys_size - current_batch_size, hot_keys_size - config.base_conf.max_hot_key_count);
         return bulkSpill(max_keys_to_spill);
+    }
+
+    void logMetrics(int64_t throttling_sec, std::string_view ht_name, std::string_view ht_id)
+    {
+        if (auto [should_log, _] = cluster::shouldLog(tracked_logs, /*log_key=*/1, throttling_sec); !should_log)
+            return;
+
+        if (persistentPartInited())
+        {
+            uint64_t rocksdb_size_all_mem_tables = 0;
+            uint64_t rocksdb_cur_size_all_mem_tables = 0;
+            uint64_t rocksdb_estimate_table_readers_mem = 0;
+            uint64_t rocksdb_block_cache_usage = 0;
+            uint64_t rocksdb_block_cache_pinned_usage = 0;
+            uint64_t rocksdb_memory_usage = 0;
+
+            cf_handler->db->GetIntProperty("rocksdb.size-all-mem-tables", &rocksdb_size_all_mem_tables); // ~kMemTableTotal
+            cf_handler->db->GetIntProperty(
+                "rocksdb.cur-size-all-mem-tables", &rocksdb_cur_size_all_mem_tables); // ~kMemTableTotal (current snapshot)
+            cf_handler->db->GetIntProperty(
+                "rocksdb.estimate-table-readers-mem", &rocksdb_estimate_table_readers_mem); // ~kTableReadersTotal
+            cf_handler->db->GetIntProperty("rocksdb.block-cache-usage", &rocksdb_block_cache_usage); // ~kCacheTotal
+            cf_handler->db->GetIntProperty(
+                "rocksdb.block-cache-pinned-usage", &rocksdb_block_cache_pinned_usage); // pinned part of kCacheTotal
+            cf_handler->db->GetIntProperty("rocksdb.memory-usage", &rocksdb_memory_usage); // total aggregate
+
+            LOG_INFO(
+                logger,
+                "HybridHashTable: {}-{} hot_keys={} recent_keys={} approx_keys={} disk_size={} {} rocksdb_size_all_mem_tables={} "
+                "rocksdb_cur_size_all_mem_tables={} rocksdb_estimate_table_readers_mem={} rocksdb_block_cache_usage={} "
+                "rocksdb_block_cache_pinned_usage={} rocksdb_memory_usage={}",
+                ht_name,
+                ht_id,
+                hot_key_values.size(),
+                recent_keys.size(),
+                approximateCount(),
+                getDiskSize(),
+                metrics.string(),
+                rocksdb_size_all_mem_tables,
+                rocksdb_cur_size_all_mem_tables,
+                rocksdb_estimate_table_readers_mem,
+                rocksdb_block_cache_usage,
+                rocksdb_block_cache_pinned_usage,
+                rocksdb_memory_usage);
+        }
+        else
+        {
+            LOG_INFO(
+                logger,
+                "HybridHashTable: {} hot_keys={} recent_keys={} approx_keys={} disk_size={}, {}",
+                ht_name,
+                hot_key_values.size(),
+                recent_keys.size(),
+                approximateCount(),
+                getDiskSize(),
+                metrics.string());
+        }
     }
 
     /// For testing
     auto & hotKeyValues() noexcept { return hot_key_values; }
     const auto & recentKeys() const noexcept { return recent_keys; }
-    bool persistentPartInited() const noexcept { return rocks_handler != nullptr; }
+    bool persistentPartInited() const noexcept { return cf_handler != nullptr; }
 
 private:
     void initRocks()
     {
-        write_options.disableWAL = config.cleanup_on_disk_data;
+        write_options.disableWAL = config.base_conf.cleanup_on_disk_data;
 
-        /// 1) Shared rocks case: if rocks_handler_getter is provided, get rocks handler from external rocksdb instance
+        /// 1) Shared rocks case: if cf_handler_getter is provided, get rocks handler from external rocksdb instance
         /// For example, `Rocks` has 3 column families : [cf1, cf2, cf3] and one `db`
         ///
         /// HybridHashTable-1 -> cf1, db
         /// HybridHashTable-2 -> cf2, db
         /// HybridHashTable-3 -> cf3, db
-        if (config.rocks_handler_getter)
+        if (config.base_conf.rocks_cf_handler_getter)
         {
-            rocks_handler = config.rocks_handler_getter(config.handle_id);
+            cf_handler = config.base_conf.rocks_cf_handler_getter(config.base_conf);
             return;
         }
 
         /// 2) Otherwise, create an internal rocksdb instance
-        auto options = config.getRocksOptions();
-        rocksdb::Status status;
         rocksdb::DB * db = nullptr;
-
-        if (config.ttl > 0)
-        {
-            rocksdb::DBWithTTL * ttl_db = nullptr;
-            status = rocksdb::DBWithTTL::Open(options, config.spill_dir_path, &ttl_db, config.ttl);
-            db = ttl_db;
-        }
-        else
-        {
-            status = rocksdb::DB::Open(options, config.spill_dir_path, &db);
-        }
-
-        if (!status.ok())
+        if (auto status = rocksdb::DB::Open(config.getRocksOptions(), config.base_conf.spill_dir_path, &db); !status.ok())
         {
             LOG_ERROR(logger, "Failed to init on disk hash table, status='{}'", status.ToString());
             throw DB::Exception(ErrorCodes::CANNOT_OPEN_DATABASE, "Failed to open on disk hash table, {}", status.ToString());
         }
 
-        rocks = std::make_shared<Rocks>(db, std::vector<rocksdb::ColumnFamilyHandle *>{}, config.cleanup_on_disk_data, logger);
-        rocks_handler = rocks->getOrCreateHandler(config.handle_id);
+        rocks = std::make_shared<RocksDB>(db, std::vector<rocksdb::ColumnFamilyHandle *>{}, config.base_conf.cleanup_on_disk_data, logger);
+        cf_handler = rocks->getOrCreateColumnFamilyHandler(config.base_conf.cf_handle_id, config.base_conf.ttl);
+
+        LOG_INFO(
+            logger,
+            "Init hybrid hash table with ttl={} path={} kv_options={} use_hash_index={}",
+            config.base_conf.ttl,
+            config.base_conf.spill_dir_path,
+            config.base_conf.kv_options,
+            config.base_conf.use_hash_index);
     }
 
     HybridFindResults doFindKeys(std::vector<K>::const_iterator keys_start, std::vector<K>::const_iterator keys_end)
@@ -1159,9 +1147,9 @@ private:
             read_key_slices.emplace_back(key_data.data(), key_data.size());
         }
 
-        std::vector<rocksdb::ColumnFamilyHandle *> column_families(read_key_slices.size(), rocks_handler->cf_handle);
+        std::vector<rocksdb::ColumnFamilyHandle *> column_families(read_key_slices.size(), cf_handler->cf_handle);
         std::vector<std::string> values;
-        auto statuses = rocks_handler->db->MultiGet(read_options, column_families, read_key_slices, &values);
+        auto statuses = cf_handler->db->MultiGet(read_options, column_families, read_key_slices, &values);
 
         for (size_t i = 0, statuses_size = statuses.size(); i < statuses_size; ++i)
         {
@@ -1248,7 +1236,8 @@ private:
         }
 
         std::string rvalue;
-        if (auto status = rocks_handler->db->Get(read_options, rocks_handler->cf_handle, {key_data.data(), key_data.size()}, &rvalue);
+        if (auto status
+            = cf_handler->db->Get(read_options, cf_handler->cf_handle, rocksdb::Slice{key_data.data(), key_data.size()}, &rvalue);
             status.ok())
         {
             ++metrics.read_persistent;
@@ -1380,39 +1369,49 @@ private:
 
         size_t approx_batch_size = 0;
 
-        std::vector<std::vector<char>> keys_data;
+        using CharVector = std::vector<char>;
+        using VectorOfCharVector = std::vector<CharVector>;
+
+        VectorOfCharVector keys_data;
         keys_data.reserve(keys.size());
         for (const auto * key : keys)
         {
             keys_data.emplace_back();
             auto & key_data = keys_data.back();
             {
-                WriteBufferFromVector<std::vector<char>> wb(key_data);
+                WriteBufferFromVector<CharVector> wb(key_data);
                 if (auto errcode = key_serializer(*key, wb); errcode != ErrorCodes::OK)
                     return errcode;
             }
             approx_batch_size += key_data.size();
         }
 
-        std::vector<std::vector<char>> values_data;
+        VectorOfCharVector values_data;
         values_data.reserve(keys.size());
         for (auto * entry : entries)
         {
             values_data.emplace_back();
             auto & value_data = values_data.back();
             {
-                WriteBufferFromVector<std::vector<char>> wb(value_data);
+                WriteBufferFromVector<CharVector> wb(value_data);
                 if (auto errcode = config.value_serializer(entry->data, wb); errcode != ErrorCodes::OK)
                     return errcode;
+
+                if (cf_handler->ttl_sec > 0)
+                {
+                    /// Append timestamp to tail
+                    auto now_sec = static_cast<UInt32>(DB::UTCSeconds::now());
+                    DB::writeIntBinary(now_sec, wb);
+                }
             }
             approx_batch_size += value_data.size();
         }
 
-        rocksdb::WriteBatch batch{static_cast<size_t>(approx_batch_size * 1.2)};
+        rocksdb::WriteBatch batch{static_cast<size_t>(approx_batch_size * 1.5)};
         for (size_t i = 0, size = keys.size(); i < size; ++i)
         {
             auto status = batch.Put(
-                rocks_handler->cf_handle, {keys_data[i].data(), keys_data[i].size()}, {values_data[i].data(), values_data[i].size()});
+                cf_handler->cf_handle, {keys_data[i].data(), keys_data[i].size()}, {values_data[i].data(), values_data[i].size()});
             if (!status.ok())
             {
                 LOG_ERROR(logger, "Failed to add key/value to batch, status='{}'", status.ToString());
@@ -1420,7 +1419,12 @@ private:
             }
         }
 
-        if (auto status = rocks_handler->db->Write(write_options, &batch); status.ok())
+        /// The data in batch can be moved to other thread when db->Write(...)
+        /// which caused the tracking inaccuracy
+        /// https://github.com/timeplus-io/proton-enterprise/issues/10675
+        CurrentMemoryTracker::free(batch.GetDataSize());
+
+        if (auto status = cf_handler->db->Write(write_options, &batch); status.ok())
         {
             /// If cleanup_after_spilled is true, we can skip resetting the changed flag for all spilled keys
             if (!cleanup_after_spilled)
@@ -1456,13 +1460,16 @@ private:
     {
         /// NOTE: If value_destructor throws, there may be memory leak
         config.value_destructor(value);
-        std::free(value);
+        /// std::free(value);
+        allocator.free(value, config.value_object_size + sizeof(HybridMappedValue::ControlBits));
     }
 
     ALWAYS_INLINE auto constructValue() const
     {
         /// Allocate memory for value object: value_object_size + control_bits(1 byte)
-        auto value_ptr = alignedAllocate(config.value_object_size + sizeof(HybridMappedValue::ControlBits), config.align_value_object_size);
+        /// auto value_ptr = alignedAllocate(config.value_object_size + sizeof(HybridMappedValue::ControlBits), config.align_value_object_size);
+        std::unique_ptr<void, decltype(&std::free)> value_ptr{
+            allocator.alloc(config.value_object_size + sizeof(HybridMappedValue::ControlBits), config.align_value_object_size), &std::free};
         config.value_constructor(value_ptr.get());
         auto deleter = [this](void * ptr) { destructValue(ptr); };
         return std::unique_ptr<void, decltype(deleter)>(value_ptr.release(), std::move(deleter));
@@ -1484,6 +1491,7 @@ private:
     HybridHashTableConfig config;
     KeySerializer key_serializer;
     KeyDeserializer key_deserializer;
+    mutable Allocator</*clear_memory_=*/false, /*populate=*/false, /*track=*/true> allocator;
 
     InmemoryHashMap hot_key_values;
     std::list<K> recent_keys;
@@ -1491,11 +1499,13 @@ private:
 
     HybridHashTableMetrics metrics;
 
-    RocksPtr rocks; /// internal rocksdb instance
-    RocksHandlerPtr rocks_handler;
+    RocksDBPtr rocks; /// internal rocksdb instance
+    RocksDBColumnFamilyHandlerPtr cf_handler;
 
     rocksdb::WriteOptions write_options;
     rocksdb::ReadOptions read_options;
+
+    cluster::LogTrackContainer tracked_logs;
 
     LoggerPtr logger;
 };

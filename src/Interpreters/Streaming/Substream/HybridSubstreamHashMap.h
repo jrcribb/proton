@@ -15,13 +15,17 @@ public:
     HybridSubstreamHashMap(
         const String & spill_dir,
         size_t max_hot_key_count,
+        Int32 ttl,
+        const String & kv_options,
         SubstreamValueSerializer && value_serializer_,
         SubstreamValueDeserializer && value_deserializer_,
         LoggerPtr logger)
     {
         HybridHashTableConfig config;
-        config.spill_dir_path = spill_dir;
-        config.max_hot_key_count = max_hot_key_count;
+        config.base_conf.spill_dir_path = spill_dir;
+        config.base_conf.max_hot_key_count = max_hot_key_count;
+        config.base_conf.ttl = ttl;
+        config.base_conf.kv_options = kv_options;
 
         config.value_object_size = sizeof(T);
         config.align_value_object_size = alignof(T);
@@ -95,14 +99,14 @@ public:
     RocksCheckpointPtr createRocksCheckpoint(VersionType version)
     {
         table->flush();
-        auto rocks_holder = table->getRocksHolder();
-        chassert(rocks_holder);
-        return std::make_shared<RocksCheckpoint>(version, std::move(rocks_holder));
+        auto rocks = table->getRocksDB();
+        chassert(rocks);
+        return std::make_shared<RocksCheckpoint>(version, std::move(rocks));
     }
 
     void recoverFromRocksCheckpoint(RocksCheckpointPtr rocks_ckpt)
     {
-        rocks_ckpt->recover(table->getConfig().spill_dir_path);
+        rocks_ckpt->recover(table->getConfig().base_conf.spill_dir_path);
         table->reload();
     }
 

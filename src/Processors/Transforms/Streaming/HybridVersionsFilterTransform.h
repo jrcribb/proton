@@ -25,6 +25,7 @@ public:
         const std::string & version_column_name,
         std::string spill_dir,
         size_t max_hot_key_count,
+        const std::string & kv_options,
         bool backfill_key_unique_);
 
     ~HybridVersionsFilterTransform() override = default;
@@ -36,7 +37,8 @@ public:
     void recover(CheckpointContextPtr ckpt_ctx) override;
 
 private:
-    void createHashTable(const DataTypes & key_column_types, std::string spill_dir, size_t max_hot_key_count);
+    void
+    createHashTable(const DataTypes & key_column_types, std::string spill_dir, size_t max_hot_key_count, const std::string & kv_options);
 
     void transform(Chunk & chunk) override;
 
@@ -49,7 +51,8 @@ private:
 
     void transformToOutputColumns(Columns & columns) const;
 
-    RocksPtr getOrCreateRocks();
+    RocksDBPtr getOrCreateRocksDB(const HybridConfig & config);
+    RocksDBPtr getOrCreateRocksDB() { return getOrCreateRocksDB(config.base_conf); }
 
 private:
     std::vector<size_t> output_column_positions;
@@ -68,7 +71,7 @@ private:
     SERDE size_t late_rows = 0;
     HybridHashTableConfig config;
     SERDE HybridHashTableTemplate latest_version_map;
-    SERDE RocksPtr rocks;
+    SERDE RocksDBPtr rocks;
     FormatSettings format_settings;
 
     static constexpr Int64 log_metrics_interval_ms = 30'000;

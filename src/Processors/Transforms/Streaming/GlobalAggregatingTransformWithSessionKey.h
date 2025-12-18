@@ -2,6 +2,8 @@
 
 namespace DB::Streaming
 {
+
+/// Per session key tracking, aggregation and finalization
 class GlobalAggregatingTransformWithSessionKey final : public AggregatingTransform
 {
 public:

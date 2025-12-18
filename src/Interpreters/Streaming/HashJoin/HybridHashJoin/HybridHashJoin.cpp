@@ -21,12 +21,14 @@ HybridHashJoin::HybridHashJoin(
     JoinStreamDescriptionPtr left_join_stream_desc_,
     JoinStreamDescriptionPtr right_join_stream_desc_,
     const String & spill_dir_,
-    size_t max_hot_key_count_)
+    size_t max_hot_key_count_,
+    Int32 ttl_,
+    const String & kv_options_)
     : HashJoin(std::move(table_join_), std::move(left_join_stream_desc_), std::move(right_join_stream_desc_), "HybridHashJoin")
     , right_data(right_join_ctx)
     , left_data(left_join_ctx)
 {
-    installRocks(spill_dir_, max_hot_key_count_);
+    initRocksDBConfig(spill_dir_, max_hot_key_count_, ttl_, kv_options_);
 
     /// If right stream is key-value data stream semantic and our query plan pushes down the changelog transform
     /// initRightPrimaryKeyHashTable();
@@ -130,7 +132,11 @@ void HybridHashJoin::initHashMaps(HybridHashJoinMapsVariants & maps_variants, co
                   using HashTableTagged = std::decay_t<decltype(hash_table_template_tagged)>;
                   using TaggedType = typename HashTableTagged::TaggedType;
 
-                  auto config = base_config.getSubConfig(fmt::format("{}_{}", table_id, i));
+                  /// Left hash table and right hash table are in different column families of the same RocksDB.
+                  /// Differentiate by cf handle id
+                  HybridHashTableConfig config;
+                  config.base_conf = base_config.getSubConfig(fmt::format("{}_{}", table_id, i));
+
                   size_t row_size = sample_block_to_save.columns();
                   if (row_size == 0)
                   {

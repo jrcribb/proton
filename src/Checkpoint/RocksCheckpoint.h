@@ -2,7 +2,7 @@
 
 #include <Checkpoint/Checkpoint.h>
 #include <Common/Logger.h>
-#include <Common/Rocks/RocksHandler.h>
+#include <Common/Rocks/RocksDB.h>
 
 namespace rocksdb
 {
@@ -88,7 +88,7 @@ public:
     static constexpr std::string_view CKPT_POSTFIX = ".rckpt";
 
     explicit RocksCheckpoint(const DiskPath & ckpt_path);
-    RocksCheckpoint(VersionType version_, RocksPtr rocks);
+    RocksCheckpoint(VersionType version_, RocksDBPtr rocks);
     RocksCheckpoint(VersionType version_, std::unique_ptr<ReadBuffer> serialized_data, bool compressed);
 
     CheckpointType type() const override { return CheckpointType::Rocks; }
@@ -105,7 +105,7 @@ public:
 private:
     struct Entity
     {
-        RocksPtr rocks;
+        RocksDBPtr rocks;
     };
 
     struct SerializedEntity

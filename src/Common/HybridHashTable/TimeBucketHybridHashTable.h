@@ -84,7 +84,7 @@ public:
 
     HybridEmplaceResult emplaceKey(const K & key, bool disable_spill) { return emplaceKey(key, /*is_new_key=*/false, disable_spill); }
 
-    HybridEmplaceResult emplaceNewKey(const K & key) { return emplaceKey(key, /*is_new_key=*/true, /*disable_spill=*/false); }
+    HybridEmplaceResult emplaceNewKey(const K & key, bool disable_spill) { return emplaceKey(key, /*is_new_key=*/true, disable_spill); }
 
     /// Call shall call `spillIfNecessary()` after done with the values
     HybridEmplaceResults emplaceKeys(const std::vector<K> & keys) { return emplaceKeys(keys, /*is_new_keys=*/false); }
@@ -111,7 +111,9 @@ public:
     }
 
     /// Call shall call `spillIfNecessary()`
-    HybridFindResults findKeys(const std::vector<K> & keys)
+    HybridFindResults findKeys(const std::vector<K> & keys) { return findKeys(keys, /*disable_spill=*/true); }
+
+    HybridFindResults findKeys(const std::vector<K> & keys, bool disable_spill)
     {
         chassert(!keys.empty());
 
@@ -125,7 +127,7 @@ public:
             auto iter = bucket_tables.find(current_bucket);
             if (iter != bucket_tables.end())
             {
-                auto batch_results = iter->second->findKeys(keys.begin() + current_idx, keys.begin() + n, /*disable_spill=*/true);
+                auto batch_results = iter->second->findKeys(keys.begin() + current_idx, keys.begin() + n, disable_spill);
 
                 if (!batch_results.hasError())
                 {
@@ -209,7 +211,7 @@ public:
         return ErrorCodes::OK;
     }
 
-    int spillIfNecessary() { return spillIfNecessary(config.max_hot_key_count); }
+    int spillIfNecessary() { return spillIfNecessary(config.base_conf.max_hot_key_count); }
 
     int spillIfNecessary(size_t current_batch_size)
     {
@@ -220,6 +222,12 @@ public:
         }
 
         return ErrorCodes::OK;
+    }
+
+    void logMetrics(int64_t throttling_sec, std::string_view ht_name, std::string_view ht_id)
+    {
+        for (const auto & [_, impl] : bucket_tables)
+            impl->logMetrics(throttling_sec, ht_name, ht_id);
     }
 
     void flush()
@@ -428,7 +436,7 @@ private:
             [[maybe_unused]] auto [_, inserted] = bucket_tables.emplace(bucket, std::move(impl));
             chassert(inserted);
         }
-        return is_new_key ? table->emplaceNewKey(key) : table->emplaceKey(key, disable_spill);
+        return is_new_key ? table->emplaceNewKey(key, disable_spill) : table->emplaceKey(key, disable_spill);
     }
 
     HybridEmplaceResults emplaceKeys(const std::vector<K> & keys, bool is_new_keys)

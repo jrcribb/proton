@@ -30,10 +30,12 @@ public:
     /// With delay
     WindowInterval delay_interval;
 
-    /// After key expiration max span
-    WindowInterval key_max_span_interval;
-    String key_ts_col_name;
-    bool only_max_span = false;
+    /// EMIT AFTER SESSION CLOSE
+    WindowInterval session_max_span_interval;
+    String session_ts_col_name;
+    String session_start_col_name;
+    String session_end_col_name;
+    bool only_max_span_session = false;
 
     bool repeat = false;
     bool delta = false;

@@ -25,6 +25,7 @@ public:
         HashTableType hash_table_type_ = HashTableType::Memory,
         const std::string & spill_dir_ = "",
         size_t max_hot_keys_ = 0,
+        const std::string & kv_options = "",
         bool preserves_substream = true);
     /// proton: ends.
 
@@ -46,6 +47,7 @@ private:
     /// proton: starts.
     HashTableType hash_table_type;
     std::string spill_dir;
+    std::string kv_options;
     size_t max_hot_keys;
     /// proton: ends.
 };

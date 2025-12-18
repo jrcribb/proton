@@ -36,7 +36,7 @@ void WatermarkStamper::preProcess(const Block & header)
     {
         case EmitMode::None:
         case EmitMode::Tail:
-        case EmitMode::AfterKeyExpire:
+        case EmitMode::AfterSessionClose:
         {
             break;
         }
@@ -57,7 +57,7 @@ void WatermarkStamper::preProcess(const Block & header)
     }
 
     /// WITH EMIT TIMEOUT
-    if (params.mode != EmitMode::AfterKeyExpire && params.timeout_interval)
+    if (params.mode != EmitMode::AfterSessionClose && params.timeout_interval)
         initTimeoutTimer(params.timeout_interval);
 }
 
@@ -141,12 +141,11 @@ void WatermarkStamper::processWithMutedWatermark(Chunk & chunk)
         /// FIXME: handle ColumnSparse/ColumnConst
         auto time_col = chunk.getColumns()[time_col_pos]->convertToFullColumnIfSparse()->convertToFullColumnIfConst();
         if (params.window_params->time_col_is_datetime64)
-            max_event_ts = std::max<Int64>(
-                max_event_ts,
-                *std::ranges::max_element(assert_cast<const ColumnDateTime64 &>(*time_col).getData()));
+            max_event_ts
+                = std::max<Int64>(max_event_ts, *std::ranges::max_element(assert_cast<const ColumnDateTime64 &>(*time_col).getData()));
         else
-            max_event_ts = std::max<Int64>(
-                max_event_ts, *std::ranges::max_element(assert_cast<const ColumnDateTime &>(*time_col).getData()));
+            max_event_ts
+                = std::max<Int64>(max_event_ts, *std::ranges::max_element(assert_cast<const ColumnDateTime &>(*time_col).getData()));
     }
 
     processTimeout(chunk);

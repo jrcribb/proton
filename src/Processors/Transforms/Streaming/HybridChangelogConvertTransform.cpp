@@ -23,6 +23,7 @@ HybridChangelogConvertTransform::HybridChangelogConvertTransform(
     const std::string & version_column_name,
     std::string spill_dir,
     size_t max_hot_key_count,
+    const std::string & kv_options,
     bool backfill_key_unique_)
     : IProcessor({input_header}, {output_header}, ProcessorID::HybridChangelogConvertTransformID)
     , backfill_key_unique(backfill_key_unique_)
@@ -88,7 +89,7 @@ HybridChangelogConvertTransform::HybridChangelogConvertTransform(
         }
     }
 
-    createHashTable(key_column_types, std::move(spill_dir), max_hot_key_count);
+    createHashTable(key_column_types, std::move(spill_dir), max_hot_key_count, kv_options);
 
     LOG_INFO(
         logger,
@@ -336,7 +337,7 @@ void HybridChangelogConvertTransform::retractAndIndex(size_t rows, const ColumnR
                 chassert(one_row->row.empty());
                 one_row->resize(value_column_positions.size());
                 for (size_t i = 0; auto pos : value_column_positions)
-                    input_columns[pos]->get(row, one_row->row[i++]);       
+                    input_columns[pos]->get(row, one_row->row[i++]);
             }
 
             /// No need to generate retraction events when backfilling new keys
@@ -504,14 +505,16 @@ void HybridChangelogConvertTransform::transformEmptyChunk()
     chassert(!input_data.chunk);
 }
 
-void HybridChangelogConvertTransform::createHashTable(const DataTypes & key_column_types, std::string spill_dir, size_t max_hot_key_count)
+void HybridChangelogConvertTransform::createHashTable(
+    const DataTypes & key_column_types, std::string spill_dir, size_t max_hot_key_count, const std::string & kv_options)
 {
     /// init index hash table
     auto hash_method = chooseHybridHashMethod(key_column_types, /*needs_time_bucket=*/false);
     has_nullable_key = hash_method.has_nullable_key;
 
-    config.spill_dir_path.swap(spill_dir);
-    config.max_hot_key_count = max_hot_key_count;
+    config.base_conf.spill_dir_path.swap(spill_dir);
+    config.base_conf.max_hot_key_count = max_hot_key_count;
+    config.base_conf.kv_options = kv_options;
 
     if (value_column_positions.empty())
     {
@@ -544,11 +547,11 @@ void HybridChangelogConvertTransform::createHashTable(const DataTypes & key_colu
     }
 
     /// Install rocks handler getter
-    config.rocks_handler_getter = [this](const std::string & id) {
-        return getOrCreateRocks()->getOrCreateHandler(id);
+    config.base_conf.rocks_cf_handler_getter = [this](const HybridConfig & hybrid_config) {
+        return getOrCreateRocksDB(hybrid_config)->getOrCreateColumnFamilyHandler(hybrid_config.cf_handle_id, hybrid_config.ttl);
     };
 
-    /// Use another handler of rocks, different from the default \rocks_handler
+    /// Use another cf handler of rocks, different from the default rocks cf handler
     index.init(hash_method.type, config.getSubConfig("index"), hash_method.key_sizes, logger);
 
     key_sizes.swap(hash_method.key_sizes);

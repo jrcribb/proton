@@ -18,7 +18,8 @@ public:
         bool skip_stamping_for_backfill_data_,
         HashTableType hash_table_type_,
         const String & spill_dir_,
-        size_t max_hot_key_count_);
+        size_t max_hot_key_count_,
+        const String & kv_options_);
 
     ~WatermarkStepWithSubstream() override = default;
 
@@ -32,6 +33,7 @@ private:
     bool skip_stamping_for_backfill_data;
     HashTableType hash_table_type;
     String spill_dir;
+    String kv_options;
     size_t max_hot_key_count;
 };
 }

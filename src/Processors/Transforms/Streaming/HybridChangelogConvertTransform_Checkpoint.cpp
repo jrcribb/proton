@@ -14,11 +14,12 @@ extern const int RECOVER_CHECKPOINT_FAILED;
 
 namespace Streaming
 {
-RocksPtr HybridChangelogConvertTransform::getOrCreateRocks()
+RocksDBPtr HybridChangelogConvertTransform::getOrCreateRocksDB(const HybridConfig & hybrid_config)
 {
     /// Initialize rocks on first use
     if (!rocks)
-        rocks = Rocks::createOrLoadIfExists(config.getRocksOptions(), config.spill_dir_path, config.cleanup_on_disk_data, logger);
+        rocks = RocksDB::createOrLoadIfExists(
+            hybrid_config.getRocksOptions(), hybrid_config.spill_dir_path, /*ttl=*/0, hybrid_config.cleanup_on_disk_data, logger);
 
     return rocks;
 }
@@ -35,7 +36,7 @@ void HybridChangelogConvertTransform::checkpoint(CheckpointContextPtr ckpt_ctx)
         {
             chassert(!index.isTwoLevel());
             index.flush();
-            getOrCreateRocks()->getOrCreateHandler()->put("late_rows", late_rows);
+            getOrCreateRocksDB()->getDefaultColumnFamilyHandler()->put("late_rows", late_rows);
             ckpt = std::make_shared<RocksCheckpoint>(getVersion(), rocks);
             break;
         }
@@ -77,11 +78,12 @@ void HybridChangelogConvertTransform::recover(CheckpointContextPtr ckpt_ctx)
                 rocks.reset();
             }
 
-            rocks_ckpt->recover(config.spill_dir_path);
+            rocks_ckpt->recover(config.base_conf.spill_dir_path);
 
             /// Reinstall recovered rocks
-            rocks = Rocks::createOrLoadIfExists(config.getRocksOptions(), config.spill_dir_path, config.cleanup_on_disk_data, logger);
-            rocks->getOrCreateHandler()->get("late_rows", late_rows);
+            rocks = RocksDB::createOrLoadIfExists(
+                config.getRocksOptions(), config.base_conf.spill_dir_path, /*ttl=*/0, config.base_conf.cleanup_on_disk_data, logger);
+            rocks->getDefaultColumnFamilyHandler()->get("late_rows", late_rows);
             index.reload();
             break;
         }

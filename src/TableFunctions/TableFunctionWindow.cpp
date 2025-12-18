@@ -9,7 +9,7 @@
 #include <Interpreters/TreeRewriter.h>
 #include <Parsers/ASTFunction.h>
 #include <Parsers/ASTIdentifier.h>
-#include <Parsers/Streaming/ASTSessionRangeComparision.h>
+#include <Parsers/Streaming/ASTSessionBoundary.h>
 #include <Storages/StorageView.h>
 #include <Common/ProtonCommon.h>
 

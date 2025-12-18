@@ -3,7 +3,7 @@
 #include <Interpreters/Streaming/Aggregator/IAggregatedDataVariants.h>
 #include <Common/HybridHashTable/HybridHashTableTemplate.h>
 #include <Common/HybridKeyList/HybridKeyListTemplate.h>
-#include <Common/Rocks/RocksHandler.h>
+#include <Common/Rocks/RocksDB.h>
 #include <Common/serde.h>
 
 namespace DB::Streaming
@@ -32,14 +32,16 @@ SERDE struct HybridAggregatedDataVariants final : public IAggregatedDataVariants
     void deserialize(ReadBuffer & rb, const IAggregator & aggregator_) override;
 
     /// Write / read data to / from RocksDB
-    void write(RocksHandlerPtr rocks_handler, const IAggregator & aggregator_);
-    void read(RocksHandlerPtr rocks_handler, const IAggregator & aggregator_);
+    void write(RocksDBColumnFamilyHandlerPtr cf_handler, const IAggregator & aggregator_);
+    void read(RocksDBColumnFamilyHandlerPtr cf_handler, const IAggregator & aggregator_);
 
     void initWithoutKeyStates(size_t total_size_of_aggregate_states, size_t align_aggregate_states);
     void initWithoutKeyRetractStates(size_t total_size_of_aggregate_states, size_t align_aggregate_states);
 
     void reset() override;
     void resetRetractWithoutKey();
+
+    HybridConfig getSubConfig(std::string_view sub_name, bool unshared) const { return config.getSubConfig(sub_name, unshared); }
 
     SERDE std::string id;
     NO_SERDE const HybridAggregator * aggregator = nullptr;
@@ -88,13 +90,15 @@ SERDE struct HybridAggregatedDataVariants final : public IAggregatedDataVariants
     NO_SERDE std::function<void(AggregateDataPtr)> without_key_states_constructor;
     NO_SERDE std::function<void(AggregateDataPtr)> without_key_states_destructor;
 
+    HybridConfig config;
+
     HybridHashTableTemplate table;
     /// \changes is used to tracking changes since last emit
     HybridHashTableTemplate updates;
     /// \retracts is used to save last emits of each key
     HybridHashTableTemplate retracts;
 
-    /// Keep tracking outstanding keys for `EMIT AFTER KEY EXPIRE`
+    /// Keep tracking outstanding keys for `EMIT AFTER SESSION CLOSE`
     HybridKeyListTemplate outstanding_keys;
 
     /// V2 - outstanding keys is added

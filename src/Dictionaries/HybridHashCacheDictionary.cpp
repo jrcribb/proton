@@ -81,10 +81,10 @@ HybridHashCacheDictionary::HybridHashCacheDictionary(
 void HybridHashCacheDictionary::initHashTable()
 {
     HybridHashTableConfig config;
-    config.spill_dir_path = configuration.spill_dir_path;
-    config.ttl = configuration.ttl;
-    config.max_hot_key_count = configuration.max_hot_key_count;
-    config.cleanup_on_disk_data = configuration.cleanup_on_disk_data;
+    config.base_conf.spill_dir_path = configuration.spill_dir_path;
+    config.base_conf.ttl = configuration.ttl;
+    config.base_conf.max_hot_key_count = configuration.max_hot_key_count;
+    config.base_conf.cleanup_on_disk_data = configuration.cleanup_on_disk_data;
 
     config.value_object_size = sizeof(Cell);
     config.align_value_object_size = alignof(Cell);
@@ -689,7 +689,10 @@ bool HybridHashCacheDictionary::InsertBatch(const std::vector<String> & keys, co
         if (column->size() != keys.size())
         {
             LOG_ERROR(
-                logger, "Attribute column has {} rows, but expected exactly {} rows to match the number of keys", column->size(), keys.size());
+                logger,
+                "Attribute column has {} rows, but expected exactly {} rows to match the number of keys",
+                column->size(),
+                keys.size());
             return false;
         }
     }

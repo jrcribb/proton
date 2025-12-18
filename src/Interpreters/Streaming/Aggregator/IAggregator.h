@@ -74,21 +74,19 @@ public:
         size_t row_end,
         IAggregatedDataVariants & result,
         ColumnRawPtrs & key_columns,
-        AggregateColumns & aggregate_columns, /// Passed to not create them anew for each block
-        bool new_keys) const
+        AggregateColumns & aggregate_columns) const
         = 0;
 
-    /// executeAndFinalizeAfterKeyExpire aggregates columns and then finalize the expired keys. The finalized result will be returned.
+    /// executeAndFinalizeAfterSessionClose aggregates columns and then finalize the closed sesssions. The finalized result will be returned.
     /// After finalization, the expired keys will be removed from the aggregating hash table.
-    /// Used by `EMIT AFTER KEY EXPIRE`
-    virtual Block executeAndFinalizeAfterKeyExpire(
+    /// Used by `EMIT AFTER SESSION CLOSE`
+    virtual Block executeAndFinalizeAfterSessionClose(
         Columns columns,
         size_t row_begin,
         size_t row_end,
         IAggregatedDataVariants & result,
         ColumnRawPtrs & key_columns,
-        AggregateColumns & aggregate_columns, /// Passed to not create them anew for each block
-        bool new_keys) const
+        AggregateColumns & aggregate_columns) const /// Passed to not create them anew for each block
         = 0;
 
     ///  \param max_threads      - limits max threads for converting two level aggregate state in parallel
@@ -129,8 +127,11 @@ protected:
     /// For some streaming queries with `emit on update` or `emit changelog`, need tracking updates (with retract)
     bool needTrackUpdates() const noexcept { return params->tracking_updates_type != TrackingUpdatesType::None; }
 
-    bool trackingStateCount() const noexcept { return params->delta_col_pos >= 0 || params->tracking_updates_type == TrackingUpdatesType::UpdatesWithRetract; }
-    bool trackingStateTime() const noexcept { return params->emit_key_params.has_value(); }
+    bool trackingStateCount() const noexcept
+    {
+        return params->delta_col_pos >= 0 || params->tracking_updates_type == TrackingUpdatesType::UpdatesWithRetract;
+    }
+    bool trackingStateTime() const noexcept { return params->emit_session_params.has_value(); }
 
     void prepareAggregateInstructions(
         const Columns & columns,
@@ -153,6 +154,9 @@ protected:
     Block finalizeBlock(const Block & res_header, OutputBlockColumns && out_cols, bool final, size_t rows) const;
 
     void insertAggregatesIntoColumns(AggregateDataPtr mapped, const MutableColumns & final_aggregate_columns, Arena * arena) const;
+
+    void aggregateSingleRow(
+        AggregateDataPtr aggregate_data, AggregateFunctionInstruction * aggregate_instructions, size_t row_num, Arena * arena) const;
 
     void addAndInsertAggregatesIntoColumns(
         AggregateDataPtr aggregate_data,

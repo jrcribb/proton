@@ -40,6 +40,7 @@ ExpressionStep::ExpressionStep(
     HashTableType hash_table_type_,
     const std::string & spill_dir_,
     size_t max_hot_keys_,
+    const std::string & kv_options_,
     bool preserves_substream)
     : ITransformingStep(
           input_stream_,
@@ -48,6 +49,7 @@ ExpressionStep::ExpressionStep(
     , actions_dag(actions_dag_)
     , hash_table_type(hash_table_type_)
     , spill_dir(spill_dir_)
+    , kv_options(kv_options_)
     , max_hot_keys(max_hot_keys_)
 /// proton: ends.
 {
@@ -62,8 +64,7 @@ void ExpressionStep::transformPipeline(QueryPipelineBuilder & pipeline, const Bu
     /// proton: starts.
     bool with_substream = getInputStreams().front().with_substream;
     size_t transform_id = 0;
-    pipeline.addSimpleTransform([&](const Block & header) -> ProcessorPtr
-    {
+    pipeline.addSimpleTransform([&](const Block & header) -> ProcessorPtr {
         if (with_substream)
         {
             /// We need to deep clone the expression since the stateful functions in the expression will be switched for current substream
@@ -71,7 +72,8 @@ void ExpressionStep::transformPipeline(QueryPipelineBuilder & pipeline, const Bu
             if (transform_id > 0)
                 expression = expression->deepClone();
 
-            return std::make_shared<ExpressionTransformWithSubstream>(header, expression, hash_table_type, fmt::format("{}-{}", spill_dir, transform_id++), max_hot_keys);
+            return std::make_shared<ExpressionTransformWithSubstream>(
+                header, expression, hash_table_type, fmt::format("{}-{}", spill_dir, transform_id++), max_hot_keys, kv_options);
         }
         else
         {

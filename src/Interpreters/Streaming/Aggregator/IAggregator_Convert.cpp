@@ -14,6 +14,21 @@ IAggregator::insertAggregatesIntoColumns(AggregateDataPtr mapped, const MutableC
             mapped + offsets_of_aggregate_states[i], *final_aggregate_columns[i], arena); /// FIXME arena
 }
 
+ALWAYS_INLINE void IAggregator::aggregateSingleRow(
+    AggregateDataPtr aggregate_data, AggregateFunctionInstruction * aggregate_instructions, size_t row_num, Arena * arena) const
+{
+    for (size_t i = 0; i < params->aggregates_size; ++i)
+    {
+        auto * inst = aggregate_instructions + i;
+        auto place = aggregate_data + inst->state_offset;
+        chassert(!aggregate_instructions->delta_column);
+        inst->batch_that->add(place, inst->batch_arguments, row_num, arena);
+
+        if (inst->batch_that->isUserDefined())
+            inst->batch_that->flush(place);
+    }
+}
+
 ALWAYS_INLINE void IAggregator::addAndInsertAggregatesIntoColumns(
     AggregateDataPtr aggregate_data,
     AggregateFunctionInstruction * aggregate_instructions,

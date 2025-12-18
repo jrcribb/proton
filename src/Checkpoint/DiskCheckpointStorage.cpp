@@ -44,7 +44,7 @@ void DiskCheckpointStorage::preCheckpoint(CheckpointContextPtr ckpt_ctx) const
         {
             LOG_INFO(
                 logger,
-                "Directory '{}' already exists on disk {}, but it was marked to deleted, so clear all contents",
+                "Directory '{}' already exists on disk {}, but it was marked to deleted, so clear all data",
                 ckpt_dir,
                 disk->logName());
             clearDirectory(disk, ckpt_dir);
@@ -52,7 +52,7 @@ void DiskCheckpointStorage::preCheckpoint(CheckpointContextPtr ckpt_ctx) const
         /// Always clear ckpt root dir for initialization
         else if (ckpt_ctx->epoch.empty())
         {
-            LOG_INFO(logger, "Directory '{}' already exists on disk {}, clear all contents for initialization", ckpt_dir, disk->logName());
+            LOG_INFO(logger, "Directory '{}' already exists on disk {}, clear all data for initialization", ckpt_dir, disk->logName());
             clearDirectory(disk, ckpt_dir);
         }
         /// No committed-mark file for specified epoch
@@ -60,7 +60,7 @@ void DiskCheckpointStorage::preCheckpoint(CheckpointContextPtr ckpt_ctx) const
         {
             LOG_INFO(
                 logger,
-                "Directory '{}' already exists on disk {}, but it doesn't be committed, so clear all contents",
+                "Directory '{}' already exists on disk {}, but it doesn't be committed, so clear all data",
                 ckpt_dir,
                 disk->logName());
             clearDirectory(disk, ckpt_dir);

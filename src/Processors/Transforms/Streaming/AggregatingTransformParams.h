@@ -40,7 +40,7 @@ struct AggregatingTransformParams
     bool repeatEmit() const noexcept { return emit_repeat && !emit_changelog && emit_mode < EmitMode::OnUpdate; }
     bool deltaEmit() const noexcept { return emit_delta && !emit_changelog && emit_mode < EmitMode::OnUpdate; }
 
-    bool emitOnExecute() const noexcept { return emit_mode == EmitMode::AfterKeyExpire || emit_mode == EmitMode::PerEvent; }
+    bool emitOnExecute() const noexcept { return emit_mode == EmitMode::AfterSessionClose || emit_mode == EmitMode::PerEvent; }
 
     Block getHeader() const;
 };

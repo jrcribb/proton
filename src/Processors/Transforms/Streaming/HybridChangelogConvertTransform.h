@@ -23,6 +23,7 @@ public:
         const std::string & version_column_name,
         std::string spill_dir,
         size_t max_hot_key_count,
+        const std::string & kv_options,
         bool backfill_key_unique_);
 
     ~HybridChangelogConvertTransform() override = default;
@@ -39,7 +40,8 @@ public:
     static Block transformOutputHeader(const Block & output_header);
 
 private:
-    void createHashTable(const DataTypes & key_column_types, std::string spill_dir, size_t max_hot_key_count);
+    void
+    createHashTable(const DataTypes & key_column_types, std::string spill_dir, size_t max_hot_key_count, const std::string & kv_options);
 
     void transformEmptyChunk();
 
@@ -48,7 +50,8 @@ private:
 
     bool backfillingNewKeys() const noexcept { return backfill_key_unique && backfill_started && !backfill_done; }
 
-    RocksPtr getOrCreateRocks();
+    RocksDBPtr getOrCreateRocksDB(const HybridConfig & hybrid_config);
+    RocksDBPtr getOrCreateRocksDB() { return getOrCreateRocksDB(config.base_conf); }
 
 private:
     std::vector<size_t> key_column_positions;
@@ -83,7 +86,7 @@ private:
     /// Index blocks by key columns
     HybridHashTableConfig config;
     SERDE HybridHashTableTemplate index;
-    SERDE RocksPtr rocks;
+    SERDE RocksDBPtr rocks;
 
     static constexpr Int64 log_metrics_interval_ms = 30'000;
     int64_t last_log_ts = 0;

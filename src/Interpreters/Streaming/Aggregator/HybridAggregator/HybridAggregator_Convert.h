@@ -177,7 +177,7 @@ BlocksList HybridAggregator::convertToBlocksForAll(Table & table) const
         if (trackingStateCount())
         {
             table.forBatchValue(
-                std::min(max_block_size, table.getConfig().max_hot_key_count),
+                std::min(max_block_size, table.getConfig().base_conf.max_hot_key_count),
                 [&](const KeyGetter::KeyType & key, auto value, bool flush) {
                     auto mapped = static_cast<ConstAggregateDataPtr>(value.getMapped());
                     if (!TrackingCount::empty(mapped))
@@ -198,7 +198,7 @@ BlocksList HybridAggregator::convertToBlocksForAll(Table & table) const
         else
         {
             table.forBatchValue(
-                std::min(max_block_size, table.getConfig().max_hot_key_count),
+                std::min(max_block_size, table.getConfig().base_conf.max_hot_key_count),
                 [&](const KeyGetter::KeyType & key, auto value, bool flush) {
                     KeyGetter::insertKeyIntoColumns(key, out_cols.raw_key_columns, key_sizes_ref);
                     places.emplace_back(static_cast<ConstAggregateDataPtr>(value.getMapped()));
@@ -223,7 +223,7 @@ BlocksList HybridAggregator::convertToBlocksForAll(Table & table) const
         table.forBatchValue(
             max_block_size,
             [&](const KeyGetter::KeyType & key, auto value, bool flush) {
-                auto mapped = static_cast<ConstAggregateDataPtr>(value.getMapped());
+                const auto * mapped = static_cast<ConstAggregateDataPtr>(value.getMapped());
                 /// for non-UDA or UDA without emit strategy, 'should_emit' is always true.
                 /// For UDA with emit strategy, it is true only if the group should emit.
                 assert(aggregate_functions.size() == 1);
@@ -281,19 +281,36 @@ BlocksList HybridAggregator::convertToBlocksForUpdates(Table & table, Table * up
 
     BlocksList blocks;
 
+    size_t ttl_gc = 0;
+
     auto insert_columns = [&](const KeyGetter::KeyType & key) {
         auto find_result = table.findKey(key, /*disable_spill=*/true);
         if (find_result.hasError())
             throw Exception::createRuntime(find_result.errcode, find_result.errorString());
 
-        auto place = static_cast<ConstAggregateDataPtr>(find_result.getMapped());
+        const auto * place = static_cast<ConstAggregateDataPtr>(find_result.getMapped());
+        if (place == nullptr)
+        {
+            if (hybrid_params->aggregate_state_ttl > 0)
+            {
+                /// If TTL is enabled, it is possible the key was GCed from `table`
+                /// if TTL is not set correctly for `EMIT ON UPDATE WITH TIMEOUT 5m SETTING aggregate_state_ttl=3m`
+                /// Ignore this key
+                ++ttl_gc;
+                return;
+            }
+            else
+            {
+                throw Exception(ErrorCodes::LOGICAL_ERROR, "Key was updated but was not found in source aggregation hybrid hash table");
+            }
+        }
 
         /// Regular row
         KeyGetter::insertKeyIntoColumns(key, out_cols.raw_key_columns, key_sizes_ref);
         places.push_back(place);
 
         /// If reached max block size, finalize the block and start a new one
-        if (out_cols.key_columns[0]->size() >= max_block_size)
+        if (places.size() >= max_block_size)
         {
             blocks.emplace_back(insertResultsIntoColumns(places, std::move(out_cols), /*arena=*/nullptr));
             table.spillIfNecessary(places.size());
@@ -306,7 +323,24 @@ BlocksList HybridAggregator::convertToBlocksForUpdates(Table & table, Table * up
         if (find_result.hasError())
             throw Exception::createRuntime(find_result.errcode, find_result.errorString());
 
-        auto place = static_cast<ConstAggregateDataPtr>(find_result.getMapped());
+        const auto * place = static_cast<ConstAggregateDataPtr>(find_result.getMapped());
+        if (place == nullptr)
+        {
+            if (hybrid_params->aggregate_state_ttl > 0)
+            {
+                /// If TTL is enabled, it is possible the key was GCed from `table`
+                /// if TTL is not set correctly for `EMIT ON UPDATE WITH TIMEOUT 5m SETTING aggregate_state_ttl=3m`
+                /// Ignore this key
+                ++ttl_gc;
+                return;
+            }
+            else
+            {
+                throw Exception(
+                    ErrorCodes::LOGICAL_ERROR,
+                    "Key was updated and tracked in update hybrid hash table but was not found in main aggregation hybrid hash table");
+            }
+        }
 
         /// for non-UDA or UDA without emit strategy, 'should_emit' is always true.
         /// For UDA with emit strategy, it is true only if the group should emit.
@@ -323,7 +357,7 @@ BlocksList HybridAggregator::convertToBlocksForUpdates(Table & table, Table * up
         }
 
         /// If reached max block size, finalize the block and start a new one
-        if (out_cols.key_columns[0]->size() >= max_block_size)
+        if (places.size() >= max_block_size)
         {
             blocks.emplace_back(insertResultsIntoColumns(places, std::move(out_cols), /*arena=*/nullptr));
             table.spillIfNecessary(places.size());
@@ -339,6 +373,13 @@ BlocksList HybridAggregator::convertToBlocksForUpdates(Table & table, Table * up
 
     if (errcode != ErrorCodes::OK)
         throw Exception(errcode, "Failed to convert aggregate states to blocks, error_message'{}'", ErrorCodes::getName(errcode));
+
+    if (ttl_gc > 0)
+        LOG_WARNING(
+            logger,
+            "Found total_keys={} are garbage collected because of reaching TTL={} seconds",
+            ttl_gc,
+            hybrid_params->aggregate_state_ttl);
 
     if (!places.empty())
     {
@@ -409,7 +450,7 @@ BlocksList HybridAggregator::convertToBlocksForRetracts(Table & table, Table * r
             throw Exception::createRuntime(find_result.errcode, find_result.errorString());
 
         if (!find_result.isFound())
-            throw Exception(ErrorCodes::LOGICAL_ERROR, "Updated key is not found in source hash table");
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "Updated key is not found in main hybrid hash table");
 
         auto retract = static_cast<ConstAggregateDataPtr>(retract_value.getMapped());
         if (!TrackingCount::empty(retract + tracking_count_offset)) [[likely]]
@@ -484,6 +525,9 @@ BlocksList HybridAggregator::mergeAndConvertToBlocks(
 
     if (many_data_variants.size() == 1)
         return convertToBlocks(*many_data_variants.back(), max_threads, cparams);
+
+    if (std::ranges::all_of(many_data_variants, [](const auto & data_variants) { return data_variants->empty(); }))
+        return {};
 
     SCOPE_EXIT({
         bool clear_states = cparams.type == AggregatingConvertType::Normal && cparams.clear_state;
@@ -763,30 +807,56 @@ void HybridAggregator::mergeUpdates(
             continue;
 
         /// FIXME, batch
-        src_updates[i]->forEachKey([&](const Table::KeyType & key) {
-            auto find_result = srcs[i]->findKey(key, /*disable_spill=*/false);
-            if (find_result.hasError())
-                throw Exception::createRuntime(find_result.errcode, find_result.errorString());
+        if (trackingStateCount())
+        {
+            src_updates[i]->forEachKey([&](const Table::KeyType & key) {
+                auto find_result = srcs[i]->findKey(key, /*disable_spill=*/false);
+                if (find_result.hasError())
+                    throw Exception::createRuntime(find_result.errcode, find_result.errorString());
 
-            if (!find_result.isFound())
-                throw Exception(ErrorCodes::LOGICAL_ERROR, "Key is not found in source table");
+                if (find_result.isNotFound())
+                    throw Exception(ErrorCodes::LOGICAL_ERROR, "Key is not found in main hybrid hash table");
 
-            auto emplace_result = dst.emplaceKey(key, /*disable_spill=*/false);
-            if (emplace_result.hasError())
-                throw Exception::createRuntime(emplace_result.errorCode(), emplace_result.errorString());
+                auto emplace_result = dst.emplaceKey(key, /*disable_spill=*/false);
+                if (emplace_result.hasError())
+                    throw Exception::createRuntime(emplace_result.errorCode(), emplace_result.errorString());
 
-            auto src_mapped = static_cast<ConstAggregateDataPtr>(find_result.getMapped());
-            auto dst_mapped = static_cast<AggregateDataPtr>(emplace_result.getMutableMapped());
-            mergeAggregateStates(dst_mapped, src_mapped, &arena);
-        });
+                auto src_mapped = static_cast<ConstAggregateDataPtr>(find_result.getMapped());
+                auto dst_mapped = static_cast<AggregateDataPtr>(emplace_result.getMutableMapped());
+                mergeAggregateStates(dst_mapped, src_mapped, &arena);
+                TrackingCount::merge(dst_mapped + tracking_count_offset, src_mapped + tracking_count_offset);
+            });
+        }
+        else
+        {
+            src_updates[i]->forEachKey([&](const Table::KeyType & key) {
+                auto find_result = srcs[i]->findKey(key, /*disable_spill=*/false);
+                if (find_result.hasError())
+                    throw Exception::createRuntime(find_result.errcode, find_result.errorString());
+
+                if (find_result.isNotFound())
+                    throw Exception(ErrorCodes::LOGICAL_ERROR, "Key is not found in main hybrid hash table");
+
+                auto emplace_result = dst.emplaceKey(key, /*disable_spill=*/false);
+                if (emplace_result.hasError())
+                    throw Exception::createRuntime(emplace_result.errorCode(), emplace_result.errorString());
+
+                auto src_mapped = static_cast<ConstAggregateDataPtr>(find_result.getMapped());
+                auto dst_mapped = static_cast<AggregateDataPtr>(emplace_result.getMutableMapped());
+                mergeAggregateStates(dst_mapped, src_mapped, &arena);
+            });
+        }
     }
 }
+
 
 template <typename KeyGetter, typename Table>
 void HybridAggregator::mergeRetracts(
     Table & dst, Table * dst_retracts, const std::vector<Table *> & srcs, const std::vector<Table *> & src_retracts, Arena & arena) const
 {
     chassert(dst_retracts);
+    chassert(trackingStateCount());
+
     /// First, collect all retracted keys (including new keys) to dst_retracts
     /// For example:
     ///                 (thread)        (thread-2)      (thread-3)

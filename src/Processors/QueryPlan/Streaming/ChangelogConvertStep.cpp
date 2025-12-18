@@ -34,12 +34,14 @@ ChangelogConvertStep::ChangelogConvertStep(
     HashTableType hash_table_type_,
     const std::string & spill_dir_,
     size_t max_hot_keys_,
+    const std::string & kv_options_,
     bool backfill_key_unique_)
     : ITransformingStep(input_stream_, ChangelogConvertTransform::transformOutputHeader(output_header_), getTraits())
     , key_column_names(std::move(key_column_names_))
     , version_column_name(version_column_name_)
     , hash_table_type(hash_table_type_)
     , spill_dir(spill_dir_)
+    , kv_options(kv_options_)
     , max_hot_keys(max_hot_keys_)
     , backfill_key_unique(backfill_key_unique_)
 {
@@ -62,6 +64,7 @@ void ChangelogConvertStep::transformPipeline(QueryPipelineBuilder & pipeline, co
                     version_column_name,
                     fmt::format("{}-{}", spill_dir, transform_id++),
                     max_hot_keys,
+                    kv_options,
                     backfill_key_unique);
         }
     });

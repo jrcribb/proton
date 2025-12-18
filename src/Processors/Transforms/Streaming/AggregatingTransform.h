@@ -4,6 +4,7 @@
 #include <Processors/IProcessor.h>
 #include <Processors/Transforms/Streaming/AggregatingTransformParams.h>
 #include <Processors/Transforms/Streaming/ManyAggregatedData.h>
+#include <Common/HybridConfig.h>
 #include <Common/Stopwatch.h>
 #include <Common/serde.h>
 
@@ -50,8 +51,8 @@ private:
 
     void logAggregatingMetricsWithoutLock(Int64 start_ts = MonotonicMilliseconds::now());
 
-    void installRocks();
-    RocksPtr getOrCreateRocks();
+    void initRocksDBConfig();
+    RocksDBPtr getOrCreateRocksDB(const HybridConfig & config);
 
     CheckpointPtr createFileCheckpoint();
     void recoverFileCheckpoint(CheckpointPtr ckpt);

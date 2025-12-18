@@ -253,15 +253,27 @@ void RequiredSourceColumnsMatcher::visit(const ASTArrayJoin & node, const ASTPtr
 /// proton : starts
 void RequiredSourceColumnsMatcher::visit(const ASTEmitQuery & node, const ASTPtr &, Data & data)
 {
-    if (node.key_ts_col)
+    if (node.session_ts_col)
     {
-        if (const auto * identifier = node.key_ts_col->as<ASTIdentifier>())
+        if (const auto * identifier = node.session_ts_col->as<ASTIdentifier>())
             data.addColumnIdentifier(*identifier);
     }
-    else if (node.key_max_span_interval)
+    else if (node.session_max_span_interval)
     {
         ASTIdentifier ts_col(ProtonConsts::RESERVED_EVENT_TIME);
         data.addColumnIdentifier(ts_col);
+    }
+
+    if (node.session_start_col)
+    {
+        if (const auto * identifier = node.session_start_col->as<ASTIdentifier>())
+            data.addColumnIdentifier(*identifier);
+    }
+
+    if (node.session_end_col)
+    {
+        if (const auto * identifier = node.session_end_col->as<ASTIdentifier>())
+            data.addColumnIdentifier(*identifier);
     }
 }
 /// proton : ends

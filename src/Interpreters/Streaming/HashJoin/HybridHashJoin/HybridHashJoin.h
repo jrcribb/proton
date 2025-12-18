@@ -23,7 +23,9 @@ public:
         JoinStreamDescriptionPtr left_join_stream_desc_,
         JoinStreamDescriptionPtr right_join_stream_desc_,
         const String & spill_dir_,
-        size_t max_hot_key_count_);
+        size_t max_hot_key_count_,
+        Int32 ttl_,
+        const String & kv_options_);
 
     ~HybridHashJoin() noexcept override;
 
@@ -72,11 +74,12 @@ public:
 
     bool alwaysReturnsEmptySet() const override;
 
-    RocksPtr getOrCreateRocks();
+    RocksDBPtr getOrCreateRocksDB(const HybridConfig & config);
+    RocksDBPtr getOrCreateRocksDB() { return getOrCreateRocksDB(base_config); }
     void shutdownRocks();
     const String & getRocksDir() const { return base_config.spill_dir_path; }
 
-    void reinstallRocks();
+    void reinstallRocksDB();
 
 private:
     struct JoinData
@@ -87,7 +90,7 @@ private:
         SERDE HashIndexPtr index;
     };
 
-    void installRocks(const String & spill_dir_, size_t max_hot_key_count_);
+    void initRocksDBConfig(const String & spill_dir_, size_t max_hot_key_count_, Int32 ttl_, const String & kv_options_);
 
     void chooseHashMethod();
     void checkLimits() const;
@@ -164,8 +167,8 @@ private:
 private:
     friend struct HashIndex;
 
-    HybridHashTableConfig base_config;
-    RocksPtr rocks;
+    HybridConfig base_config;
+    RocksDBPtr rocks;
 
     /// Note: when left block joins right hashtable, use `right_data`
     SERDE JoinData right_data;
@@ -187,8 +190,14 @@ void deserializeHybridHashJoinMapsVariants(
     HybridHashJoinMapsVariants & indexes, ReadBuffer & rb, VersionType version, const HybridHashJoin & join);
 
 void writeHybridHashJoinMapsVariants(
-    HybridHashJoinMapsVariants & indexes, RocksHandlerPtr rocks_handler, std::string_view prefix_id, const HybridHashJoin & join);
+    HybridHashJoinMapsVariants & indexes,
+    RocksDBColumnFamilyHandlerPtr cf_handler,
+    std::string_view prefix_id,
+    const HybridHashJoin & join);
 void readHybridHashJoinMapsVariants(
-    HybridHashJoinMapsVariants & indexes, RocksHandlerPtr rocks_handler, std::string_view prefix_id, const HybridHashJoin & join);
+    HybridHashJoinMapsVariants & indexes,
+    RocksDBColumnFamilyHandlerPtr cf_handler,
+    std::string_view prefix_id,
+    const HybridHashJoin & join);
 }
 }

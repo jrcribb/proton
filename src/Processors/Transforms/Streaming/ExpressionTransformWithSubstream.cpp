@@ -19,7 +19,8 @@ ExpressionTransformWithSubstream::ExpressionTransformWithSubstream(
     ExpressionActionsPtr expression_,
     HashTableType hash_table_type,
     const String & spill_dir,
-    size_t max_hot_key_count)
+    size_t max_hot_key_count,
+    const String & kv_options)
     : ISimpleTransform(
           header_, transformHeader(header_, expression_->getActionsDAG()), false, ProcessorID::ExpressionTransformWithSubstreamID)
     , output_chunk_header(outputs.front().getHeader().getColumns(), 0)
@@ -30,7 +31,7 @@ ExpressionTransformWithSubstream::ExpressionTransformWithSubstream(
 {
     if (!stateful_function_builders.empty())
     {
-        initSubstreamHashMap(hash_table_type, spill_dir, max_hot_key_count);
+        initSubstreamHashMap(hash_table_type, spill_dir, max_hot_key_count, kv_options);
         setDescription(fmt::format(
             "stateful_funcs={}",
             fmt::join(
@@ -40,7 +41,7 @@ ExpressionTransformWithSubstream::ExpressionTransformWithSubstream(
 }
 
 void ExpressionTransformWithSubstream::initSubstreamHashMap(
-    HashTableType hash_table_type, const String & spill_dir, size_t max_hot_key_count)
+    HashTableType hash_table_type, const String & spill_dir, size_t max_hot_key_count, const String & kv_options)
 {
     auto value_serializer = [](const void * value, WriteBuffer & wb) {
         const auto & stateful_functions = *reinterpret_cast<const ValueType *>(value);
@@ -73,7 +74,13 @@ void ExpressionTransformWithSubstream::initSubstreamHashMap(
         case HashTableType::Hybrid:
         {
             substream_stateful_functions = std::make_unique<Streaming::HybridSubstreamHashMap<ValueType>>(
-                spill_dir + "_substream", max_hot_key_count, std::move(value_serializer), std::move(value_deserializer), logger);
+                spill_dir + "_substream",
+                max_hot_key_count,
+                /*ttl=*/0,
+                kv_options,
+                std::move(value_serializer),
+                std::move(value_deserializer),
+                logger);
             return;
         }
     }

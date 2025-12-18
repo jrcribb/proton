@@ -1,10 +1,5 @@
 #include <Processors/Transforms/Streaming/GlobalAggregatingTransformWithSessionKey.h>
 
-namespace DB::ErrorCodes
-{
-extern const int UNSUPPORTED;
-}
-
 namespace DB::Streaming
 {
 GlobalAggregatingTransformWithSessionKey::GlobalAggregatingTransformWithSessionKey(
@@ -19,8 +14,7 @@ GlobalAggregatingTransformWithSessionKey::GlobalAggregatingTransformWithSessionK
           ProcessorID::GlobalAggregatingTransformWithSessionKeyID)
 {
     chassert(params->params->group_by == IAggregatorParams::GroupBy::Other);
-    if (params->aggregatorType() != AggregatorType::Hybrid)
-        throw Exception(ErrorCodes::UNSUPPORTED, "EMIT AFTER KEY EXPIRE only supports Hybrid aggregator");
+    chassert(params->aggregatorType() == AggregatorType::Hybrid);
 }
 
 String GlobalAggregatingTransformWithSessionKey::getName() const

@@ -1,6 +1,5 @@
 #include <Processors/Transforms/Streaming/HybridDedupTransform.h>
 
-#include <Checkpoint/CheckpointContext.h>
 #include <Checkpoint/CheckpointCoordinator.h>
 #include <Columns/ColumnConst.h>
 #include <IO/ReadHelpers.h>
@@ -13,7 +12,11 @@
 namespace DB::Streaming
 {
 HybridDedupTransform::HybridDedupTransform(
-    const Block & input_header, const Block & output_header, TableFunctionDescriptionPtr dedup_func_desc_, const String & spill_dir)
+    const Block & input_header,
+    const Block & output_header,
+    TableFunctionDescriptionPtr dedup_func_desc_,
+    const String & spill_dir,
+    const String & kv_options)
     : ISimpleTransform(input_header, output_header, false, ProcessorID::HybridDedupTransformID)
     , dedup_func_desc(std::move(dedup_func_desc_))
     , chunk_header(output_header.getColumns(), 0)
@@ -21,7 +24,7 @@ HybridDedupTransform::HybridDedupTransform(
 {
     chassert(dedup_func_desc);
 
-    init(input_header, output_header, spill_dir);
+    init(input_header, output_header, spill_dir, kv_options);
 }
 
 void HybridDedupTransform::transform(Chunk & chunk)
@@ -64,7 +67,8 @@ void HybridDedupTransform::transform(Chunk & chunk)
     }
 }
 
-void HybridDedupTransform::init(const Block & input_header, const Block & output_header, const String & spill_dir)
+void HybridDedupTransform::init(
+    const Block & input_header, const Block & output_header, const String & spill_dir, const String & kv_options)
 {
     /// Calculate the positions of dependent columns in input chunk
     expr_column_positions.reserve(dedup_func_desc->input_columns.size());
@@ -85,10 +89,10 @@ void HybridDedupTransform::init(const Block & input_header, const Block & output
             output_column_positions.push_back(input_header.getPositionByName(col_with_type.name));
     }
 
-    initKeySet(spill_dir);
+    initKeySet(spill_dir, kv_options);
 }
 
-void HybridDedupTransform::initKeySet(const String & spill_dir)
+void HybridDedupTransform::initKeySet(const String & spill_dir, const String & kv_options)
 {
     UInt64 limit = 10000;
     Int64 limit_sec = -1;
@@ -135,10 +139,11 @@ void HybridDedupTransform::initKeySet(const String & spill_dir)
     }
 
     HybridHashTableConfig config;
-    config.spill_dir_path = spill_dir;
+    config.base_conf.spill_dir_path = spill_dir;
+    config.base_conf.max_hot_key_count = limit;
+    config.base_conf.ttl = static_cast<Int32>(limit_sec);
+    config.base_conf.kv_options = kv_options;
     config.installNoOpCallbacks();
-    config.max_hot_key_count = limit;
-    config.ttl = static_cast<int32_t>(limit_sec);
 
     auto key_serializer = [](const UInt128 & key, WriteBuffer & wb) {
         writeIntBinary(key, wb);

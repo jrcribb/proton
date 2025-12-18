@@ -60,7 +60,7 @@
 #include <Columns/ColumnNothing.h>
 #include <DataTypes/DataTypeFactory.h>
 #include <DataTypes/DataTypeNothing.h>
-#include <Parsers/Streaming/ASTSessionRangeComparision.h>
+#include <Parsers/Streaming/ASTSessionBoundary.h>
 #include <Common/ProtonCommon.h>
 /// proton: ends
 
@@ -715,7 +715,7 @@ void ActionsMatcher::visit(const ASTPtr & ast, Data & data)
     else if (auto * expression_list = ast->as<ASTExpressionList>())
         visit(*expression_list, ast, data);
     /// proton: starts. it's just a wrapper, so we only visit its children.
-    else if (ast->as<ASTSessionRangeComparision>())
+    else if (ast->as<ASTSessionBoundary>())
     {
         for (auto & child : ast->children)
             visit(child, data);

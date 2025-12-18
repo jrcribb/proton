@@ -40,10 +40,15 @@ public:
     bool proc_time = false; /// Proc time or event time processing.
 
     /// AFTER KEY EXPIRE [IDENTIFIED BY ts_col] WITH [ONLY] MAXSPAN <interval> AND TIMEOUT <interval>
-    ASTPtr key_ts_col;
-    ASTPtr key_max_span_interval;
-    /// Only emit keys with max span
-    bool only_max_span = false;
+    /// AFTER SESSION CLOSE [IDENTIFIED BY ts_col, session_start_bool_column, session_end_bool_column] WITH [ONLY] MAXSPAN <interval> AND TIMEOUT <interval>
+    ASTPtr session_ts_col;
+    ASTPtr session_start_col;
+    ASTPtr session_end_col;
+    ASTPtr session_max_span_interval;
+    /// Only emit session keys whose span >= max span
+    bool only_max_span_session = false;
+
+    bool emitAfterSessionClose() const noexcept { return session_max_span_interval != nullptr; }
 
     String getID(char) const override { return "Emit"; }
 

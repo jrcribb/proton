@@ -73,6 +73,8 @@ void AggregatingTransformWithSubstream::initSubstreamHashMap()
             substream_aggregates_data = std::make_unique<Streaming::HybridSubstreamHashMap<ValueType>>(
                 fmt::format("{}-{}_substream", hybrid_params->spill_dir_path, transform_id),
                 hybrid_params->max_hot_key_count,
+                hybrid_params->aggregate_state_ttl,
+                hybrid_params->kv_options,
                 std::move(value_serializer),
                 std::move(value_deserializer),
                 logger);

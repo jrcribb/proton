@@ -14,7 +14,8 @@ SERDE struct HashIndex
     explicit HashIndex(HybridHashJoin * join_, std::string_view id_);
 
     /// For range join
-    HashIndex(HybridHashJoin * join_, std::string_view id_, const RangeAsofJoinContext & range_asof_join_ctx_, const String & asof_column_name_);
+    HashIndex(
+        HybridHashJoin * join_, std::string_view id_, const RangeAsofJoinContext & range_asof_join_ctx_, const String & asof_column_name_);
 
     size_t index(LightChunkWithTimestamp && block);
     size_t index(LightChunkWithTimestamp && block, HybridHashJoinMapsVariantsPtr target_hash_index);
@@ -91,8 +92,8 @@ SERDE struct HashIndex
     void serialize(WriteBuffer & wb, VersionType version) const;
     void deserialize(ReadBuffer & rb, VersionType version);
 
-    void write(RocksHandlerPtr rocks_handler, VersionType version);
-    void read(RocksHandlerPtr rocks_handler, VersionType version);
+    void write(RocksDBColumnFamilyHandlerPtr cf_handler, VersionType version);
+    void read(RocksDBColumnFamilyHandlerPtr cf_handler, VersionType version);
 
     NO_SERDE HybridHashJoin * join;
     NO_SERDE std::string id;

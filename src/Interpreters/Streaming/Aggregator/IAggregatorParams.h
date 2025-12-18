@@ -8,15 +8,20 @@
 namespace DB::Streaming
 {
 
-struct EmitAfterKeyExpirationParams
+struct EmitAfterSessionCloseParams
 {
-    size_t key_ts_col_pos = 0;
+    size_t session_ts_col_pos = 0;
+    std::optional<size_t> session_start_pos;
+    std::optional<size_t> session_end_pos;
+
     /// Normalized, the span interval can be in milliseconds, microseconds, nanoseconds or seconds
     /// precision depending on `identified by ts` column's precision
-    uint64_t key_max_span_interval = 0;
+    uint64_t max_span_interval = 0;
     uint64_t timeout_interval_ms = 0;
     bool only_max_span = false;
-    uint64_t max_tracking_keys = 0;
+    bool merge_open_sessions = false;
+    bool include_session_end = true;
+    /// uint64_t max_hot_keys = 0;
 };
 
 struct IAggregatorParams
@@ -43,7 +48,7 @@ struct IAggregatorParams
         size_t window_keys_num_,
         WindowParamsPtr window_params_,
         size_t max_threads_,
-        std::optional<EmitAfterKeyExpirationParams> emit_key_params_,
+        std::optional<EmitAfterSessionCloseParams> emit_session_params_,
         bool compile_aggregate_expressions_,
         size_t min_count_to_compile_aggregate_expression_)
         : keys(keys_)
@@ -59,7 +64,7 @@ struct IAggregatorParams
         , window_keys_num(window_keys_num_)
         , window_params(std::move(window_params_))
         , max_threads(max_threads_)
-        , emit_key_params(emit_key_params_)
+        , emit_session_params(emit_session_params_)
         , compile_aggregate_expressions(compile_aggregate_expressions_)
         , min_count_to_compile_aggregate_expression(min_count_to_compile_aggregate_expression_)
     {
@@ -114,7 +119,7 @@ struct IAggregatorParams
 
     size_t max_threads = 0;
 
-    std::optional<EmitAfterKeyExpirationParams> emit_key_params;
+    std::optional<EmitAfterSessionCloseParams> emit_session_params;
     bool compile_aggregate_expressions;
     size_t min_count_to_compile_aggregate_expression;
 };

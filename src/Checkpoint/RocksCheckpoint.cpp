@@ -3,7 +3,6 @@
 #include <Compression/CompressedReadBuffer.h>
 #include <Compression/CompressedWriteBuffer.h>
 #include <Disks/DiskLocal.h>
-#include <IO/ReadBufferFromFile.h>
 #include <IO/ReadHelpers.h>
 #include <IO/WriteBufferFromFile.h>
 #include <IO/WriteHelpers.h>
@@ -59,7 +58,7 @@ bool RocksCheckpoint::enableIncremental(CheckpointConstPtr prev_ckpt)
     return false;
 }
 
-RocksCheckpoint::RocksCheckpoint(VersionType version_, RocksPtr rocks)
+RocksCheckpoint::RocksCheckpoint(VersionType version_, RocksDBPtr rocks)
 {
     version = version_;
     data.emplace<Entity>(rocks);
@@ -90,7 +89,7 @@ size_t RocksCheckpoint::materializeTo(const DiskPath & ckpt_path)
 
     if (ckpt_path.disk->exists(ckpt_path.path))
     {
-        LOG_WARNING(logger, "Rocks directory already exists, clear all contents: {}", ckpt_path.logName());
+        LOG_WARNING(logger, "Rocks directory already exists, clear all data: {}", ckpt_path.logName());
         ckpt_path.disk->removeRecursive(ckpt_path.path);
     }
 
@@ -411,7 +410,7 @@ size_t RocksCheckpoint::copyRocks(const DiskPath & from, const DiskPath & to) co
 
     if (to.disk->exists(to.path))
     {
-        LOG_WARNING(logger, "Rocks directory already exists, clear all contents: {}", to.logName());
+        LOG_WARNING(logger, "Rocks directory already exists, clear all data: {}", to.logName());
         to.disk->removeRecursive(to.path);
     }
 

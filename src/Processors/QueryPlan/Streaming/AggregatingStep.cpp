@@ -73,24 +73,24 @@ void AggregatingStep::transformPipeline(QueryPipelineBuilder & pipeline, const B
         if (params->group_by != IAggregatorParams::GroupBy::Other)
             throw Exception(ErrorCodes::UNSUPPORTED, "EMIT CHANGELOG is only supported in Streaming Global Aggregation");
 
-        if (emit_params->mode == EmitMode::AfterKeyExpire)
+        if (emit_params->mode == EmitMode::AfterSessionClose)
             throw Exception(ErrorCodes::UNSUPPORTED, "EMIT CHANGELOG with AFTER KEY EXPIRE is not supported");
 
         if (emit_params->mode == EmitMode::PerEvent)
             throw Exception(ErrorCodes::UNSUPPORTED, "EMIT CHANGELOG with PER EVENT is not supported");
     }
 
-    if (emit_params->mode == EmitMode::AfterKeyExpire && params->group_by != IAggregatorParams::GroupBy::Other)
-        throw Exception(ErrorCodes::UNSUPPORTED, "'EMIT AFTER KEY EXPIRE' can only be used in global aggregation");
+    if (emit_params->mode == EmitMode::AfterSessionClose && params->group_by != IAggregatorParams::GroupBy::Other)
+        throw Exception(ErrorCodes::UNSUPPORTED, "'EMIT AFTER SESSION CLOSE' can only be used in global aggregation");
 
     if (pipeline.getNumStreams() > 1 && !keys_already_sharded)
     {
-        if (emit_params->mode == EmitMode::AfterKeyExpire)
+        if (emit_params->mode == EmitMode::AfterSessionClose)
             throw Exception(
                 ErrorCodes::UNSUPPORTED,
-                "Data shuffling is required for multiple shards for `EMIT AFTER KEY EXPIRE`. Shuffle data by `shuffle by` or use query "
+                "Data shuffling is required for multiple shards for `EMIT AFTER SESSION CLOSE`. Shuffle data by `shuffle by` or use query "
                 "setting allow_independent_shard_processing=true if the data is already shuffled. For example, SELECT ... SHUFFLE BY "
-                "key_col1, key_col2, ... GROUP BY key_co1, key_col2, ... EMIT AFTER KEY EXPIRE ...;");
+                "key_col1, key_col2, ... GROUP BY key_co1, key_col2, ... EMIT AFTER SESSION CLOSE...;");
 
         if (emit_params->mode == EmitMode::PerEvent)
             throw Exception(
@@ -214,7 +214,7 @@ void AggregatingStep::transformPipeline(QueryPipelineBuilder & pipeline, const B
             else if (transform_params->params->group_by == IAggregatorParams::GroupBy::UserDefined)
                 return std::make_shared<UserDefinedEmitStrategyAggregatingTransform>(
                     header, transform_params, std::to_string(transform_id++));
-            else if (emit_params->mode == EmitMode::AfterKeyExpire)
+            else if (emit_params->mode == EmitMode::AfterSessionClose)
                 return std::make_shared<GlobalAggregatingTransformWithSessionKey>(header, transform_params, std::to_string(transform_id++));
             else
                 return std::make_shared<GlobalAggregatingTransform>(header, transform_params, std::to_string(transform_id++));
@@ -314,7 +314,7 @@ String AggregatingStep::getName() const
                 return "GlobalStreamingAggregating";
             case AggregatorType::Hybrid:
             {
-                if (emit_params->mode == EmitMode::AfterKeyExpire)
+                if (emit_params->mode == EmitMode::AfterSessionClose)
                     return "HybridGlobalStreamingAggregatingWithSessionKey";
                 else
                     return "HybridGlobalStreamingAggregating";
