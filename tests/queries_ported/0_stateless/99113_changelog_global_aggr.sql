@@ -5,12 +5,13 @@ DROP VIEW IF EXISTS 99113_mv4;
 DROP STREAM IF EXISTS 99113_kv;
 
 --- Single shard
-CREATE MUTABLE STREAM 99113_kv
+CREATE STREAM 99113_kv
 (
     `key` string,
     `value` int
 )
-PRIMARY KEY key;
+PRIMARY KEY key
+settings mode='versioned_kv';
 
 create materialized view 99113_mv as select key, sum(value) as max_v from 99113_kv group by key emit on update settings default_hash_table='memory' STORAGE_SETTINGS flush_threshold_count=1;
 create materialized view 99113_mv2 as select sum(value) as max_v from 99113_kv emit on update settings default_hash_table='memory' STORAGE_SETTINGS flush_threshold_count=1;
@@ -46,13 +47,13 @@ DROP VIEW IF EXISTS 99113_mv3;
 DROP VIEW IF EXISTS 99113_mv4;
 DROP STREAM IF EXISTS 99113_kv;
 
-CREATE MUTABLE STREAM 99113_kv
+CREATE STREAM 99113_kv
 (
     `key` string,
     `value` int
 )
 PRIMARY KEY key
-SETTINGS shards = 3;
+SETTINGS shards = 3, mode='versioned_kv';
 
 create materialized view 99113_mv as select key, sum(value) as max_v from 99113_kv group by key emit on update settings default_hash_table='memory' STORAGE_SETTINGS flush_threshold_count=1;
 create materialized view 99113_mv2 as select sum(value) as max_v from 99113_kv emit on update settings default_hash_table='memory' STORAGE_SETTINGS flush_threshold_count=1;
