@@ -1,6 +1,6 @@
 -- Test that with default join_algorithm setting, we are doing a parallel hash join
 
-SELECT value == 'direct,hash' FROM system.settings WHERE name = 'join_algorithm';
+SELECT value == 'hash,direct' FROM system.settings WHERE name = 'join_algorithm';
 SET join_algorithm='direct,parallel_hash,hash';
 
 EXPLAIN PIPELINE

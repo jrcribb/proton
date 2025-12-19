@@ -443,8 +443,6 @@ private:
     /// proton : starts
     bool appendPartitionBy(ExpressionActionsChain & chain, bool only_types, bool before_join);
     bool appendShuffleBy(ExpressionActionsChain & chain, bool only_types);
-
-    std::shared_ptr<IJoin> chooseJoinAlgorithmStreaming(std::shared_ptr<TableJoin> analyzed_join);
     /// proton : ends
 };
 

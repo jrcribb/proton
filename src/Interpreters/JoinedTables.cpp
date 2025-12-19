@@ -24,6 +24,10 @@
 #include <Storages/StorageJoin.h>
 #include <Storages/StorageValues.h>
 
+/// proton: starts.
+#include <Interpreters/Streaming/RewriteAsSubquery.h>
+/// proton: ends.
+
 namespace DB
 {
 

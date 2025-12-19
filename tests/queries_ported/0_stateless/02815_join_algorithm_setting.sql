@@ -4,8 +4,10 @@ SET query_mode='table';
 DROP STREAM IF EXISTS rdb;
 DROP STREAM IF EXISTS t2;
 
-CREATE MUTABLE STREAM rdb ( `key` uint32, `value` string )
-PRIMARY KEY key;
+CREATE STREAM rdb ( `key` uint32, `value` string )
+PRIMARY KEY key
+settings mode='versioned_kv', flush_threshold_count=1;
+
 select sleep(2) format Null;
 INSERT INTO rdb(key, value) VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (5, 'e');
 
@@ -13,7 +15,7 @@ CREATE STREAM t2 ( `k` uint16 );
 select sleep(2) format Null;
 INSERT INTO t2(k) VALUES (4), (5), (6);
 
-SELECT value == 'direct,hash' FROM system.settings WHERE name = 'join_algorithm';
+SELECT value == 'hash,direct' FROM system.settings WHERE name = 'join_algorithm';
 
 select sleep(2) format Null;
 SET join_algorithm = 'direct, parallel_hash, hash';
