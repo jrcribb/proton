@@ -537,7 +537,11 @@
     M(IOUringCQEsFailed, "Total number of completed io_uring CQEs with failures") \
 \
     M(ParallelReplicasAvailableCount, "Number of replicas available to execute a query with task-based parallel replicas") \
-    M(ParallelReplicasUnavailableCount, "Number of replicas which was chosen, but found to be unavailable during query execution with task-based parallel replicas")
+    M(ParallelReplicasUnavailableCount, "Number of replicas which was chosen, but found to be unavailable during query execution with task-based parallel replicas") \
+    \
+    M(S3CachedCredentialsProvidersReused, "Total number of reused credentials provider from the cache") \
+    M(S3CachedCredentialsProvidersAdded, "Total number of newly added credentials providers to the cache") \
+
 
 namespace ProfileEvents
 {

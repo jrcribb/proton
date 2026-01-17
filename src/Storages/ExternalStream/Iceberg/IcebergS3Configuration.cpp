@@ -3,6 +3,7 @@
 #if USE_AWS_S3 && USE_AVRO && USE_PARQUET
 
 #include <Interpreters/Context.h>
+#include <IO/S3/Client.h>
 
 namespace DB
 {
@@ -32,6 +33,11 @@ void IcebergS3Configuration::createClient(const ContextPtr & ctx)
         client_configuration.endpointOverride = url.endpoint;
     client_configuration.maxConnections = static_cast<unsigned>(request_settings.max_connections);
 
+    client_configuration.http_client = auth_settings.http_client;
+    client_configuration.service_account = auth_settings.service_account;
+    client_configuration.metadata_service = auth_settings.metadata_service;
+    client_configuration.request_token_path = auth_settings.request_token_path;
+
     auto headers = auth_settings.headers;
     if (!headers_from_ast.empty())
         headers.insert(headers.end(), headers_from_ast.begin(), headers_from_ast.end());
@@ -40,6 +46,7 @@ void IcebergS3Configuration::createClient(const ContextPtr & ctx)
         .use_virtual_addressing = url.is_virtual_hosted_style,
         .disable_checksum = ctx->getSettingsRef().s3_disable_checksum,
         .gcs_issue_compose_request = ctx->getConfigRef().getBool("s3.gcs_issue_compose_request", false),
+        .is_s3express_bucket = S3::isS3ExpressEndpoint(url.endpoint),
     };
 
     client = DB::S3::ClientFactory::instance().create(
@@ -51,11 +58,12 @@ void IcebergS3Configuration::createClient(const ContextPtr & ctx)
         auth_settings.server_side_encryption_kms_config,
         std::move(headers),
         S3::CredentialsConfiguration{
-            auth_settings.use_environment_credentials.value_or(true),
-            auth_settings.use_insecure_imds_request.value_or(ctx->getConfigRef().getBool("s3.use_insecure_imds_request", false)),
-            auth_settings.expiration_window_seconds.value_or(
+            .use_environment_credentials = auth_settings.use_environment_credentials.value_or(true),
+            .use_insecure_imds_request
+            = auth_settings.use_insecure_imds_request.value_or(ctx->getConfigRef().getBool("s3.use_insecure_imds_request", false)),
+            .expiration_window_seconds = auth_settings.expiration_window_seconds.value_or(
                 ctx->getConfigRef().getUInt64("s3.expiration_window_seconds", S3::DEFAULT_EXPIRATION_WINDOW_SECONDS)),
-            auth_settings.no_sign_request.value_or(ctx->getConfigRef().getBool("s3.no_sign_request", false)),
+            .no_sign_request = auth_settings.no_sign_request.value_or(ctx->getConfigRef().getBool("s3.no_sign_request", false)),
         },
         auth_settings.session_token);
 }

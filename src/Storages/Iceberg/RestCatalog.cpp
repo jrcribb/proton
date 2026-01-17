@@ -33,9 +33,10 @@
 namespace DB::ErrorCodes
 {
 extern const int AWS_ERROR;
+extern const int AUTHENTICATION_FAILED;
+extern const int BAD_ARGUMENTS;
 extern const int ICEBERG_CATALOG_ERROR;
 extern const int LOGICAL_ERROR;
-extern const int BAD_ARGUMENTS;
 }
 
 namespace CurrentMetrics
@@ -176,6 +177,8 @@ RestCatalog::RestCatalog(const std::string & warehouse_, const std::string & bas
     , DB::WithContext(context_)
     , base_url(correctAPIURI(base_url_))
     , log(getLogger("RestCatalog(" + warehouse_ + ")"))
+    , rest_auth_type(options.auth_type)
+    , gcp_project_id(options.gcp_project_id)
     , auth_scope(options.auth_scope)
     , oauth_server_uri(options.oauth_server_uri)
     , pool(CurrentMetrics::LocalThread, CurrentMetrics::LocalThreadActive, 1)
@@ -293,22 +296,79 @@ DB::HTTPHeaderEntries RestCatalog::getAuthHeaders(
         return headers;
     }
 
-    /// Option 3: user provided grant_type, client_id and client_secret.
-    /// We would make OAuthClientCredentialsRequest
-    /// https://github.com/apache/iceberg/blob/3badfe0c1fcf0c0adfc7aa4a10f0b50365c48cf9/open-api/rest-catalog-open-api.yaml#L3498C5-L3498C34
-    if (!client_id.empty())
+    /// Option 3: GCP OAuth
+    if (rest_auth_type == "gcp_oauth")
     {
         if (!access_token.has_value() || update_token)
-        {
-            access_token = retrieveAccessToken();
-        }
+            access_token = retrieveGCPOAuthAccessToken();
 
         DB::HTTPHeaderEntries headers;
         headers.emplace_back("Authorization", "Bearer " + access_token.value());
+
+        /// TODO: 'x-goog-user-project' is system parameter in using gcp no matter the auth type. Put it here as HTTP headers are set in variant functions.
+        if (!gcp_project_id.empty())
+            headers.emplace_back("x-goog-user-project", gcp_project_id);
+
         return headers;
     }
 
+    /// Option 4: user provided grant_type, client_id and client_secret.
+    /// We would make OAuthClientCredentialsRequest
+    /// https://github.com/apache/iceberg/blob/3badfe0c1fcf0c0adfc7aa4a10f0b50365c48cf9/open-api/rest-catalog-open-api.yaml#L3498C5-L3498C34
+    // if (!client_id.empty())
+    // {
+    //     if (!access_token.has_value() || update_token)
+    //     {
+    //         access_token = retrieveAccessToken();
+    //     }
+
+    //     DB::HTTPHeaderEntries headers;
+    //     headers.emplace_back("Authorization", "Bearer " + access_token.value());
+    //     return headers;
+    // }
+
     return {};
+}
+
+std::string RestCatalog::retrieveGCPOAuthAccessToken() const
+{
+    Poco::URI url{oauth_server_uri};
+    Poco::Net::HTTPRequest request(Poco::Net::HTTPRequest::HTTP_GET, url.toString(), Poco::Net::HTTPRequest::HTTP_1_1);
+    request.add("metadata-flavor", "Google");
+    const auto timeouts = DB::ConnectionTimeouts::getHTTPTimeouts(
+        getContext()->getSettingsRef(), /*http_keep_alive_timeout_=*/Poco::Timespan(/*seconds=*/30, /*microseconds=*/0));
+    auto session = makeHTTPSession(url, timeouts);
+    session->sendRequest(request);
+
+    String token_json_raw;
+    Poco::Net::HTTPResponse response;
+    try
+    {
+        auto & in = session->receiveResponse(response);
+        Poco::StreamCopier::copyToString(in, token_json_raw);
+    }
+    catch (const std::exception & ex)
+    {
+        throw DB::Exception(DB::ErrorCodes::AUTHENTICATION_FAILED, "Failed to request GCP OAuth token: {}", ex.what());
+    }
+
+    if (response.getStatus() != Poco::Net::HTTPResponse::HTTP_OK)
+        throw DB::Exception(DB::ErrorCodes::AUTHENTICATION_FAILED, "Failed to request GCP OAuth token: {}", response.getReason());
+
+    Poco::JSON::Parser parser;
+    auto object = parser.parse(token_json_raw).extract<Poco::JSON::Object::Ptr>();
+
+    if (!object->has("access_token") || !object->has("expires_in") || !object->has("token_type"))
+        throw DB::Exception(
+            DB::ErrorCodes::AUTHENTICATION_FAILED,
+            "Unexpected structure of response. Response should have fields: 'access_token', 'expires_in', 'token_type'");
+
+    auto token_type = object->getValue<String>("token_type");
+    if (token_type != "Bearer")
+        throw DB::Exception(
+            DB::ErrorCodes::AUTHENTICATION_FAILED, "Unexpected structure of response. Expected Bearer token, got {}", token_type);
+
+    return object->getValue<String>("access_token");
 }
 
 std::string RestCatalog::retrieveAccessToken() const

@@ -31,7 +31,16 @@ extern const int UNKNOWN_SETTING;
     DECLARE(String, storage_endpoint, "", "Storage endpoint", 0) \
     DECLARE(Bool, vended_credentials, false, "Use vended credentials (storage credentials) from catalog", 0) \
     DECLARE(String, storage_credential, "", "Credentials to be used for accessing the storage, if vended credentials are not used, format: 'username:password'", 0) \
-    DECLARE(String, credential, "", "Credentials to be used for accessing both the catalog service and the storage, if vended credentials are not used, format: 'username:password'", 0)
+    DECLARE(String, credential, "", "Credentials to be used for accessing both the catalog service and the storage, if vended credentials are not used, format: 'username:password'", 0) \
+    DECLARE(String, project_id, "", "GCP project that is billed for using the Iceberg REST catalog. Used to set HTTP header 'x-goog-user-project'", 0) \
+    DECLARE(String, auth_type, "", "Authentication type for rest and storage. Supported values: 'gcp_oauth'", 0) \
+    DECLARE(String, auth_service_account, "default", "GCP service account email or 'default' to use the instance's service account for authentication", 0) \
+    DECLARE(String, auth_metadata_service, "metadata.google.internal", "GCP metadata service endpoint", 0) \
+    DECLARE(String, \
+      auth_request_token_path, \
+      "computeMetadata/v1/instance/service-accounts", \
+      "Path to the GCP service account token on the metadata service", \
+      0)
 
 #define LIST_OF_DATABASE_ICEBERG_SETTINGS(M, ALIAS) DATABASE_ICEBERG_RELATED_SETTINGS(M, ALIAS)
 

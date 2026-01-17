@@ -143,6 +143,11 @@ S3::S3(
     configuration.auth_settings.region = settings->region;
     configuration.auth_settings.use_environment_credentials = settings->use_environment_credentials;
 
+    configuration.auth_settings.http_client = settings->http_client;
+    configuration.auth_settings.service_account = settings->service_account;
+    configuration.auth_settings.metadata_service = settings->metadata_service;
+    configuration.auth_settings.request_token_path = settings->request_token_path;
+
     configuration.request_settings.updateFromSettings(ctx_settings);
 
     FormatFactorySettings user_format_settings;

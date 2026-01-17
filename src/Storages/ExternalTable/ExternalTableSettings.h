@@ -22,7 +22,15 @@ class ASTStorage;
       "Supported values: auto, none, gzip, deflate, br, xz, zstd, lz4, bz2, and snappy. By default, it will autodetect compression " \
       "method by file extension from the object keys.", \
       0) \
-    M(Bool, use_environment_credentials, false, "", 0)
+    M(Bool, use_environment_credentials, false, "", 0) \
+    M(String, http_client, "", "HTTP Client type to make requests. Supported values: gcp_oauth", 0) \
+    M(String, service_account, "", "GCP service account email or 'default' to use the instance's service account for authentication", 0) \
+    M(String, metadata_service, "", "GCP metadata service endpoint (default: metadata.google.internal)", 0) \
+    M(String, \
+      request_token_path, \
+      "", \
+      "Path to the GCP service account token on the metadata service (default: computeMetadata/v1/instance/service-accounts)", \
+      0)
 
 #define DBMS_EXTERNAL_TABLE_SETTINGS(M, ALIAS) \
     M(String, address, "", "The address of the database server to connect", 0) \

@@ -2,7 +2,6 @@
 
 #include "config.h"
 
-#include <sstream>
 #include <string>
 #include <vector>
 
@@ -55,7 +54,12 @@ struct PocoHTTPClientConfiguration : public Aws::Client::ClientConfiguration
     bool for_disk_s3;
     ThrottlerPtr get_request_throttler;
     ThrottlerPtr put_request_throttler;
+
     HTTPHeaderEntries extra_headers;
+    String http_client;
+    String service_account;
+    String metadata_service;
+    String request_token_path;
 
     /// Not a client parameter in terms of HTTP and we won't send it to the server. Used internally to determine when connection have to be re-established.
     uint32_t http_keep_alive_timeout_ms = 0;
@@ -146,13 +150,7 @@ public:
 
 private:
 
-    void makeRequestInternal(
-        Aws::Http::HttpRequest & request,
-        std::shared_ptr<PocoHTTPResponse> & response,
-        Aws::Utils::RateLimits::RateLimiterInterface * readLimiter,
-        Aws::Utils::RateLimits::RateLimiterInterface * writeLimiter) const;
-
-    enum class S3MetricType
+    enum class S3MetricType : uint8_t
     {
         Microseconds,
         Count,
@@ -163,13 +161,15 @@ private:
         EnumSize,
     };
 
-    enum class S3MetricKind
+    enum class S3MetricKind : uint8_t
     {
         Read,
         Write,
 
         EnumSize,
     };
+
+    ConnectionTimeouts getTimeouts(const String & method, bool first_attempt, bool first_byte) const;
 
     template <bool pooled>
     void makeRequestInternalImpl(
@@ -179,9 +179,13 @@ private:
         Aws::Utils::RateLimits::RateLimiterInterface * readLimiter,
         Aws::Utils::RateLimits::RateLimiterInterface * writeLimiter) const;
 
-    ConnectionTimeouts getTimeouts(const String & method, bool first_attempt, bool first_byte) const;
-
 protected:
+    virtual void makeRequestInternal(
+        Aws::Http::HttpRequest & request,
+        std::shared_ptr<PocoHTTPResponse> & response,
+        Aws::Utils::RateLimits::RateLimiterInterface * readLimiter,
+        Aws::Utils::RateLimits::RateLimiterInterface * writeLimiter) const;
+
     static S3MetricKind getMetricKind(const Aws::Http::HttpRequest & request);
     void addMetric(const Aws::Http::HttpRequest & request, S3MetricType type, ProfileEvents::Count amount = 1) const;
 
@@ -207,6 +211,35 @@ protected:
 
     size_t http_connection_pool_size = 0;
     bool wait_on_pool_size_limit = true;
+};
+
+class PocoHTTPClientGCPOAuth : public PocoHTTPClient
+{
+public:
+    explicit PocoHTTPClientGCPOAuth(const PocoHTTPClientConfiguration & client_configuration);
+
+    std::string getBearerToken() const;
+private:
+    void makeRequestInternal(
+        Aws::Http::HttpRequest & request,
+        std::shared_ptr<PocoHTTPResponse> & response,
+        Aws::Utils::RateLimits::RateLimiterInterface * readLimiter,
+        Aws::Utils::RateLimits::RateLimiterInterface * writeLimiter) const override;
+
+    struct BearerToken
+    {
+        String token;
+        std::chrono::system_clock::time_point is_valid_to;
+    };
+
+    const String service_account;
+    const String metadata_service;
+    const String request_token_path;
+
+    mutable std::mutex mutex;
+    mutable std::optional<BearerToken> bearer_token TSA_GUARDED_BY(mutex);
+
+    BearerToken requestBearerToken() const TSA_REQUIRES(mutex);
 };
 
 }

@@ -308,7 +308,8 @@ void IcebergSink::commit()
 
     Apache::Iceberg::Requirements requirements;
     requirements.reserve(2);
-    requirements.push_back(std::make_unique<Apache::Iceberg::AssertRefSnapshotID>("main", metadata.getSnapshotID()));
+    if (metadata.getSnapshotID() > 0)
+        requirements.push_back(std::make_unique<Apache::Iceberg::AssertRefSnapshotID>("main", metadata.getSnapshotID()));
     requirements.push_back(std::make_unique<Apache::Iceberg::AssertTableUUID>(metadata.getTableUUID()));
 
     /// TODO

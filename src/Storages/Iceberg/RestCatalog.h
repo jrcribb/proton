@@ -36,6 +36,9 @@ public:
         bool enable_sigv4{false};
         std::string signing_region;
         std::string signing_name;
+
+        std::string auth_type;
+        std::string gcp_project_id;
     };
 
 private:
@@ -123,6 +126,7 @@ private:
         bool update_token = false) const;
 
     std::string retrieveAccessToken() const;
+    std::string retrieveGCPOAuthAccessToken() const;
 
     Config loadConfig();
 
@@ -131,6 +135,9 @@ private:
 
     /// Catalog configuration settings from /v1/config endpoint.
     Config config;
+
+    std::string rest_auth_type;
+    std::string gcp_project_id;
 
     /// Auth headers of format: "Authorization": "<auth_scheme> <token>"
     std::optional<DB::HTTPHeaderEntry> auth_header;

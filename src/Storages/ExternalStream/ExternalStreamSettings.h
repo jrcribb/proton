@@ -66,7 +66,15 @@ class ASTStorage;
     M(UInt64, io_threads, 1, "Set the number of IO threads to be used by the Pulsar client. Default is 1 thread.", 0)
 
 #define ICEBERG_EXTERNAL_STREAM_SETTINGS(M, ALIAS) \
-    M(String, iceberg_storage_endpoint, "", "Endpoint for data storage.", 0)
+    M(String, iceberg_storage_endpoint, "", "Endpoint for data storage.", 0) \
+    M(String, http_client, "", "HTTP Client type to make requests. Supported values: gcp_oauth", 0) \
+    M(String, service_account, "", "GCP service account email or 'default' to use the instance's service account for authentication", 0) \
+    M(String, metadata_service, "", "GCP metadata service endpoint (default: metadata.google.internal)", 0) \
+    M(String, \
+      request_token_path, \
+      "", \
+      "Path to the GCP service account token on the metadata service (default: computeMetadata/v1/instance/service-accounts)", \
+      0)
 
 /// HTTP also uses:
 ///    M(String, ssl_ca_cert_file, "", "The path of ssl ca cert file", 0)
