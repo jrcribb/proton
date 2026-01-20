@@ -23,3 +23,4 @@ __attribute__((weak)) void *aws_tls_handler_protocol() { return nullptr; }
 __attribute__((weak)) int aws_tls_is_alpn_available() { return 0; }
 
 } // extern "C"
+
