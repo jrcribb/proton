@@ -68,11 +68,9 @@ namespace ErrorCodes
     extern const int TIMEOUT_EXCEEDED;
     extern const int STREAM_WAS_NOT_DROPPED;
     /// proton: starts
-    extern const int CANNOT_CREATE_TASK;
     extern const int CANNOT_DROP_FORMAT_SCHEMA_CACHE;
     /// proton: ends
 }
-
 
 namespace ActionLocks
 {
@@ -367,7 +365,7 @@ BlockIO InterpreterSystemQuery::execute()
 
             auto & metastore = Globals::getMetaStore();
             auto drop_cache_req = std::make_shared<cluster::DropFormatSchemaCacheRequest>(
-                    std::move(caches_to_drop), current_context->getNodeID(), timeout_ms, /*request_version_=*/1);
+                std::move(caches_to_drop), current_context->getNodeID(), timeout_ms, /*request_version_=*/1);
             auto system_command_resp = metastore.dropFormatSchemaCache(std::move(drop_cache_req));
             if (system_command_resp->hasError())
             {
@@ -567,6 +565,10 @@ BlockIO InterpreterSystemQuery::execute()
         {
             executeResumeTask(query);
             break;
+        }
+        case Type::EXECUTE_TASK:
+        {
+            return executeExecuteTask(query);
         }
         case Type::INSTALL_PYTHON_PACKAGE:
         {
@@ -817,6 +819,7 @@ AccessRightsElements InterpreterSystemQuery::getRequiredAccessForDDLOnCluster() 
         }
         case Type::PAUSE_TASK:
         case Type::RESUME_TASK:
+        case Type::EXECUTE_TASK:
         {
             break;
         }
@@ -830,79 +833,4 @@ void InterpreterSystemQuery::extendQueryLogElemImpl(QueryLogElement & elem, cons
 {
     elem.query_kind = "System";
 }
-
-/// proton: starts
-void InterpreterSystemQuery::updateTaskStatus(String database, const String & task_name, uint32_t new_status)
-{
-    if (database.empty())
-        database = getContext()->getCurrentDatabase();
-
-    getContext()->checkAccess(AccessType::SYSTEM_TASK, database, task_name);
-
-    const auto & meta_store = Globals::getMetaStore();
-    auto req = std::make_shared<cluster::GetTaskRequest>(
-        database,
-        task_name,
-        /*versions_requested=*/1,
-        meta_store.nodeID(),
-        /*consistent_read=*/false,
-        /*timeout_ms=*/10000,
-        /*request_version=*/1);
-
-    auto & metastore = Globals::getMetaStore();
-    auto resp = metastore.getTask(std::move(req));
-    if (resp->hasError())
-        throw Exception(
-            resp->error().error_code, "Failed to load task {} in database {}, error={{{}}}", task_name, database, resp->error().string());
-
-    if (resp->data().descs.size() != 1)
-        throw Exception(
-            resp->error().error_code,
-            "Get invalid number of TaskDescriptor: database={} task={} "
-            "descriptors={}",
-            database,
-            task_name,
-            resp->data().descs.size());
-
-    auto & desc = resp->data().descs[0];
-    if (desc->status == new_status)
-        return;
-
-    auto alter_task_req = std::make_shared<cluster::AlterTaskRequest>(
-        desc->ns,
-        desc->name,
-        desc->id,
-        desc->data_version,
-        new_status,
-        getContext()->getUserName(),
-        meta_store.nodeID(),
-        /*timeout_ms=*/10000,
-        /*request_version=*/1);
-
-    auto alter_task_resp = metastore.alterTask(std::move(alter_task_req));
-    if (alter_task_resp->hasError())
-    {
-        const auto & err = alter_task_resp->error();
-        throw Exception(
-            ErrorCodes::CANNOT_CREATE_TASK,
-            "Failed to set task status: database={} task={} "
-            "new_status={} error={{{}}}",
-            database,
-            task_name,
-            new_status,
-            err.error_message);
-    }
-}
-
-void InterpreterSystemQuery::executePauseTask(const ASTSystemQuery & system)
-{
-    updateTaskStatus(system.getDatabase(), system.getTable(), 1);
-}
-
-void InterpreterSystemQuery::executeResumeTask(const ASTSystemQuery & system)
-{
-    updateTaskStatus(system.getDatabase(), system.getTable(), 0);
-}
-/// proton: ends
-
 }

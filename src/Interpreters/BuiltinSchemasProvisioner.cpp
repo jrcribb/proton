@@ -124,19 +124,20 @@ const char * proton_log_ddl = R"(CREATE EXTERNAL STREAM system.proton_log(
     COMMENT 'version 1';)";
 
 const char * task_execution_state_ddl = R"(CREATE STREAM system.task_execution_state(
-    id uuid,
+    database string,
+    name string,
+    uuid uuid,
     version uint32,
     checkpoint string,
-    last_execution_node uint32,
-    last_execution_start datetime,
-    last_execution_end datetime,
+    last_execution_node uint64,
+    last_execution_start datetime64(3, 'UTC'),
+    last_execution_end datetime64(3, 'UTC'),
     last_execution_result string
 )
+PRIMARY KEY (uuid, version)
 TTL to_datetime(_tp_time) + INTERVAL 3 MONTH DELETE
-PRIMARY KEY (id, version)
 SETTINGS mode='versioned_kv'
-COMMENT 'version 1';)";
-
+COMMENT 'version 2';)";
 }
 
 void BuiltinSchemasProvisioner::addOtherBuiltinSchemas(const Poco::Util::AbstractConfiguration & config)
