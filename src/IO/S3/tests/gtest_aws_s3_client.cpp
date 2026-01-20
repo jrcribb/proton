@@ -105,7 +105,14 @@ void doWriteRequest(std::shared_ptr<const DB::S3::Client> client, const DB::S3::
 
     DB::S3Settings::RequestSettings request_settings;
     request_settings.max_unexpected_write_error_retries = max_unexpected_write_error_retries;
-    DB::WriteBufferFromS3 write_buffer(client, uri.bucket, uri.key, DBMS_DEFAULT_BUFFER_SIZE, request_settings, {});
+    DB::WriteBufferFromS3 write_buffer(
+        client,
+        uri.bucket,
+        uri.key,
+        DBMS_DEFAULT_BUFFER_SIZE,
+        request_settings,
+        {}
+    );
 
     write_buffer.write('\0'); // doesn't matter what we write here, just needs to be something
     write_buffer.finalize();
@@ -164,8 +171,12 @@ void testServerSideEncryption(
         server_side_encryption_customer_key_base64,
         sse_kms_config,
         headers,
-        DB::S3::CredentialsConfiguration{
-            .use_environment_credentials = use_environment_credentials, .use_insecure_imds_request = use_insecure_imds_request});
+        DB::S3::CredentialsConfiguration
+        {
+            .use_environment_credentials = use_environment_credentials,
+            .use_insecure_imds_request = use_insecure_imds_request,
+        }
+    );
 
     ASSERT_TRUE(client);
 

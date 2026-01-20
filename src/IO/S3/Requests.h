@@ -92,6 +92,12 @@ public:
         return BaseRequest::GetChecksumAlgorithmName();
     }
 
+    /// TODO Understand what is it. Maybe we need it...
+    bool IsStreaming() const override
+    {
+        return false;
+    }
+
     std::string getRegionOverride() const
     {
         return region_override;
