@@ -54,10 +54,7 @@ struct ClientCache
 {
     ClientCache() = default;
 
-    ClientCache(const ClientCache & other)
-        : region_for_bucket_cache(other.region_for_bucket_cache)
-        , uri_for_bucket_cache(other.uri_for_bucket_cache)
-    {}
+    ClientCache(const ClientCache & other);
 
     ClientCache(ClientCache && other) = delete;
 
@@ -66,11 +63,11 @@ struct ClientCache
 
     void clearCache();
 
-    std::mutex region_cache_mutex;
-    std::unordered_map<std::string, std::string> region_for_bucket_cache;
+    mutable std::mutex region_cache_mutex;
+    std::unordered_map<std::string, std::string> region_for_bucket_cache TSA_GUARDED_BY(region_cache_mutex);
 
-    std::mutex uri_cache_mutex;
-    std::unordered_map<std::string, URI> uri_for_bucket_cache;
+    mutable std::mutex uri_cache_mutex;
+    std::unordered_map<std::string, URI> uri_for_bucket_cache TSA_GUARDED_BY(uri_cache_mutex);
 };
 
 class ClientCacheRegistry
@@ -89,7 +86,24 @@ private:
     ClientCacheRegistry() = default;
 
     std::mutex clients_mutex;
-    std::unordered_map<ClientCache *, std::weak_ptr<ClientCache>> client_caches;
+    std::unordered_map<ClientCache *, std::weak_ptr<ClientCache>> client_caches TSA_GUARDED_BY(clients_mutex);
+};
+
+struct ClientSettings
+{
+    bool use_virtual_addressing = false;
+    /// Disable checksum to avoid extra read of the input stream
+    bool disable_checksum = false;
+    /// Should client send ComposeObject request after upload to GCS.
+    ///
+    /// Previously ComposeObject request was required to make Copy possible,
+    /// but not anymore (see [1]).
+    ///
+    ///   [1]: https://cloud.google.com/storage/docs/release-notes#June_23_2023
+    ///
+    /// Ability to enable it preserved since likely it is required for old
+    /// files.
+    bool gcs_issue_compose_request = false;
 };
 
 /// Client that improves the client from the AWS SDK
@@ -117,7 +131,7 @@ public:
             const std::shared_ptr<Aws::Auth::AWSCredentialsProvider> & credentials_provider,
             const PocoHTTPClientConfiguration & client_configuration,
             Aws::Client::AWSAuthV4Signer::PayloadSigningPolicy sign_payloads,
-            bool use_virtual_addressing,
+            const ClientSettings & client_settings,
             std::shared_ptr<RetryContext> retry_context_); /// proton: added retry_context_
 
     std::unique_ptr<Client> clone() const;
@@ -197,29 +211,31 @@ public:
 
     bool bucketExists(const std::string & bucket) const; /// proton: added
 
-    Model::HeadObjectOutcome HeadObject(const HeadObjectRequest & request) const;
-    Model::ListObjectsV2Outcome ListObjectsV2(const ListObjectsV2Request & request) const;
-    Model::ListObjectsOutcome ListObjects(const ListObjectsRequest & request) const;
-    Model::GetObjectOutcome GetObject(const GetObjectRequest & request) const;
+    Model::HeadObjectOutcome HeadObject(HeadObjectRequest & request) const;
+    Model::ListObjectsV2Outcome ListObjectsV2(ListObjectsV2Request & request) const;
+    Model::ListObjectsOutcome ListObjects(ListObjectsRequest & request) const;
+    Model::GetObjectOutcome GetObject(GetObjectRequest & request) const;
 
-    Model::AbortMultipartUploadOutcome AbortMultipartUpload(const AbortMultipartUploadRequest & request) const;
-    Model::CreateMultipartUploadOutcome CreateMultipartUpload(const CreateMultipartUploadRequest & request) const;
-    Model::CompleteMultipartUploadOutcome CompleteMultipartUpload(const CompleteMultipartUploadRequest & request) const;
-    Model::UploadPartOutcome UploadPart(const UploadPartRequest & request) const;
-    Model::UploadPartCopyOutcome UploadPartCopy(const UploadPartCopyRequest & request) const;
+    Model::AbortMultipartUploadOutcome AbortMultipartUpload(AbortMultipartUploadRequest & request) const;
+    Model::CreateMultipartUploadOutcome CreateMultipartUpload(CreateMultipartUploadRequest & request) const;
+    Model::CompleteMultipartUploadOutcome CompleteMultipartUpload(CompleteMultipartUploadRequest & request) const;
+    Model::UploadPartOutcome UploadPart(UploadPartRequest & request) const;
+    Model::UploadPartCopyOutcome UploadPartCopy(UploadPartCopyRequest & request) const;
 
-    Model::CopyObjectOutcome CopyObject(const CopyObjectRequest & request) const;
-    Model::PutObjectOutcome PutObject(const PutObjectRequest & request) const;
-    Model::DeleteObjectOutcome DeleteObject(const DeleteObjectRequest & request) const;
-    Model::DeleteObjectsOutcome DeleteObjects(const DeleteObjectsRequest & request) const;
+    Model::CopyObjectOutcome CopyObject(CopyObjectRequest & request) const;
+    Model::PutObjectOutcome PutObject(PutObjectRequest & request) const;
+    Model::DeleteObjectOutcome DeleteObject(DeleteObjectRequest & request) const;
+    Model::DeleteObjectsOutcome DeleteObjects(DeleteObjectsRequest & request) const;
 
     using ComposeObjectOutcome = Aws::Utils::Outcome<Aws::NoResult, Aws::S3::S3Error>;
-    ComposeObjectOutcome ComposeObject(const ComposeObjectRequest & request) const;
 
     using Aws::S3::S3Client::EnableRequestProcessing;
     using Aws::S3::S3Client::DisableRequestProcessing;
 
-    ProviderType getProviderType() const;
+    void BuildHttpRequest(const Aws::AmazonWebServiceRequest& request,
+                          const std::shared_ptr<Aws::Http::HttpRequest>& httpRequest) const override;
+
+    bool supportsMultiPartCopy() const;
 
     void cancel() const
     {
@@ -235,7 +251,7 @@ private:
            const std::shared_ptr<Aws::Auth::AWSCredentialsProvider> & credentials_provider_,
            const PocoHTTPClientConfiguration & client_configuration,
            Aws::Client::AWSAuthV4Signer::PayloadSigningPolicy sign_payloads,
-           bool use_virtual_addressing,
+           const ClientSettings & client_settings_,
            std::shared_ptr<Client::RetryContext> retry_context_); /// proton: added retry_context_
 
     Client(
@@ -259,9 +275,11 @@ private:
     using Aws::S3::S3Client::DeleteObject;
     using Aws::S3::S3Client::DeleteObjects;
 
+    ComposeObjectOutcome ComposeObject(ComposeObjectRequest & request) const;
+
     template <typename RequestType, typename RequestFn>
     std::invoke_result_t<RequestFn, RequestType>
-    doRequest(const RequestType & request, RequestFn request_fn) const;
+    doRequest(RequestType & request, RequestFn request_fn) const;
 
     void updateURIForBucket(const std::string & bucket, S3::URI new_uri) const;
     std::optional<S3::URI> getURIFromError(const Aws::S3::S3Error & error) const;
@@ -277,12 +295,17 @@ private:
     std::shared_ptr<Aws::Auth::AWSCredentialsProvider> credentials_provider;
     PocoHTTPClientConfiguration client_configuration;
     Aws::Client::AWSAuthV4Signer::PayloadSigningPolicy sign_payloads;
-    bool use_virtual_addressing;
+    ClientSettings client_settings;
 
     std::string explicit_region;
     mutable bool detect_region = true;
 
+    /// provider type can determine if some functionality is supported
+    /// but for same provider, we would need to generate different headers depending on the
+    /// mode
+    /// E.g. GCS can work in AWS mode in some cases and accept headers with x-amz prefix
     ProviderType provider_type{ProviderType::UNKNOWN};
+    ApiMode api_mode{ApiMode::AWS};
 
     mutable std::shared_ptr<ClientCache> cache;
 
@@ -304,7 +327,7 @@ public:
 
     std::unique_ptr<S3::Client> create(
         const PocoHTTPClientConfiguration & cfg,
-        bool is_virtual_hosted_style,
+        ClientSettings client_settings,
         const String & access_key_id,
         const String & secret_access_key,
         const String & server_side_encryption_customer_key_base64,

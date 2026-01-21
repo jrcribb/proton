@@ -47,6 +47,17 @@ public:
         return params;
     }
 
+    Aws::String GetChecksumAlgorithmName() const override
+    {
+        /// Return empty string is enough to disable checksums (see
+        /// AWSClient::AddChecksumToRequest [1] for more details).
+        ///
+        ///   [1]: https://github.com/aws/aws-sdk-cpp/blob/b0ee1c0d336dbb371c34358b68fba6c56aae2c92/src/aws-cpp-sdk-core/source/client/AWSClient.cpp#L783-L839
+        if (!checksum)
+            return "";
+        return BaseRequest::GetChecksumAlgorithmName();
+    }
+
     std::string getRegionOverride() const
     {
         return region_override;
@@ -67,15 +78,19 @@ public:
         return uri_override;
     }
 
-    void setProviderType(ProviderType provider_type_) const
+    void setApiMode(ApiMode api_mode_) const
     {
-        provider_type = provider_type_;
+        api_mode = api_mode_;
     }
+
+    /// Disable checksum to avoid extra read of the input stream
+    void disableChecksum() const { checksum = false; }
 
 protected:
     mutable std::string region_override;
     mutable std::optional<S3::URI> uri_override;
-    mutable ProviderType provider_type{ProviderType::UNKNOWN};
+    mutable ApiMode api_mode{ApiMode::AWS};
+    mutable bool checksum = true;
 };
 
 class CopyObjectRequest : public ExtendedRequest<Model::CopyObjectRequest>
