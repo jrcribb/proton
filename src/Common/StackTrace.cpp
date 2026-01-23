@@ -40,6 +40,13 @@ std::string signalToErrorMessage(int sig, const siginfo_t & info, [[maybe_unused
                 error << " Access: write.";
             else
                 error << " Access: read.";
+
+#if defined(__linux__)
+            /// proton: starts
+            if (err_mask & 0x20)
+                error << " (pkey).";
+            /// proton: ends
+#endif
 #endif
 
             switch (info.si_code)
@@ -50,9 +57,21 @@ std::string signalToErrorMessage(int sig, const siginfo_t & info, [[maybe_unused
                 case SEGV_MAPERR:
                     error << " Address not mapped to object.";
                     break;
-                default:
-                    error << " Unknown si_code.";
+                    /// proton: starts
+#if defined(SEGV_BNDERR)
+                case SEGV_BNDERR:
+                    error << " Bound check failure.";
                     break;
+#endif
+#if defined(SEGV_PKUERR)
+                case SEGV_PKUERR:
+                    error << " Memory protection keys (PKU) violation.";
+                    break;
+#endif
+                default:
+                    error << " Unknown si_code (" << info.si_code << ").";
+                    break;
+                    /// proton: ends
             }
             break;
         }
@@ -247,7 +266,7 @@ void StackTrace::symbolize(
         if (symbol)
         {
             int status = 0;
-            current_frame.symbol = demangle(symbol->name, status);
+            current_frame.symbol = symbol->name ? demangle(symbol->name, status) : "?";
         }
         else
         {
@@ -364,7 +383,7 @@ static void toStringEveryLineImpl(
         if (symbol)
         {
             int status = 0;
-            out << demangle(symbol->name, status);
+            out << (symbol->name ? demangle(symbol->name, status) : "?");
         }
         else
             out << "?";
@@ -378,7 +397,7 @@ static void toStringEveryLineImpl(
             const auto & frame = inline_frames[j];
             int status = 0;
             callback(fmt::format("{}.{}. inlined from {}:{}: {}",
-                     i, j+1, frame.location.file.toString(), frame.location.line, demangle(frame.name, status)));
+                     i, j+1, frame.location.file.toString(), frame.location.line, frame.name ? demangle(frame.name, status) : "?"));
         }
 
         callback(out.str());
@@ -438,3 +457,7 @@ void StackTrace::dropCache()
 {
     cacheInstance().drop();
 }
+
+
+thread_local bool asynchronous_stack_unwinding = false;
+thread_local sigjmp_buf asynchronous_stack_unwinding_signal_jump_buffer;

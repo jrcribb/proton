@@ -1,4 +1,5 @@
 #include <Interpreters/Context.h>
+#include <V8/PkuSupport.h>
 #include <V8/V8.h>
 #include <base/getMemoryAmount.h>
 #include <Common/logger_useful.h>
@@ -67,6 +68,8 @@ void V8::startup()
     v8::V8::InitializePlatform(platform.get());
     v8::V8::Initialize();
 
+    PkuSupport::captureBaselinePkruForV8();
+
     allocator.reset(new ArrayBufferAllocator);
 }
 
@@ -97,6 +100,8 @@ v8::Isolate * V8::createIsolate()
         isolate_params.constraints.ConfigureDefaultsFromHeapSize(0, max_heap_size_in_bytes);
         isolate_params.constraints.set_max_old_generation_size_in_bytes(max_old_gen_size_in_bytes);
     }
+
+    [[maybe_unused]] PkuSupport::ThreadPkruGuard pkru_guard;
 
     auto * isolate = v8::Isolate::New(isolate_params);
     assert(isolate);
@@ -133,6 +138,7 @@ void V8::disposeIsolate(v8::Isolate * isolate)
         isolate_data_map.erase(isolate);
     }
 
+    [[maybe_unused]] PkuSupport::ThreadPkruGuard pkru_guard;
     isolate->Dispose();
 }
 }

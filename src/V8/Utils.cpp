@@ -1,6 +1,7 @@
 #include <V8/ConvertDataTypes.h>
 #include <V8/Modules/Console.h>
 #include <V8/Modules/DictionaryAccess/DictionaryAccess.h>
+#include <V8/PkuSupport.h>
 #include <V8/Utils.h>
 
 #include <Cluster/Protocol/UserDefinedFunctionDescriptor.h>
@@ -531,6 +532,7 @@ void compileSource(
     const std::string & source,
     std::function<void(v8::Isolate *, v8::Local<v8::Context> &, v8::TryCatch &, v8::Local<v8::Value> &)> func)
 {
+    [[maybe_unused]] PkuSupport::ThreadPkruGuard pkru_guard;
     v8::Locker locker(isolate);
     v8::Isolate::Scope isolate_scope(isolate);
     v8::HandleScope handle_scope(isolate);
@@ -598,7 +600,12 @@ void validateFunctionSource(
     isolate_params.constraints.ConfigureDefaultsFromHeapSize(0, max_heap_size_in_bytes);
     isolate_params.constraints.set_max_old_generation_size_in_bytes(max_old_gen_size_in_bytes);
 
-    auto isolate_deleter = [](v8::Isolate * isolate_) { isolate_->Dispose(); };
+    [[maybe_unused]] PkuSupport::ThreadPkruGuard pkru_guard;
+
+    auto isolate_deleter = [](v8::Isolate * isolate_) {
+        [[maybe_unused]] PkuSupport::ThreadPkruGuard dispose_pkru_guard;
+        isolate_->Dispose();
+    };
     std::unique_ptr<v8::Isolate, void (*)(v8::Isolate *)> isolate_ptr(v8::Isolate::New(isolate_params), isolate_deleter);
 
     compileSource(
@@ -717,6 +724,7 @@ void checkHeapLimit(v8::Isolate * isolate, size_t max_v8_heap_size_in_bytes, boo
 {
     v8::HeapStatistics heap_statistics;
     {
+        [[maybe_unused]] PkuSupport::ThreadPkruGuard pkru_guard;
         v8::Locker locker(isolate);
         v8::Isolate::Scope isolate_scope(isolate);
         v8::HandleScope handle_scope(isolate);
@@ -780,6 +788,7 @@ void checkHeapLimit(v8::Isolate * isolate, size_t max_v8_heap_size_in_bytes, boo
 size_t nearHeapLimitCallback(void * isolate_, size_t current_heap_limit, size_t initial_heap_limit)
 {
     v8::Isolate * isolate = reinterpret_cast<v8::Isolate *>(isolate_);
+    [[maybe_unused]] PkuSupport::ThreadPkruGuard pkru_guard;
     v8::Locker locker(isolate);
     v8::Isolate::Scope isolate_scope(isolate);
     v8::HandleScope handle_scope(isolate);

@@ -138,6 +138,9 @@ static std::atomic_flag fatal_error_printed;
   */
 static void signalHandler(int sig, siginfo_t * info, void * context)
 {
+    if (asynchronous_stack_unwinding && sig == SIGSEGV)
+        siglongjmp(asynchronous_stack_unwinding_signal_jump_buffer, 1);
+
     DENY_ALLOCATIONS_IN_SCOPE;
     auto saved_errno = errno;   /// We must restore previous value of errno in signal handler.
 
@@ -870,6 +873,19 @@ static void addSignalHandler(const std::vector<int> & signals, signal_function h
     for (auto signal : signals)
         if (sigaddset(&sa.sa_mask, signal))
             throw Poco::Exception("Cannot set signal handler.");
+
+    /// proton: starts.
+    /// QueryProfiler uses SIGUSR1/SIGUSR2 on Linux. Block them while handling fatal signals
+    /// to avoid re-entrant unwinding and "double crash" in crash reporting paths.
+#if defined(OS_LINUX)
+    if (handler == signalHandler)
+    {
+        if (sigaddset(&sa.sa_mask, SIGUSR1) || sigaddset(&sa.sa_mask, SIGUSR2))
+            throw Poco::Exception("Cannot set signal handler.");
+    }
+#endif
+    /// proton: ends.
+
 #endif
 
     for (auto signal : signals)
