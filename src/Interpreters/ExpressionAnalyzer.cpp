@@ -1631,12 +1631,28 @@ std::shared_ptr<DirectKeyValueJoin> tryKeyValueJoin(std::shared_ptr<TableJoin> a
         }
     }
 
+    bool use_key_names_restored = false;
     auto first_index_keys = std::span{index_keys}.subspan(0, clauses[0].key_names_right.size());
+
+    /// Fast path: if all join keys match storage primary key columns, avoid alias restoration.
     for (const auto & key_name : clauses[0].key_names_right)
     {
         String original_key_name = analyzed_join->getOriginalName(key_name);
-        if (std::ranges::find(first_index_keys, original_key_name) != first_index_keys.end())
-            continue;
+        if (std::ranges::find(first_index_keys, original_key_name) == first_index_keys.end())
+        {
+            use_key_names_restored = true;
+            break;
+        }
+    }
+
+    if (use_key_names_restored)
+    {
+        clauses[0].key_names_restored.clear();
+        clauses[0].key_names_restored.reserve(clauses[0].key_names_right.size());
+
+        for (const auto & key_name : clauses[0].key_names_right)
+        {
+            String original_key_name = analyzed_join->getOriginalName(key_name);
 
         /// issue-7254: to restore the rewritten column alias in multiple direct join.
         /// For multiple direct join, we will rewrite the join and introduce internal column aliasing.
@@ -1700,6 +1716,7 @@ std::shared_ptr<DirectKeyValueJoin> tryKeyValueJoin(std::shared_ptr<TableJoin> a
                 return nullptr;
             }
         }
+    }
     }
 
     return std::make_shared<DirectKeyValueJoin>(analyzed_join, right_sample_block, storage);
