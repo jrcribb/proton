@@ -71,18 +71,18 @@ SELECT value = 'grace_hash,hash,auto' FROM system.settings WHERE name = 'join_al
 
 
 DROP DICTIONARY IF EXISTS dict;
-DROP STREAM IF EXISTS src;
+DROP STREAM IF EXISTS default.src;
 
-CREATE STREAM src (id uint64, s string) ORDER BY id;
-select sleep(2) format Null;;
-INSERT INTO src(id, s) SELECT number, to_string(number) FROM numbers(1000000);
+CREATE STREAM default.src (id uint64, s string) ORDER BY id;
+select sleep(2) format Null;
+INSERT INTO default.src(id, s) SELECT number, to_string(number) FROM numbers(1000000);
 
 select sleep(2) format Null;
 CREATE DICTIONARY dict(
   id uint64,
   s  string
 ) PRIMARY KEY id
-SOURCE(TIMEPLUS(STREAM 'src' DB current_database()))
+SOURCE(TIMEPLUS(STREAM 'src' DB 'default'))
 LIFETIME (MIN 0 MAX 0)
 LAYOUT(HASHED());
 

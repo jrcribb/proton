@@ -60,17 +60,6 @@ select changed from system.settings where name = 'format_avro_schema_registry_ur
 set format_avro_schema_registry_url = '';
 select changed from system.settings where name = 'format_avro_schema_registry_url';
 
-
---- SettingFieldEnum
-
-select changed from system.settings where name = 'output_format_orc_compression_method';
-set output_format_orc_compression_method = 'none';
-select changed from system.settings where name = 'output_format_orc_compression_method';
-set output_format_orc_compression_method = 'none';
-select changed from system.settings where name = 'output_format_orc_compression_method';
-set output_format_orc_compression_method = 'lz4';
-select changed from system.settings where name = 'output_format_orc_compression_method';
-
 --- SettingFieldMultiEnum
 
 select changed from system.settings where name = 'join_algorithm';
