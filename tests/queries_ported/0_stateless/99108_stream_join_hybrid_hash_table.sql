@@ -8,12 +8,11 @@ create stream 99108_kv(i int, v string) primary key i settings mode='versioned_k
 insert into 99108_kv(i, v) values(1, 'a1')(2, 'a2')(3, 'a3')(4, 'a4')(5, 'a5');
 
 --- stream join hybrid hash table
-create materialized view 99108_mv as select a.i, a.v, b.i, b.v from 99108_kv as a join table(99108_kv) as b on a.i = b.i settings default_hash_join='hybrid', max_hot_keys=2 STORAGE_SETTINGS flush_threshold_count=1;
-create materialized view 99108_mv2 as select count() as cnt from 99108_kv as a join table(99108_kv) as b on a.i = b.i emit periodic 1s settings default_hash_join='hybrid', max_hot_keys=2 STORAGE_SETTINGS flush_threshold_count=1;
+create materialized view 99108_mv as select a.i, a.v, b.i, b.v from 99108_kv as a join table(99108_kv) as b on a.i = b.i settings default_hash_join='hybrid', join_algorithm='hash', max_hot_keys=2 STORAGE_SETTINGS flush_threshold_count=1;
+create materialized view 99108_mv2 as select count() as cnt from 99108_kv as a join table(99108_kv) as b on a.i = b.i emit periodic 1s settings default_hash_join='hybrid', join_algorithm='hash', max_hot_keys=2 STORAGE_SETTINGS flush_threshold_count=1;
 --- Concurrent stream join hybrid hash table
 create materialized view 99108_mv3 as select a.i, a.v, b.i, b.v from 99108_kv as a join table(99108_kv) as b on a.i = b.i settings default_hash_join='hybrid', max_hot_keys=2, join_algorithm='parallel_hash', max_threads=8 STORAGE_SETTINGS flush_threshold_count=1;
 create materialized view 99108_mv4 as select count() as cnt from 99108_kv as a join table(99108_kv) as b on a.i = b.i emit periodic 1s settings default_hash_join='hybrid', max_hot_keys=2, join_algorithm='parallel_hash', max_threads=8 STORAGE_SETTINGS flush_threshold_count=1;
-
 select sleep(2) format Null;
 
 --- Validate checkpoint
@@ -26,7 +25,7 @@ system resume materialized view 99108_mv2;
 system resume materialized view 99108_mv3;
 system resume materialized view 99108_mv4;
 
-select sleep(2) format Null;
+select sleep(3) format Null;
 insert into 99108_kv(i, v) values(1, 'aa1');
 
 select sleep(3) format Null;

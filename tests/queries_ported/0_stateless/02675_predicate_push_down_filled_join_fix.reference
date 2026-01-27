@@ -10,6 +10,10 @@ Positions: 0 1 2
   Header: id uint64
           value string
           t2.value string
+  Type: INNER
+  Strictness: ALL
+  Algorithm: HashJoin
+  Clauses: [(id) = (id)]
     Filter (( + Before JOIN))
     Header: id uint64
             value string

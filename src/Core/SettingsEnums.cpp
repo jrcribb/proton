@@ -100,7 +100,9 @@ IMPLEMENT_SETTING_ENUM_WITH_RENAME(DefaultDatabaseEngine, ErrorCodes::BAD_ARGUME
 
 IMPLEMENT_SETTING_MULTI_ENUM(MySQLDataTypesSupport, ErrorCodes::UNKNOWN_MYSQL_DATATYPES_SUPPORT_LEVEL,
     {{"decimal",    MySQLDataTypesSupport::DECIMAL},
-     {"datetime64", MySQLDataTypesSupport::DATETIME64}})
+     {"datetime64", MySQLDataTypesSupport::DATETIME64},
+     {"date2date32", MySQLDataTypesSupport::DATE2DATE32},
+     {"date2string", MySQLDataTypesSupport::DATE2STRING}})
 
 IMPLEMENT_SETTING_ENUM(UnionMode, ErrorCodes::UNKNOWN_UNION,
     {{"",         UnionMode::Unspecified},

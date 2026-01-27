@@ -13,6 +13,10 @@ Positions: 3 0 1
   Header: t1.id_0 UInt64
           t1.value_1 String
           t2.value_2 String
+  Type: INNER
+  Strictness: ALL
+  Algorithm: HashJoin
+  Clauses: [(id_0) = (id)]
     Filter (( + (JOIN actions + Change column names to column identifiers)))
     Header: t1.id_0 UInt64
             t1.value_1 String

@@ -102,7 +102,7 @@ inline constexpr ASOFJoinInequality reverseASOFJoinInequality(ASOFJoinInequality
 
 enum class JoinAlgorithm
 {
-    DEFAULT = 0,
+    DEFAULT = 0, /// deprecated, equivalent to "direct,hash"
     AUTO,
     HASH,
     PARTIAL_MERGE,

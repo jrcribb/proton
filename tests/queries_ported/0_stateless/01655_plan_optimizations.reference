@@ -126,11 +126,13 @@ Filter
 3
 > one condition of filter is pushed down before LEFT JOIN
 Join
+Join
 Filter column: not_equals(number, 1)
 Join
 0	0
 3	3
 > one condition of filter is pushed down before INNER JOIN
+Join
 Join
 Join
 Filter column: and(not_equals(b, 2), not_equals(b, 1))

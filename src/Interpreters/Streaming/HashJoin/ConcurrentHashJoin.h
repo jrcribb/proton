@@ -39,6 +39,8 @@ public:
 
     ~ConcurrentHashJoin() override = default;
 
+    std::string getName() const override { return fmt::format("Concurrent{}", hash_joins[0]->data->getName()); }
+
     void rescale(size_t slots_);
 
     HashJoinType type() const noexcept override { return hash_joins.back()->data->type(); }

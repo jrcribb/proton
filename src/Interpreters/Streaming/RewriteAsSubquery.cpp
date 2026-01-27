@@ -168,5 +168,28 @@ bool rewriteSubquery(ASTSelectWithUnionQuery & query, const SelectQueryInfo & qu
 
     return false;
 }
+
+bool isChangelogSubqueryFromStream(const ASTPtr & query)
+{
+    auto subquery = query->as<ASTSubquery>();
+    if (!subquery)
+        return false;
+
+    auto & select_with_union = subquery->children[0]->as<ASTSelectWithUnionQuery &>();
+    if (select_with_union.list_of_selects->children.size() != 1)
+        return false;
+
+    auto & select = select_with_union.list_of_selects->children[0]->as<ASTSelectQuery &>();
+    auto emit_query = select.emit();
+    if (emit_query
+        && emit_query->as<ASTEmitQuery &>().stream_mode.value_or(ASTEmitQuery::StreamMode::STREAM) != ASTEmitQuery::StreamMode::CHANGELOG)
+        return false;
+
+    if (select.select()->children.size() == 1 && select.select()->children[0]->as<ASTAsterisk>())
+        return true;
+
+    return false;
+}
+
 }
 }

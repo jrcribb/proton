@@ -1256,31 +1256,20 @@ JoinPtr SelectQueryExpressionAnalyzer::appendJoin(
     return join;
 }
 
-std::shared_ptr<DirectKeyValueJoin> tryKeyValueJoin(std::shared_ptr<TableJoin> analyzed_join, const Block & right_sample_block);
+std::shared_ptr<DirectKeyValueJoin> tryKeyValueJoin(std::shared_ptr<TableJoin> analyzed_join, Block right_sample_block);
 
-static std::shared_ptr<IJoin> chooseJoinAlgorithm(
+
+static std::shared_ptr<IJoin> tryCreateJoin(
+    JoinAlgorithm algorithm,
     std::shared_ptr<TableJoin> analyzed_join,
     const ColumnsWithTypeAndName & left_sample_columns,
+    const Block & right_sample_block,
     std::unique_ptr<QueryPlan> & joined_plan,
     bool streaming,
     ContextPtr context)
 {
-    const auto & settings = context->getSettings();
-
-    Block left_sample_block(left_sample_columns);
-    for (auto & column : left_sample_block)
+    if (algorithm == JoinAlgorithm::DIRECT || algorithm == JoinAlgorithm::DEFAULT)
     {
-        if (!column.column)
-            column.column = column.type->createColumn();
-    }
-
-    Block right_sample_block = joined_plan->getCurrentDataStream().header;
-
-    std::vector<String> tried_algorithms;
-
-    if (analyzed_join->isEnabledAlgorithm(JoinAlgorithm::DIRECT))
-    {
-        tried_algorithms.push_back(toString(JoinAlgorithm::DIRECT));
         JoinPtr direct_join = tryKeyValueJoin(analyzed_join, right_sample_block);
         if (direct_join)
         {
@@ -1290,20 +1279,20 @@ static std::shared_ptr<IJoin> chooseJoinAlgorithm(
         }
     }
 
-    if (analyzed_join->isEnabledAlgorithm(JoinAlgorithm::PARTIAL_MERGE) ||
-        analyzed_join->isEnabledAlgorithm(JoinAlgorithm::PREFER_PARTIAL_MERGE))
+    if (algorithm == JoinAlgorithm::PARTIAL_MERGE ||
+        algorithm == JoinAlgorithm::PREFER_PARTIAL_MERGE)
     {
-        tried_algorithms.push_back(toString(JoinAlgorithm::PARTIAL_MERGE));
         if (MergeJoin::isSupported(analyzed_join))
             return std::make_shared<MergeJoin>(analyzed_join, right_sample_block);
     }
 
-    if (analyzed_join->isEnabledAlgorithm(JoinAlgorithm::HASH) ||
+    if (algorithm == JoinAlgorithm::HASH ||
         /// partial_merge is preferred, but can't be used for specified kind of join, fallback to hash
-        analyzed_join->isEnabledAlgorithm(JoinAlgorithm::PREFER_PARTIAL_MERGE) ||
-        analyzed_join->isEnabledAlgorithm(JoinAlgorithm::PARALLEL_HASH))
+        algorithm == JoinAlgorithm::PREFER_PARTIAL_MERGE ||
+        algorithm == JoinAlgorithm::PARALLEL_HASH ||
+        algorithm == JoinAlgorithm::DEFAULT)
     {
-        tried_algorithms.push_back(toString(JoinAlgorithm::HASH));
+        const auto & settings = context->getSettings();
 
         /// proton: starts. Enable hybrid hash table at right side for case `Stream join Table`
         if (streaming && settings.default_hash_join.value == HashJoinType::Hybrid)
@@ -1359,31 +1348,178 @@ static std::shared_ptr<IJoin> chooseJoinAlgorithm(
         /// proton: ends.
     }
 
-    if (analyzed_join->isEnabledAlgorithm(JoinAlgorithm::FULL_SORTING_MERGE))
+    if (algorithm == JoinAlgorithm::FULL_SORTING_MERGE)
     {
-        tried_algorithms.push_back(toString(JoinAlgorithm::FULL_SORTING_MERGE));
         if (FullSortingMergeJoin::isSupported(analyzed_join))
             return std::make_shared<FullSortingMergeJoin>(analyzed_join, right_sample_block);
     }
 
-    if (analyzed_join->isEnabledAlgorithm(JoinAlgorithm::GRACE_HASH))
+    if (algorithm == JoinAlgorithm::GRACE_HASH)
     {
-        tried_algorithms.push_back(toString(JoinAlgorithm::GRACE_HASH));
-        if (GraceHashJoin::isSupported(analyzed_join))
+        // Grace hash join requires that columns exist in left_sample_block.
+        Block left_sample_block(left_sample_columns);
+        if (sanitizeBlock(left_sample_block, false) && GraceHashJoin::isSupported(analyzed_join))
             return std::make_shared<GraceHashJoin>(context, analyzed_join, left_sample_block, right_sample_block, context->getTempDataOnDisk());
     }
 
-    if (analyzed_join->isEnabledAlgorithm(JoinAlgorithm::AUTO))
+    if (algorithm == JoinAlgorithm::AUTO)
     {
-        tried_algorithms.push_back(toString(JoinAlgorithm::AUTO));
-
         if (MergeJoin::isSupported(analyzed_join))
             return std::make_shared<JoinSwitcher>(analyzed_join, right_sample_block);
     }
+    return nullptr;
+}
 
-    throw Exception(ErrorCodes::NOT_IMPLEMENTED,
-                    "Can't execute {} join algorithm for this strictness/kind and right storage type",
-                    fmt::join(tried_algorithms, " or "));
+/// proton: starts.
+static std::shared_ptr<IJoin> tryCreateStreamingJoin(
+    JoinAlgorithm algorithm,
+    std::shared_ptr<TableJoin> analyzed_join,
+    const ColumnsWithTypeAndName & left_sample_columns,
+    const Block & right_sample_block,
+    std::unique_ptr<QueryPlan> & joined_plan,
+    ContextPtr context)
+{
+    const auto & settings = context->getSettingsRef();
+
+    if (algorithm == JoinAlgorithm::DIRECT || algorithm == JoinAlgorithm::DEFAULT)
+    {
+        if (auto storage = analyzed_join->getCrossJoinStorage(); storage)
+        {
+            /// For direct cross join, we don't need to do any special processing, just return the cross join
+            /// Do not need to execute plan for right part, it's ready.
+            auto direct_cross_join = std::make_shared<DirectCrossJoin>(
+                analyzed_join,
+                right_sample_block,
+                storage,
+                settings.enable_direct_cross_join_cache,
+                settings.default_snapshot_cache_expire_sec);
+            joined_plan.reset();
+            return direct_cross_join;
+        }
+
+        /// Try bi-direct key-value join first
+        [[maybe_unused]] Block left_sample_block(left_sample_columns);
+        // if (JoinPtr bi_direct_kv_join = tryBidirectionalKeyValueJoin(analyzed_join, left_sample_block, right_sample_block))
+        // {
+        //     /// Do not need to execute plan for right part, it's ready.
+        //     joined_plan.reset();
+        //     return bi_direct_kv_join;
+        // }
+
+        /// Try direct key-value join
+        if (JoinPtr direct_kv_join = tryKeyValueJoin(analyzed_join, right_sample_block))
+        {
+            /// Do not need to execute plan for right part, it's ready.
+            joined_plan.reset();
+            return direct_kv_join;
+        }
+    }
+
+    if (algorithm == JoinAlgorithm::HASH || algorithm == JoinAlgorithm::PARALLEL_HASH || algorithm == JoinAlgorithm::DEFAULT)
+    {
+        if (isCrossOrComma(analyzed_join->kind()))
+            return nullptr;
+
+        const auto & tables = analyzed_join->getTablesWithColumns();
+        assert(tables.size() == 2);
+
+        Streaming::DataStreamSemanticEx left_input_data_stream_semantic = tables[0].output_data_stream_semantic;
+        Streaming::DataStreamSemanticEx right_input_data_stream_semantic = tables[1].output_data_stream_semantic;
+
+        auto keep_versions = settings.keep_versions;
+        auto max_threads = settings.max_threads;
+
+        auto quiesce_threshold_ms = settings.join_quiesce_threshold_ms.value;
+        auto latency_threshold = settings.join_latency_threshold.value; /// Query global settings
+        bool use_hybrid_hash_join = settings.default_hash_join.value == HashJoinType::Hybrid;
+
+        /// If user explicitly specifies `JOIN ... ON ... AND lag_behind(10ms, ...), override the query global settings
+        /// and enforce enable join alignment
+        if (auto lag_interval = analyzed_join->lagBehindInterval(); lag_interval != 0)
+            latency_threshold = lag_interval;
+
+        auto left_join_stream_desc = std::make_shared<Streaming::JoinStreamDescription>(
+            tables[0],
+            Block{}, /// We don't know the header of the left stream yet since it is not finalized
+            left_input_data_stream_semantic,
+            keep_versions,
+            latency_threshold,
+            quiesce_threshold_ms);
+
+        auto right_join_stream_desc = std::make_shared<Streaming::JoinStreamDescription>(
+            tables[1], right_sample_block, right_input_data_stream_semantic, keep_versions, latency_threshold, quiesce_threshold_ms);
+
+        if (analyzed_join->requiredJoinAlignment())
+        {
+            left_join_stream_desc->alignment_column = analyzed_join->leftAlignmentKeyColumn();
+            right_join_stream_desc->alignment_column = analyzed_join->rightAlignmentKeyColumn();
+        }
+
+        /// Right join stream desc has stream semantic and header set, can evaluate the primary key etc column positions
+        right_join_stream_desc->calculateColumnPositions(analyzed_join->strictness());
+
+        if (analyzed_join->allowParallelHashJoin())
+        {
+            if (use_hybrid_hash_join)
+                return std::make_shared<Streaming::ConcurrentHashJoin>(
+                    analyzed_join,
+                    max_threads,
+                    std::move(left_join_stream_desc),
+                    std::move(right_join_stream_desc),
+                    context->getSpillDirForCurrentQuery("join"),
+                    settings.max_hot_keys,
+                    settings.join_state_ttl_sec,
+                    settings.kv_options);
+            else
+                return std::make_shared<Streaming::ConcurrentHashJoin>(
+                    analyzed_join, max_threads, std::move(left_join_stream_desc), std::move(right_join_stream_desc));
+        }
+        else
+        {
+            if (use_hybrid_hash_join)
+                return std::make_shared<Streaming::HybridHashJoin>(
+                    analyzed_join,
+                    std::move(left_join_stream_desc),
+                    std::move(right_join_stream_desc),
+                    context->getSpillDirForCurrentQuery("join"),
+                    settings.max_hot_keys,
+                    settings.join_state_ttl_sec,
+                    settings.kv_options);
+            else
+                return std::make_shared<Streaming::MemoryHashJoin>(
+                    analyzed_join, std::move(left_join_stream_desc), std::move(right_join_stream_desc));
+        }
+    }
+    return nullptr;
+}
+/// proton: ends.
+
+static std::shared_ptr<IJoin> chooseJoinAlgorithm(
+    std::shared_ptr<TableJoin> analyzed_join, const ColumnsWithTypeAndName & left_sample_columns, std::unique_ptr<QueryPlan> & joined_plan, bool streaming, ContextPtr context)
+{
+    Block right_sample_block = joined_plan->getCurrentDataStream().header;
+    const auto & join_algorithms = analyzed_join->getEnabledJoinAlgorithms();
+    for (const auto alg : join_algorithms)
+    {
+        /// proton: starts.
+        std::shared_ptr<IJoin> join;
+        if (streaming && joined_plan->isStreaming())
+            join = tryCreateStreamingJoin(alg, analyzed_join, left_sample_columns, right_sample_block, joined_plan, context);
+        else
+            join = tryCreateJoin(alg, analyzed_join, left_sample_columns, right_sample_block, joined_plan, streaming, context);
+        /// proton: ends.
+
+        if (join)
+            return join;
+    }
+
+    /// proton: starts.
+    throw Exception(
+        ErrorCodes::NOT_IMPLEMENTED,
+        "Can't execute any of specified join algorithms ({}) for this strictness/kind and right storage type. If it is direct join, make sure "
+        "there is an existing primary index or secondary index which can service the direct lookup for the join column.",
+        fmt::format("{}", fmt::join(join_algorithms | std::views::transform([](const auto & alg) { return toString(alg); }), ", ")));
+    /// proton: ends.
 }
 
 static std::unique_ptr<QueryPlan> buildJoinedPlan(
@@ -1451,11 +1587,8 @@ static std::unique_ptr<QueryPlan> buildJoinedPlan(
     return joined_plan;
 }
 
-std::shared_ptr<DirectKeyValueJoin> tryKeyValueJoin(std::shared_ptr<TableJoin> analyzed_join, const Block & right_sample_block)
+std::shared_ptr<DirectKeyValueJoin> tryKeyValueJoin(std::shared_ptr<TableJoin> analyzed_join, Block right_sample_block)
 {
-    if (!analyzed_join->isEnabledAlgorithm(JoinAlgorithm::DIRECT))
-        return nullptr;
-
     auto storage = analyzed_join->getStorageKeyValue();
     if (!storage)
         return nullptr;
@@ -1498,12 +1631,28 @@ std::shared_ptr<DirectKeyValueJoin> tryKeyValueJoin(std::shared_ptr<TableJoin> a
         }
     }
 
+    bool use_key_names_restored = false;
     auto first_index_keys = std::span{index_keys}.subspan(0, clauses[0].key_names_right.size());
+
+    /// Fast path: if all join keys match storage primary key columns, avoid alias restoration.
     for (const auto & key_name : clauses[0].key_names_right)
     {
         String original_key_name = analyzed_join->getOriginalName(key_name);
-        if (std::ranges::find(first_index_keys, original_key_name) != first_index_keys.end())
-            continue;
+        if (std::ranges::find(first_index_keys, original_key_name) == first_index_keys.end())
+        {
+            use_key_names_restored = true;
+            break;
+        }
+    }
+
+    if (use_key_names_restored)
+    {
+        clauses[0].key_names_restored.clear();
+        clauses[0].key_names_restored.reserve(clauses[0].key_names_right.size());
+
+        for (const auto & key_name : clauses[0].key_names_right)
+        {
+            String original_key_name = analyzed_join->getOriginalName(key_name);
 
         /// issue-7254: to restore the rewritten column alias in multiple direct join.
         /// For multiple direct join, we will rewrite the join and introduce internal column aliasing.
@@ -1568,6 +1717,7 @@ std::shared_ptr<DirectKeyValueJoin> tryKeyValueJoin(std::shared_ptr<TableJoin> a
             }
         }
     }
+    }
 
     return std::make_shared<DirectKeyValueJoin>(analyzed_join, right_sample_block, storage);
     /// proton : ends
@@ -1622,11 +1772,7 @@ JoinPtr SelectQueryExpressionAnalyzer::makeJoin(
     if (analyzed_join->isLatestJoin() && !joined_plan->isStreaming())
         throw Exception(ErrorCodes::UNSUPPORTED, "LATEST JOINs are only supported in streaming joins");
 
-    JoinPtr join;
-    if (syntax->streaming && joined_plan->isStreaming())
-        join = chooseJoinAlgorithmStreaming(analyzed_join);
-    else
-        join = chooseJoinAlgorithm(analyzed_join, left_columns, joined_plan, syntax->streaming, getContext());
+    JoinPtr join = chooseJoinAlgorithm(analyzed_join, left_columns, joined_plan, syntax->streaming, getContext());
     /// proton : ends
 
     return join;
@@ -2715,106 +2861,6 @@ bool ExpressionAnalysisResult::hasStatefulFunctions() const
         return true;
 
     return false;
-}
-
-std::shared_ptr<IJoin> SelectQueryExpressionAnalyzer::chooseJoinAlgorithmStreaming(std::shared_ptr<TableJoin> analyzed_join)
-{
-    const auto & tables = analyzed_join->getTablesWithColumns();
-    assert(tables.size() == 2);
-
-    const auto & settings = getContext()->getSettingsRef();
-    Block right_sample_block = joined_plan->getCurrentDataStream().header;
-
-    if (auto storage = analyzed_join->getCrossJoinStorage(); storage)
-    {
-        if (!analyzed_join->isEnabledAlgorithm(JoinAlgorithm::DIRECT))
-            throw Exception(
-                ErrorCodes::UNSUPPORTED,
-                "Streaming cross join only supports the DIRECT algorithm. Please enable it by setting join_algorithm='direct'");
-
-        /// For direct cross join, we don't need to do any special processing, just return the cross join
-        /// Do not need to execute plan for right part, it's ready.
-        auto direct_cross_join = std::make_shared<DirectCrossJoin>(
-            analyzed_join,
-            right_sample_block,
-            storage,
-            settings.enable_direct_cross_join_cache,
-            settings.default_snapshot_cache_expire_sec);
-        joined_plan.reset();
-        return direct_cross_join;
-    }
-
-    Streaming::DataStreamSemanticEx left_input_data_stream_semantic = tables[0].output_data_stream_semantic;
-    Streaming::DataStreamSemanticEx right_input_data_stream_semantic = tables[1].output_data_stream_semantic;
-
-    auto keep_versions = settings.keep_versions;
-    auto max_threads = settings.max_threads;
-
-    auto quiesce_threshold_ms = settings.join_quiesce_threshold_ms.value;
-    auto latency_threshold = settings.join_latency_threshold.value; /// Query global settings
-    bool use_hybrid_hash_join = settings.default_hash_join.value == HashJoinType::Hybrid;
-
-    /// If user explicitly specifies `JOIN ... ON ... AND lag_behind(10ms, ...), override the query global settings
-    /// and enforce enable join alignment
-    if (auto lag_interval = analyzed_join->lagBehindInterval(); lag_interval != 0)
-        latency_threshold = lag_interval;
-
-    auto left_join_stream_desc = std::make_shared<Streaming::JoinStreamDescription>(
-        tables[0],
-        Block{},
-        left_input_data_stream_semantic,
-        keep_versions,
-        latency_threshold,
-        quiesce_threshold_ms); /// We don't know the header of the left stream yet since it is not finalized
-
-    auto right_join_stream_desc = std::make_shared<Streaming::JoinStreamDescription>(
-        tables[1],
-        right_sample_block,
-        right_input_data_stream_semantic,
-        keep_versions,
-        latency_threshold,
-        quiesce_threshold_ms);
-
-    if (analyzed_join->requiredJoinAlignment())
-    {
-        left_join_stream_desc->alignment_column = analyzed_join->leftAlignmentKeyColumn();
-        right_join_stream_desc->alignment_column = analyzed_join->rightAlignmentKeyColumn();
-    }
-
-    /// Right join stream desc has stream semantic and header set, can evaluate the primary key etc column positions
-    right_join_stream_desc->calculateColumnPositions(analyzed_join->strictness());
-
-    if (analyzed_join->allowParallelHashJoin())
-    {
-        if (use_hybrid_hash_join)
-            return std::make_shared<Streaming::ConcurrentHashJoin>(
-                analyzed_join,
-                max_threads,
-                std::move(left_join_stream_desc),
-                std::move(right_join_stream_desc),
-                getContext()->getSpillDirForCurrentQuery("join"),
-                settings.max_hot_keys,
-                settings.join_state_ttl_sec,
-                settings.kv_options);
-        else
-            return std::make_shared<Streaming::ConcurrentHashJoin>(
-                analyzed_join, max_threads, std::move(left_join_stream_desc), std::move(right_join_stream_desc));
-    }
-    else
-    {
-        if (use_hybrid_hash_join)
-            return std::make_shared<Streaming::HybridHashJoin>(
-                analyzed_join,
-                std::move(left_join_stream_desc),
-                std::move(right_join_stream_desc),
-                getContext()->getSpillDirForCurrentQuery("join"),
-                settings.max_hot_keys,
-                settings.join_state_ttl_sec,
-                settings.kv_options);
-        else
-            return std::make_shared<Streaming::MemoryHashJoin>(
-                analyzed_join, std::move(left_join_stream_desc), std::move(right_join_stream_desc));
-    }
 }
 
 bool SelectQueryExpressionAnalyzer::appendPartitionBy(ExpressionActionsChain & chain, bool only_types, bool before_join)

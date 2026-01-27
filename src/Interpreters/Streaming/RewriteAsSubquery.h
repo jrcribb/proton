@@ -27,5 +27,9 @@ bool rewriteAsChangelogSubquery(ASTTableExpression & table_expression, bool only
 
 /// \return true if query was rewritten and false otherwise
 bool rewriteSubquery(ASTSelectWithUnionQuery & query, const SelectQueryInfo & query_info);
+
+/// \return true if the query is a rewritten changelog subquery:
+/// stream => (select * from stream emit changelog)
+bool isChangelogSubqueryFromStream(const ASTPtr & query);
 }
 }

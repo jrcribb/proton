@@ -18,6 +18,7 @@ public:
         bool cache_enabled_,
         Int64 default_cache_expire_sec_);
 
+    std::string getName() const override { return "DirectCrossJoin"; }
     const TableJoin & getTableJoin() const override { return *table_join; }
 
     bool addJoinedBlock(const Block &, bool) override;

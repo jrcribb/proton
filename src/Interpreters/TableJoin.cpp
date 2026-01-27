@@ -98,7 +98,7 @@ TableJoin::TableJoin(const Settings & settings, VolumePtr tmp_volume_)
     , default_max_bytes(settings.default_max_bytes_in_join)
     , join_use_nulls(settings.join_use_nulls)
     , max_joined_block_rows(settings.max_joined_block_size_rows)
-    , join_algorithm(settings.join_algorithm)
+    , join_algorithms(settings.join_algorithm)
     , partial_merge_join_rows_in_right_blocks(settings.partial_merge_join_rows_in_right_blocks)
     , partial_merge_join_left_table_buffer_bytes(settings.partial_merge_join_left_table_buffer_bytes)
     , max_files_to_merge(settings.join_on_disk_max_files_to_merge)
@@ -767,7 +767,9 @@ void TableJoin::resetToCross()
 
 bool TableJoin::allowParallelHashJoin() const
 {
-    if (!right_storage_name.empty() || !join_algorithm.isSet(JoinAlgorithm::PARALLEL_HASH))
+    if (std::ranges::none_of(join_algorithms, [](auto algo) { return algo == JoinAlgorithm::PARALLEL_HASH; }))
+        return false;
+    if (!right_storage_name.empty())
         return false;
     if (table_join.kind != JoinKind::Left && table_join.kind != JoinKind::Inner)
         return false;
@@ -783,6 +785,16 @@ ActionsDAGPtr TableJoin::createJoinedBlockActions(ContextPtr context) const
     ASTPtr expression_list = rightKeysList();
     auto syntax_result = TreeRewriter(context).analyze(expression_list, columnsFromJoinedTable());
     return ExpressionAnalyzer(expression_list, syntax_result, context).getActionsDAG(true, false);
+}
+
+bool TableJoin::isEnabledAlgorithm(const std::vector<JoinAlgorithm> & join_algorithms, JoinAlgorithm val)
+{
+    /// join_algorithm = 'default' has a hard-coded meaning as 'direct,hash' (it was deprecated with v24.12)
+    bool join_algorithm_is_default = std::ranges::find(join_algorithms, JoinAlgorithm::DEFAULT) != join_algorithms.end();
+    constexpr auto default_algorithms = std::array<JoinAlgorithm, 3>{JoinAlgorithm::DEFAULT, JoinAlgorithm::HASH, JoinAlgorithm::DIRECT};
+    if (join_algorithm_is_default && std::ranges::find(default_algorithms, val) != default_algorithms.end())
+        return true;
+    return std::ranges::find(join_algorithms, val) != join_algorithms.end();
 }
 
 /// proton : starts

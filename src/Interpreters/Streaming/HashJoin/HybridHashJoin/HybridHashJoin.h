@@ -29,6 +29,8 @@ public:
 
     ~HybridHashJoin() noexcept override;
 
+    std::string getName() const override { return "HybridHashJoin"; }
+
     HashJoinType type() const noexcept override { return HashJoinType::Hybrid; }
 
     void postInit(const Block & left_header, const Block & output_header_, UInt64 join_max_cached_bytes_) override;

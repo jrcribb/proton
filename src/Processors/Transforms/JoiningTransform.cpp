@@ -10,6 +10,10 @@
 #include <Interpreters/Streaming/HashJoin/IHashJoin.h>
 /// proton: ends.
 
+/// proton: starts.
+#include <Interpreters/Streaming/HashJoin/IHashJoin.h>
+/// proton: ends.
+
 namespace DB
 {
 
