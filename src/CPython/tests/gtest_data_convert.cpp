@@ -21,11 +21,13 @@
 #    include <DataTypes/DataTypeArray.h>
 #    include <DataTypes/DataTypeDateTime.h>
 #    include <DataTypes/DataTypeFixedString.h>
+#    include <DataTypes/DataTypeNullable.h>
 #    include <DataTypes/DataTypeString.h>
 #    include <DataTypes/DataTypeTuple.h>
 #    include <DataTypes/DataTypesNumber.h>
 #    include <IO/ReadBufferFromString.h>
 #    include <IO/ReadHelpers.h>
+#    include <Common/Exception.h>
 #    include <Common/LocalDate.h>
 #    include <Common/LocalDateTime.h>
 #    include <Common/LocalDateTime64.h>
@@ -156,6 +158,75 @@ TEST_F(CPythonTest, ColumnInt64)
             ASSERT_TRUE(PyLong_Check(item));
             ASSERT_EQ(PyLong_AsLong(item), v);
         });
+    });
+}
+
+TEST_F(CPythonTest, ColumnNullableInt32)
+{
+    assertNoLeak([]() {
+        auto data_type = makeDataType("nullable(int32)");
+        auto col = data_type->createColumn();
+
+        col->insert(Field(Int32(1)));
+        col->insert(Field{});
+        col->insert(Field(Int32(-3)));
+
+        auto py_list = cpython::convertColumnToPythonList(*col, data_type, 0, col->size());
+        ASSERT_TRUE(py_list);
+        ASSERT_TRUE(PyList_Check(py_list.get()));
+        ASSERT_EQ(PyList_Size(py_list.get()), 3);
+
+        PyObject * item0 = PyList_GetItem(py_list.get(), 0);
+        ASSERT_TRUE(PyLong_Check(item0));
+        ASSERT_EQ(PyLong_AsLong(item0), 1);
+
+        PyObject * item1 = PyList_GetItem(py_list.get(), 1);
+        ASSERT_TRUE(Py_IsNone(item1));
+
+        PyObject * item2 = PyList_GetItem(py_list.get(), 2);
+        ASSERT_TRUE(PyLong_Check(item2));
+        ASSERT_EQ(PyLong_AsLong(item2), -3);
+
+        auto res_col = cpython::convertPythonListToColumn(py_list, data_type);
+        ASSERT_TRUE(res_col != nullptr);
+        ASSERT_EQ(res_col->size(), col->size());
+        for (size_t i = 0; i < res_col->size(); i++)
+            ASSERT_TRUE((*res_col)[i] == (*col)[i]);
+    });
+}
+
+TEST_F(CPythonTest, ColumnArrayNullableInt32)
+{
+    assertNoLeak([]() {
+        auto data_type = makeDataType("array(nullable(int32))");
+        auto col = data_type->createColumn();
+
+        col->insert(Field(Array{Field(Int32(1)), Field{}, Field(Int32(3))}));
+        col->insert(Field(Array{Field{}, Field(Int32(2))}));
+
+        auto py_list = cpython::convertColumnToPythonList(*col, data_type, 0, col->size());
+        ASSERT_TRUE(py_list);
+        ASSERT_TRUE(PyList_Check(py_list.get()));
+        ASSERT_EQ(PyList_Size(py_list.get()), 2);
+
+        PyObject * row0 = PyList_GetItem(py_list.get(), 0);
+        ASSERT_TRUE(PyList_Check(row0));
+        ASSERT_EQ(PyList_Size(row0), 3);
+        ASSERT_EQ(PyLong_AsLong(PyList_GetItem(row0, 0)), 1);
+        ASSERT_TRUE(Py_IsNone(PyList_GetItem(row0, 1)));
+        ASSERT_EQ(PyLong_AsLong(PyList_GetItem(row0, 2)), 3);
+
+        PyObject * row1 = PyList_GetItem(py_list.get(), 1);
+        ASSERT_TRUE(PyList_Check(row1));
+        ASSERT_EQ(PyList_Size(row1), 2);
+        ASSERT_TRUE(Py_IsNone(PyList_GetItem(row1, 0)));
+        ASSERT_EQ(PyLong_AsLong(PyList_GetItem(row1, 1)), 2);
+
+        auto res_col = cpython::convertPythonListToColumn(py_list, data_type);
+        ASSERT_TRUE(res_col != nullptr);
+        ASSERT_EQ(res_col->size(), col->size());
+        for (size_t i = 0; i < res_col->size(); i++)
+            ASSERT_TRUE((*res_col)[i] == (*col)[i]);
     });
 }
 
@@ -360,6 +431,69 @@ TEST_F(CPythonTest, ColumnTuple)
                 ASSERT_TRUE(PyUnicode_Check(second));
                 ASSERT_EQ(PyUnicode_AsUTF8(second), v[1].get<String>());
             });
+    });
+}
+
+TEST_F(CPythonTest, ColumnTupleFromListRows)
+{
+    assertNoLeak([]() {
+        auto data_type = makeDataType("tuple(uint32, string)");
+
+        cpython::PyObjectPtr py_list{PyList_New(2)};
+        ASSERT_TRUE(py_list);
+
+        cpython::PyObjectPtr row0{PyList_New(2)};
+        ASSERT_TRUE(row0);
+        PyList_SET_ITEM(row0.get(), 0, PyLong_FromUnsignedLong(1));
+        PyList_SET_ITEM(row0.get(), 1, PyUnicode_FromString("hello"));
+        PyList_SET_ITEM(py_list.get(), 0, row0.release());
+
+        cpython::PyObjectPtr row1{PyList_New(2)};
+        ASSERT_TRUE(row1);
+        PyList_SET_ITEM(row1.get(), 0, PyLong_FromUnsignedLong(2));
+        PyList_SET_ITEM(row1.get(), 1, PyUnicode_FromString("world"));
+        PyList_SET_ITEM(py_list.get(), 1, row1.release());
+
+        auto expected = data_type->createColumn();
+        Tuple tuple0;
+        tuple0.push_back(UInt32(1));
+        tuple0.push_back(String("hello"));
+        expected->insert(tuple0);
+
+        Tuple tuple1;
+        tuple1.push_back(UInt32(2));
+        tuple1.push_back(String("world"));
+        expected->insert(tuple1);
+
+        auto res_col = cpython::convertPythonListToColumn(py_list, data_type);
+        ASSERT_TRUE(res_col != nullptr);
+        ASSERT_EQ(res_col->size(), expected->size());
+        for (size_t i = 0; i < expected->size(); i++)
+            ASSERT_TRUE((*res_col)[i] == (*expected)[i]);
+    });
+}
+
+TEST_F(CPythonTest, ColumnTupleRejectsWrongArity)
+{
+    assertNoLeak([]() {
+        auto data_type = makeDataType("tuple(uint32, string)");
+
+        cpython::PyObjectPtr py_list{PyList_New(1)};
+        ASSERT_TRUE(py_list);
+
+        cpython::PyObjectPtr row0{PyList_New(1)};
+        ASSERT_TRUE(row0);
+        PyList_SET_ITEM(row0.get(), 0, PyLong_FromUnsignedLong(1));
+        PyList_SET_ITEM(py_list.get(), 0, row0.release());
+
+        try
+        {
+            (void)cpython::convertPythonListToColumn(py_list, data_type);
+            FAIL() << "Expected DB::Exception due to tuple/list arity mismatch";
+        }
+        catch (const DB::Exception &)
+        {
+        }
     });
 }
 

@@ -12,6 +12,7 @@ namespace DB::ErrorCodes
 extern const int UDF_INTERNAL_ERROR;
 extern const int UDF_COMPILE_ERROR;
 extern const int UDF_RUNNING_ERROR;
+extern const int QUERY_WAS_CANCELLED;
 }
 
 namespace DB::cpython
@@ -46,7 +47,7 @@ std::string convertPyObjectToString(const PyObjectPtr & obj)
 
 bool hasException()
 {
-    return static_cast<bool>(PyObjectPtr{PyErr_Occurred()});
+    return PyErr_Occurred() != nullptr;
 }
 
 /// This function only accesses the attributes of the object itself and does not involve changes to the reference count.
@@ -291,6 +292,11 @@ PyObjectPtr executeByteCode(const PyObjectPtr & byte_code, const std::string & m
 
     if (!exe_result)
     {
+        if (hasException() && (PyErr_ExceptionMatches(PyExc_KeyboardInterrupt) || PyErr_ExceptionMatches(PyExc_GeneratorExit)))
+        {
+            PyErr_Clear();
+            throw Exception(ErrorCodes::QUERY_WAS_CANCELLED, "Query was cancelled");
+        }
         std::string error_message = getExceptionMessage();
         throw Exception(ErrorCodes::UDF_RUNNING_ERROR, "UDF running error, detail message: {}", error_message);
     }
@@ -304,10 +310,204 @@ PyObjectPtr executeObject(const PyObjectPtr & obj, const PyObjectPtr & args)
 
     if (!exe_result)
     {
+        if (hasException() && (PyErr_ExceptionMatches(PyExc_KeyboardInterrupt) || PyErr_ExceptionMatches(PyExc_GeneratorExit)))
+        {
+            PyErr_Clear();
+            throw Exception(ErrorCodes::QUERY_WAS_CANCELLED, "Query was cancelled");
+        }
         std::string error_message = getExceptionMessage();
         throw Exception(ErrorCodes::UDF_RUNNING_ERROR, "UDF running error, detail message: {}", error_message);
     }
 
     return exe_result;
+}
+
+bool isGenerator(const PyObjectPtr & obj)
+{
+    if (!obj)
+        return false;
+
+    /// Check if it's a generator object (created by yield)
+    if (PyGen_Check(obj.get()))
+        return true;
+
+    /// Check if it has __next__ method (iterator protocol)
+    if (PyIter_Check(obj.get()))
+        return true;
+
+    return false;
+}
+
+bool isAsyncGeneratorOrCoroutine(const PyObjectPtr & obj)
+{
+    if (!obj)
+        return false;
+
+    return PyCoro_CheckExact(obj.get()) || PyAsyncGen_CheckExact(obj.get());
+}
+
+bool isIterable(const PyObjectPtr & obj)
+{
+    if (!obj)
+        return false;
+
+    /// Check if it has __iter__ method
+    int has_iter = PyObject_HasAttrString(obj.get(), "__iter__");
+    if (has_iter < 0)
+    {
+        PyErr_Clear();
+        return false;
+    }
+
+    return has_iter || PySequence_Check(obj.get());
+}
+
+PyObjectPtr getIterator(const PyObjectPtr & obj)
+{
+    if (!obj)
+        return PyObjectPtr{};
+
+    PyObjectPtr iterator{PyObject_GetIter(obj.get())};
+
+    if (!iterator)
+    {
+        if (hasException())
+        {
+            std::string error_message = getExceptionMessage();
+            throw Exception(ErrorCodes::UDF_INTERNAL_ERROR, "Failed to get iterator: {}", error_message);
+        }
+        return PyObjectPtr{};
+    }
+
+    return iterator;
+}
+
+PyObjectPtr iterNext(const PyObjectPtr & iterator)
+{
+    if (!iterator)
+        return PyObjectPtr{};
+
+    PyObjectPtr next_item{PyIter_Next(iterator.get())};
+
+    /// PyIter_Next returns NULL when exhausted (no exception) or on error (with exception)
+    if (!next_item)
+    {
+        if (hasException())
+        {
+            if (PyErr_ExceptionMatches(PyExc_KeyboardInterrupt) || PyErr_ExceptionMatches(PyExc_GeneratorExit))
+            {
+                PyErr_Clear();
+                throw Exception(ErrorCodes::QUERY_WAS_CANCELLED, "Query was cancelled");
+            }
+            std::string error_message = getExceptionMessage();
+            throw Exception(ErrorCodes::UDF_RUNNING_ERROR, "Iterator error: {}", error_message);
+        }
+        /// Iterator exhausted - return empty pointer
+        return PyObjectPtr{};
+    }
+
+    return next_item;
+}
+
+PyObjectPtr normalizePythonListForTuple(const PyObjectPtr & py_list, size_t tuple_size)
+{
+    if (!py_list)
+        return PyObjectPtr::borrow(py_list.get());
+
+    auto make_list_from_iterable = [](PyObject * obj) {
+        PyObjectPtr list{PySequence_List(obj)};
+        if (!list)
+            throw Exception(ErrorCodes::UDF_INTERNAL_ERROR, "Failed to convert Python iterable to list: {}", getExceptionMessage());
+        return list;
+    };
+
+    auto make_list_from_row = [](PyObject * row) {
+        PyObjectPtr list{PyList_New(1)};
+        if (!list)
+            throw Exception(ErrorCodes::UDF_INTERNAL_ERROR, "Failed to allocate Python list for tuple normalization");
+        Py_INCREF(row);
+        PyList_SET_ITEM(list.get(), 0, row);
+        return list;
+    };
+
+    auto make_list_from_scalar = [](PyObject * value) {
+        PyObjectPtr list{PyList_New(1)};
+        if (!list)
+            throw Exception(ErrorCodes::UDF_INTERNAL_ERROR, "Failed to allocate Python list for tuple normalization");
+        PyObject * tuple = PyTuple_New(1);
+        if (!tuple)
+            throw Exception(ErrorCodes::UDF_INTERNAL_ERROR, "Failed to allocate Python tuple for tuple normalization");
+        Py_INCREF(value);
+        PyTuple_SET_ITEM(tuple, 0, value);
+        PyList_SET_ITEM(list.get(), 0, tuple);
+        return list;
+    };
+
+    auto is_string_like = [](PyObject * obj) { return PyUnicode_Check(obj) || PyBytes_Check(obj) || PyByteArray_Check(obj); };
+
+    if (PyList_Check(py_list.get()))
+    {
+        if (tuple_size != 1)
+            return PyObjectPtr::borrow(py_list.get());
+
+        Py_ssize_t size = PyList_Size(py_list.get());
+        if (size == 0)
+            return PyObjectPtr::borrow(py_list.get());
+
+        PyObject * first = PyList_GetItem(py_list.get(), 0);
+        if (PyList_Check(first) || PyTuple_Check(first))
+            return PyObjectPtr::borrow(py_list.get());
+
+        PyObjectPtr new_list{PyList_New(size)};
+        if (!new_list)
+            throw Exception(ErrorCodes::UDF_INTERNAL_ERROR, "Failed to allocate Python list for tuple normalization");
+
+        for (Py_ssize_t i = 0; i < size; ++i)
+        {
+            PyObject * item = PyList_GetItem(py_list.get(), i);
+            PyObject * tuple = PyTuple_New(1);
+            if (!tuple)
+                throw Exception(ErrorCodes::UDF_INTERNAL_ERROR, "Failed to allocate Python tuple for tuple normalization");
+            Py_INCREF(item);
+            PyTuple_SET_ITEM(tuple, 0, item);
+            PyList_SET_ITEM(new_list.get(), i, tuple);
+        }
+
+        return new_list;
+    }
+
+    if (PyTuple_Check(py_list.get()))
+    {
+        Py_ssize_t size = PyTuple_Size(py_list.get());
+        if (size == 0)
+            return PyObjectPtr{PyList_New(0)};
+
+        if (tuple_size == 1)
+        {
+            auto list = make_list_from_iterable(py_list.get());
+            return normalizePythonListForTuple(list, tuple_size);
+        }
+
+        PyObject * first = PyTuple_GetItem(py_list.get(), 0);
+        if (first && (PyList_Check(first) || PyTuple_Check(first)))
+            return make_list_from_iterable(py_list.get());
+
+        return make_list_from_row(py_list.get());
+    }
+
+    if (tuple_size == 1)
+    {
+        if (!is_string_like(py_list.get()) && isIterable(py_list))
+        {
+            auto list = make_list_from_iterable(py_list.get());
+            return normalizePythonListForTuple(list, tuple_size);
+        }
+        return make_list_from_scalar(py_list.get());
+    }
+
+    if (!is_string_like(py_list.get()) && isIterable(py_list))
+        return make_list_from_iterable(py_list.get());
+
+    return PyObjectPtr::borrow(py_list.get());
 }
 }

@@ -11,6 +11,7 @@
 #include <Core/DecimalFunctions.h>
 #include <DataTypes/DataTypeArray.h>
 #include <DataTypes/DataTypeMap.h>
+#include <DataTypes/DataTypeNullable.h>
 #include <DataTypes/DataTypeTuple.h>
 #include <Common/DateLUT.h>
 #include <Common/Exception.h>
@@ -264,8 +265,17 @@ PyObjectPtr convertToPythonObject(const Field & data, const DataTypePtr & type)
         //     break;
         // case TypeIndex::Interval:
         //     break;
-        // case TypeIndex::Nullable:
-        //     break;
+        case TypeIndex::Nullable:
+        {
+            if (data.isNull())
+                return PyObjectPtr::borrow(Py_None);
+
+            auto nullable_type = std::dynamic_pointer_cast<const DataTypeNullable>(type);
+            if (!nullable_type)
+                throw Exception(ErrorCodes::UDF_INTERNAL_ERROR, "Expected Nullable type, but got {}", type->getName());
+
+            return convertToPythonObject(data, nullable_type->getNestedType());
+        }
         // case TypeIndex::Function:
         //     break;
         // case TypeIndex::AggregateFunction:
@@ -284,12 +294,17 @@ PyObjectPtr convertToPythonObject(const Field & data, const DataTypePtr & type)
                 for (size_t i = 0; i < value.size(); i++)
                 {
                     auto tuple = convertToPythonObject(value[i], pair_type);
-                    if (!PyTuple_Check(tuple.get()) && PyTuple_Size(tuple.get()) != 2)
+                    if (!PyTuple_Check(tuple.get()) || PyTuple_Size(tuple.get()) != 2)
                         throw Exception(
                             ErrorCodes::UDF_INTERNAL_ERROR, "Failed to convert {} to Python tuple", fieldTypeToString(data.getType()));
-                    auto key = PyObjectPtr::borrow(PyTuple_GetItem(tuple.get(), 0));
-                    auto value = PyObjectPtr::borrow(PyTuple_GetItem(tuple.get(), 1));
-                    PyDict_SetItem(py_dict.get(), key.release(), value.release());
+                    PyObject * key = PyTuple_GetItem(tuple.get(), 0); /// Borrowed reference
+                    PyObject * mapped_value = PyTuple_GetItem(tuple.get(), 1); /// Borrowed reference
+                    if (!key || !mapped_value)
+                        throw Exception(ErrorCodes::UDF_INTERNAL_ERROR, "Failed to extract key/value from Python tuple");
+
+                    if (PyDict_SetItem(py_dict.get(), key, mapped_value) != 0)
+                        throw Exception(
+                            ErrorCodes::UDF_INTERNAL_ERROR, "Failed to insert map item into Python dict: {}", getExceptionMessage());
                 }
 
                 return py_dict;
@@ -438,7 +453,7 @@ ALWAYS_INLINE UInt32 loadDateTimeFromPyDateTime(PyObject * object)
 
         return static_cast<UInt32>(local_datetime.to_time_t(time_zone));
     }
-    catch(const Exception & e)
+    catch (const Exception & e)
     {
         raiseConvertionException("datetime", object, e.displayText());
     }
@@ -568,19 +583,35 @@ Field loadFromPythonObject(PyObject * object, const DataTypePtr & type)
         }
         case TypeIndex::Tuple:
         {
-            if (!PyTuple_Check(object))
+            const bool is_tuple = PyTuple_Check(object);
+            const bool is_list = PyList_Check(object);
+
+            if (!is_tuple && !is_list)
                 raiseConvertionException("Tuple", object);
 
             Tuple tuple;
-            size_t tuple_size = PyTuple_Size(object);
             auto tuple_type = std::dynamic_pointer_cast<const DataTypeTuple>(type);
+            const size_t expected_size = tuple_type->getElements().size();
+            const Py_ssize_t tuple_size = is_tuple ? PyTuple_Size(object) : PyList_Size(object);
 
-            tuple.reserve(tuple_size);
+            if (tuple_size < 0)
+                raiseConvertionException("Tuple", object, "failed to get tuple/list size");
 
-            for (size_t i = 0; i < tuple_size; i++)
+            if (expected_size != static_cast<size_t>(tuple_size))
+            {
+                raiseConvertionException(
+                    "Tuple",
+                    object,
+                    fmt::format("expected {} elements, got {}", expected_size, static_cast<size_t>(tuple_size)));
+            }
+
+            tuple.reserve(expected_size);
+
+            for (size_t i = 0; i < expected_size; i++)
             {
                 auto element_type = tuple_type->getElement(i);
-                tuple.push_back(loadFromPythonObject(PyTuple_GetItem(object, i), element_type));
+                PyObject * item = is_tuple ? PyTuple_GetItem(object, i) : PyList_GetItem(object, i);
+                tuple.push_back(loadFromPythonObject(item, element_type));
             }
 
             return tuple;
@@ -589,8 +620,17 @@ Field loadFromPythonObject(PyObject * object, const DataTypePtr & type)
         //     break;
         // case TypeIndex::Interval:
         //     break;
-        // case TypeIndex::Nullable:
-        //     break;
+        case TypeIndex::Nullable:
+        {
+            if (Py_IsNone(object))
+                return Null{};
+
+            auto nullable_type = std::dynamic_pointer_cast<const DataTypeNullable>(type);
+            if (!nullable_type)
+                throw Exception(ErrorCodes::UDF_INTERNAL_ERROR, "Expected Nullable type, but got {}", type->getName());
+
+            return loadFromPythonObject(object, nullable_type->getNestedType());
+        }
         // case TypeIndex::Function:
         //     break;
         // case TypeIndex::AggregateFunction:
@@ -639,9 +679,27 @@ Field loadFromPythonObject(PyObject * object, const DataTypePtr & type)
         // case TypeIndex::IPv6:
         //     break;
         default:
-            PyObject * repr = PyObject_Repr(object);
+        {
+            PyObjectPtr repr{PyObject_Repr(object)};
+            if (!repr)
+            {
+                std::string python_error;
+                if (hasException())
+                    python_error = getExceptionMessage();
+                throw Exception(
+                    ErrorCodes::UDF_INTERNAL_ERROR,
+                    "Failed to convert Python object to {} (repr failed{})",
+                    type->getName(),
+                    python_error.empty() ? "" : fmt::format(": {}", python_error));
+            }
+
+            const char * repr_str = PyUnicode_AsUTF8(repr.get());
             throw Exception(
-                ErrorCodes::UDF_INTERNAL_ERROR, "Failed to convert Python Object {} to {}", PyUnicode_AsUTF8(repr), type->getName());
+                ErrorCodes::UDF_INTERNAL_ERROR,
+                "Failed to convert Python object {} to {}",
+                repr_str ? repr_str : "<non-utf8 repr>",
+                type->getName());
+        }
     }
 }
 

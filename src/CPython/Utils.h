@@ -47,4 +47,24 @@ PyObjectPtr compile(const std::string & source);
 PyObjectPtr executeByteCode(const PyObjectPtr & byte_code, const std::string & module_name);
 
 PyObjectPtr executeObject(const PyObjectPtr & obj, const PyObjectPtr & args = PyObjectPtr{});
+
+/// Check if Python object is a generator or iterator
+bool isGenerator(const PyObjectPtr & obj);
+
+/// Check if Python object is an async coroutine or async generator.
+/// These objects are not compatible with synchronous iteration via PyIter_Next.
+bool isAsyncGeneratorOrCoroutine(const PyObjectPtr & obj);
+
+/// Check if Python object is iterable (has __iter__ method)
+bool isIterable(const PyObjectPtr & obj);
+
+/// Get iterator from an iterable object
+PyObjectPtr getIterator(const PyObjectPtr & obj);
+
+/// Get next item from iterator (returns empty PyObjectPtr when exhausted)
+PyObjectPtr iterNext(const PyObjectPtr & iterator);
+
+/// Normalize a Python rows object into a list of tuples for tuple conversion.
+/// If tuple_size == 1, allow list/tuple-of-scalars or scalar values by wrapping into 1-element tuples.
+PyObjectPtr normalizePythonListForTuple(const PyObjectPtr & py_list, size_t tuple_size);
 }

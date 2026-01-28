@@ -13,6 +13,7 @@ namespace ErrorCodes
 extern const int INCORRECT_QUERY;
 extern const int INVALID_SETTING_VALUE;
 extern const int UNKNOWN_TYPE;
+extern const int BAD_ARGUMENTS;
 }
 
 void registerS3ExternalTable(ExternalTableFactory & factory);
@@ -83,7 +84,7 @@ StoragePtr ExternalTableFactory::getExternalTable(const StorageFactory::Argument
 
     storage_metadata.setVersion(args.schema_version);
 
-    return creators.at(type)(args.table_id, storage_metadata, std::move(external_table_settings), args.attach, context);
+    return creators.at(type)(args.table_id, storage_metadata, args.query, std::move(external_table_settings), args.attach, context);
 }
 
 ExternalTableFactory::ExternalTableFactory()
