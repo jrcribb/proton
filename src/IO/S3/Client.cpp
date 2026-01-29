@@ -2,7 +2,12 @@
 
 #if USE_AWS_MSK_IAM || USE_AWS_S3 /// proton: updated
 
+#include <Common/Exception.h>
+
+#include <aws/core/Aws.h>
 #include <aws/core/client/CoreErrors.h>
+#include <aws/core/utils/cbor/CborValue.h>
+#include <aws/core/client/DefaultRetryStrategy.h>
 #include <aws/s3/model/HeadBucketRequest.h>
 #include <aws/s3/model/GetObjectRequest.h>
 #include <aws/s3/model/HeadObjectRequest.h>
@@ -68,11 +73,13 @@ Client::RetryStrategy::RetryStrategy(
 /// NOLINTNEXTLINE(google-runtime-int)
 bool Client::RetryStrategy::ShouldRetry(const Aws::Client::AWSError<Aws::Client::CoreErrors>& error, long attemptedRetries) const
 {
-    if (context && context->isCancelled())
-        return false;
-
     if (error.GetResponseCode() == Aws::Http::HttpResponseCode::MOVED_PERMANENTLY)
         return false;
+
+    /// proton: starts
+    if (context && context->isCancelled())
+        return false;
+    /// proton: ends
 
     return wrapped_strategy->ShouldRetry(error, attemptedRetries);
 }
@@ -99,12 +106,12 @@ bool Client::RetryStrategy::HasSendToken()
     return wrapped_strategy->HasSendToken();
 }
 
-void Client::RetryStrategy::RequestBookkeeping(const Aws::Client::HttpResponseOutcome& httpResponseOutcome)
+void Client::RetryStrategy::RequestBookkeeping(const Aws::Client::HttpResponseOutcome & httpResponseOutcome)
 {
     return wrapped_strategy->RequestBookkeeping(httpResponseOutcome);
 }
 
-void Client::RetryStrategy::RequestBookkeeping(const Aws::Client::HttpResponseOutcome& httpResponseOutcome, const Aws::Client::AWSError<Aws::Client::CoreErrors>& lastError)
+void Client::RetryStrategy::RequestBookkeeping(const Aws::Client::HttpResponseOutcome & httpResponseOutcome, const Aws::Client::AWSError<Aws::Client::CoreErrors> & lastError)
 {
     return wrapped_strategy->RequestBookkeeping(httpResponseOutcome, lastError);
 }
@@ -133,6 +140,7 @@ void addAdditionalAMZHeadersToCanonicalHeadersList(
         }
     }
 }
+
 }
 
 std::unique_ptr<Client> Client::create(
@@ -146,8 +154,7 @@ std::unique_ptr<Client> Client::create(
 {
     verifyClientConfiguration(client_configuration);
     return std::unique_ptr<Client>(
-        new Client(max_redirects_, std::move(sse_kms_config_), credentials_provider, client_configuration, sign_payloads, client_settings,
-            std::move(retry_context_))); /// proton: added retry_context_
+        new Client(max_redirects_, std::move(sse_kms_config_), credentials_provider, client_configuration, sign_payloads, client_settings, std::move(retry_context_))); /// proton: added retry_context_
 }
 
 std::unique_ptr<Client> Client::clone() const
@@ -195,6 +202,24 @@ Client::Client(
 
     provider_type = deduceProviderType(initial_endpoint);
     LOG_TRACE(log, "Provider type: {}", toString(provider_type));
+    if (provider_type == ProviderType::GCS)
+    {
+        /// GCS can operate in 2 modes for header and query params names:
+        /// - with both x-amz and x-goog prefixes allowed (but cannot mix different prefixes in same request)
+        /// - only with x-goog prefix
+        /// first mode is allowed only with HMAC (or unsigned requests) so when we
+        /// find credential keys we can simply behave as the underlying storage is S3
+        /// otherwise, we need to be aware we are making requests to GCS
+        /// and replace all headers with a valid prefix when needed
+        if (credentials_provider)
+        {
+            auto credentials = credentials_provider->GetAWSCredentials();
+            if (credentials.IsEmpty())
+                api_mode = ApiMode::GCS;
+        }
+    }
+
+    LOG_TRACE(log, "API mode of the S3 client: {}", api_mode);
 
     if (provider_type == ProviderType::GCS)
     {
@@ -235,6 +260,7 @@ Client::Client(
     , explicit_region(other.explicit_region)
     , detect_region(other.detect_region)
     , provider_type(other.provider_type)
+    , api_mode(other.api_mode)
     , max_redirects(other.max_redirects)
     , sse_kms_config(other.sse_kms_config)
     , log(getLogger("S3Client"))
@@ -262,6 +288,11 @@ Client::~Client()
 Aws::Auth::AWSCredentials Client::getCredentials() const
 {
     return credentials_provider->GetAWSCredentials();
+}
+
+bool Client::checkIfCredentialsChanged(const Aws::S3::S3Error & error) const
+{
+    return (error.GetExceptionName() == "AuthenticationRequired");
 }
 
 bool Client::checkIfWrongRegionDefined(const std::string & bucket, const Aws::S3::S3Error & error, std::string & region) const
@@ -322,6 +353,9 @@ Model::HeadObjectOutcome Client::HeadObject(HeadObjectRequest & request) const
     const auto & bucket = request.GetBucket();
 
     request.setApiMode(api_mode);
+
+    if (isS3ExpressBucket())
+        request.setIsS3ExpressBucket();
 
     addAdditionalAMZHeadersToCanonicalHeadersList(request, client_configuration.extra_headers);
 
@@ -552,7 +586,11 @@ Client::doRequest(RequestType & request, RequestFn request_fn) const
     addAdditionalAMZHeadersToCanonicalHeadersList(request, client_configuration.extra_headers);
     const auto & bucket = request.GetBucket();
     request.setApiMode(api_mode);
-    if (client_settings.disable_checksum)
+
+    /// We have to use checksums for S3Express buckets, so the order of checks should be the following
+    if (client_settings.is_s3express_bucket)
+        request.setIsS3ExpressBucket();
+    else if (client_settings.disable_checksum)
         request.disableChecksum();
 
     if (auto region = getRegionForBucket(bucket); !region.empty())
@@ -586,6 +624,13 @@ Client::doRequest(RequestType & request, RequestFn request_fn) const
 
         const auto & error = result.GetError();
 
+        if (checkIfCredentialsChanged(error))
+        {
+            LOG_INFO(log, "Credentials changed, attempting again");
+            credentials_provider->SetNeedRefresh();
+            continue;
+        }
+
         std::string new_region;
         if (checkIfWrongRegionDefined(bucket, error, new_region))
         {
@@ -593,24 +638,29 @@ Client::doRequest(RequestType & request, RequestFn request_fn) const
             continue;
         }
 
-        if (error.GetResponseCode() != Aws::Http::HttpResponseCode::MOVED_PERMANENTLY)
+        /// IllegalLocationConstraintException may indicate that we are working with an opt-in region (e.g. me-south-1)
+        /// In that case, we need to update the region and try again
+        bool is_illegal_constraint_exception = error.GetExceptionName() == "IllegalLocationConstraintException";
+        if (error.GetResponseCode() != Aws::Http::HttpResponseCode::MOVED_PERMANENTLY && !is_illegal_constraint_exception)
             return result;
 
         // maybe we detect a correct region
-        if (!detect_region)
+        if (!detect_region || is_illegal_constraint_exception)
         {
             if (auto region = GetErrorMarshaller()->ExtractRegion(error); !region.empty() && region != explicit_region)
             {
+                LOG_INFO(log, "Detected new region: {}", region);
                 request.overrideRegion(region);
                 insertRegionOverride(bucket, region);
             }
         }
 
         // we possibly got new location, need to try with that one
-        auto new_uri = getURIFromError(error);
+        auto new_uri = is_illegal_constraint_exception ? std::optional<S3::URI>(initial_endpoint) : getURIFromError(error);
         if (!new_uri)
             return result;
 
+        /// proton: starts. "s3tables"
         // Check if user didn't mention any region
         if (auto pos = initial_endpoint.find(".amazonaws.com"); pos != std::string::npos)
         {
@@ -618,6 +668,7 @@ Client::doRequest(RequestType & request, RequestFn request_fn) const
             if (endpoint_prefix.ends_with("s3") || endpoint_prefix.ends_with("s3tables"))
                 new_uri->addRegionToURI(request.getRegionOverride());
         }
+        /// proton: starts
 
         const auto & current_uri_override = request.getURIOverride();
         /// we already tried with this URI
@@ -729,6 +780,24 @@ void Client::BuildHttpRequest(const Aws::AmazonWebServiceRequest& request,
         /// note that "amz-sdk-invocation-id" and "amz-sdk-request" are preserved
         httpRequest->DeleteHeader("x-amz-api-version");
     }
+}
+
+std::string Client::getGCSOAuthToken() const
+{
+    if (provider_type != ProviderType::GCS)
+        return "";
+
+    const auto & http_client = GetHttpClient();
+
+    if (!http_client)
+        return "";
+
+    auto * gcp_oauth_client = dynamic_cast<PocoHTTPClientGCPOAuth *>(http_client.get());
+
+    if (!gcp_oauth_client)
+        return "";
+
+    return gcp_oauth_client->getBearerToken();
 }
 
 /// proton: starts
@@ -965,39 +1034,15 @@ std::unique_ptr<S3::Client> ClientFactory::create( // NOLINT
     client_configuration.extra_headers = std::move(headers);
 
     Aws::Auth::AWSCredentials credentials(access_key_id, secret_access_key, session_token);
-    auto credentials_provider = std::make_shared<S3CredentialsProviderChain>(
-            client_configuration,
-            std::move(credentials),
-            credentials_configuration);
+
+    // we need to force environment credentials if explicit credentials are empty and we have role_arn
+    // this is a crutch because we know that we have environment credentials on our Cloud
+    credentials_configuration.use_environment_credentials =
+        credentials_configuration.use_environment_credentials || (credentials.IsEmpty() && !credentials_configuration.role_arn.empty());
+
+    auto credentials_provider = getCredentialsProvider(client_configuration, credentials, credentials_configuration);
 
     /// proton: starts
-    std::shared_ptr<Aws::Auth::AWSCredentialsProvider> provider;
-
-    for (size_t i = 0; const auto & cp : credentials_provider->GetProviders())
-    {
-        try
-        {
-            const auto creds = cp->GetAWSCredentials();
-            if (!creds.IsEmpty())
-            {
-                LOG_INFO(getLogger("S3Client"), "The {}th provider from the provider chain has been picked", i);
-                provider = cp;
-                break;
-            }
-            ++i;
-        }
-        catch (...)
-        {
-            /// Just skip to the next one
-        }
-    }
-
-    if (!provider)
-    {
-        LOG_INFO(getLogger("S3Client"), "No AWS credentials available, will use anonymous credentials");
-        provider = std::make_shared<Aws::Auth::AnonymousAWSCredentialsProvider>();
-    }
-
     auto retry_context = std::make_shared<Client::RetryContext>();
     /// proton: ends
 
@@ -1012,9 +1057,10 @@ std::unique_ptr<S3::Client> ClientFactory::create( // NOLINT
     return Client::create(
         client_configuration.s3_max_redirects,
         std::move(sse_kms_config),
-        provider, /// proton: updated -> credentials_provider,
+        credentials_provider,
         client_configuration, // Client configuration.
-        Aws::Client::AWSAuthV4Signer::PayloadSigningPolicy::Never,
+        client_settings.is_s3express_bucket ? Aws::Client::AWSAuthV4Signer::PayloadSigningPolicy::RequestDependent
+                                            : Aws::Client::AWSAuthV4Signer::PayloadSigningPolicy::Never,
         client_settings,
         std::move(retry_context)); /// proton: added retry_context
 }
@@ -1042,6 +1088,11 @@ PocoHTTPClientConfiguration ClientFactory::createClientConfiguration( // NOLINT
         put_request_throttler);
 }
 
+bool isS3ExpressEndpoint(const std::string & endpoint)
+{
+    /// On one hand this check isn't 100% reliable, on the other - all it will change is whether we attach checksums to the requests.
+    return endpoint.contains("s3express");
+}
 }
 
 }

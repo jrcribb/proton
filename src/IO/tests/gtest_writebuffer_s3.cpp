@@ -205,8 +205,9 @@ struct Client : DB::S3::Client
                    .use_virtual_addressing = true,
                    .disable_checksum = false,
                    .gcs_issue_compose_request = false,
+                   .is_s3express_bucket = false,
                },
-               /* context = */ nullptr)
+               /*retry_context=*/nullptr)
         , store(mock_s3_store)
     {}
 

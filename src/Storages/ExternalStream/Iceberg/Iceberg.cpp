@@ -71,6 +71,11 @@ void Iceberg::prepareS3Configuration(const ContextPtr & context)
     configuration.auth_settings.session_token = settings->session_token;
     configuration.auth_settings.use_environment_credentials = settings->use_environment_credentials;
 
+    configuration.auth_settings.http_client = settings->http_client;
+    configuration.auth_settings.service_account = settings->service_account;
+    configuration.auth_settings.metadata_service = settings->metadata_service;
+    configuration.auth_settings.request_token_path = settings->request_token_path;
+
     configuration.request_settings.updateFromSettings(context->getSettingsRef());
 
     s3_configuration = std::move(configuration);

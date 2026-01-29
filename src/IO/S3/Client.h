@@ -89,6 +89,8 @@ private:
     std::unordered_map<ClientCache *, std::weak_ptr<ClientCache>> client_caches TSA_GUARDED_BY(clients_mutex);
 };
 
+bool isS3ExpressEndpoint(const std::string & endpoint);
+
 struct ClientSettings
 {
     bool use_virtual_addressing = false;
@@ -104,6 +106,7 @@ struct ClientSettings
     /// Ability to enable it preserved since likely it is required for old
     /// files.
     bool gcs_issue_compose_request = false;
+    bool is_s3express_bucket = false;
 };
 
 /// Client that improves the client from the AWS SDK
@@ -227,20 +230,29 @@ public:
 
     bool supportsMultiPartCopy() const;
 
+    bool isS3ExpressBucket() const { return client_settings.is_s3express_bucket; }
+
     bool isClientForDisk() const
     {
         return client_configuration.for_disk_s3;
     }
 
+    ProviderType getProviderType() const { return provider_type; }
+
+    std::string getGCSOAuthToken() const;
+
+    std::string getRegionForBucket(const std::string & bucket, bool force_detect = false) const;
+
+    /// proton: starts
     void cancel() const
     {
         if(retry_context)
             retry_context->cancel();
     }
+    /// proton: ends
 
-private:
-    friend struct ::MockS3::Client;
-
+protected:
+    // visible for testing
     Client(size_t max_redirects_,
            ServerSideEncryptionKMSConfig sse_kms_config_,
            const std::shared_ptr<Aws::Auth::AWSCredentialsProvider> & credentials_provider_,
@@ -248,6 +260,9 @@ private:
            Aws::Client::AWSAuthV4Signer::PayloadSigningPolicy sign_payloads,
            const ClientSettings & client_settings_,
            std::shared_ptr<Client::RetryContext> retry_context_); /// proton: added retry_context_
+
+private:
+    friend struct ::MockS3::Client;
 
     Client(
         const Client & other, const PocoHTTPClientConfiguration & client_configuration);
@@ -284,7 +299,6 @@ private:
     std::optional<S3::URI> getURIFromError(const Aws::S3::S3Error & error) const;
     std::optional<Aws::S3::S3Error> updateURIForBucketForHead(const std::string & bucket) const;
 
-    std::string getRegionForBucket(const std::string & bucket, bool force_detect = false) const;
     std::optional<S3::URI> getURIForBucket(const std::string & bucket) const;
 
     bool checkIfWrongRegionDefined(const std::string & bucket, const Aws::S3::S3Error & error, std::string & region) const;
@@ -292,6 +306,9 @@ private:
 
     template <typename RequestResult>
     RequestResult processRequestResult(RequestResult && outcome) const;
+
+    /// Returns true if a specified error means that the credentials used are expired or may have changed.
+    bool checkIfCredentialsChanged(const Aws::S3::S3Error & error) const;
 
     String initial_endpoint;
     std::shared_ptr<Aws::Auth::AWSCredentialsProvider> credentials_provider;

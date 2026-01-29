@@ -120,22 +120,35 @@ AuthSettings AuthSettings::loadFromConfig(const std::string & config_elem, const
         if (config.has(config_elem + ".no_sign_request"))
             no_sign_request = config.getBool(config_elem + ".no_sign_request");
 
+        auto role_arn = config.getString(config_elem + ".role_arn", "");
+        auto role_session_name = config.getString(config_elem + ".role_session_name", "");
+        auto http_client = config.getString(config_elem + ".http_client", "");
+        auto service_account = config.getString(config_elem + ".service_account", "");
+        auto metadata_service = config.getString(config_elem + ".metadata_service", "");
+        auto request_token_path = config.getString(config_elem + ".request_token_path", "");
+
         HTTPHeaderEntries headers = getHTTPHeaders(config_elem, config);
         ServerSideEncryptionKMSConfig sse_kms_config = getSSEKMSConfig(config_elem, config);
 
         return AuthSettings
             {
-                std::move(access_key_id),
-                std::move(secret_access_key),
-                std::move(session_token), /// proton: added
-                std::move(region),
-                std::move(server_side_encryption_customer_key_base64),
-                std::move(sse_kms_config),
-                std::move(headers),
-                use_environment_credentials,
-                use_insecure_imds_request,
-                expiration_window_seconds,
-                no_sign_request
+                .access_key_id = std::move(access_key_id),
+                .secret_access_key = std::move(secret_access_key),
+                .session_token = std::move(session_token),
+                .region = std::move(region),
+                .server_side_encryption_customer_key_base64 = std::move(server_side_encryption_customer_key_base64),
+                .server_side_encryption_kms_config = std::move(sse_kms_config),
+                .role_arn = std::move(role_arn),
+                .role_session_name = std::move(role_session_name),
+                .http_client = std::move(http_client),
+                .service_account = std::move(service_account),
+                .metadata_service = std::move(metadata_service),
+                .request_token_path = std::move(request_token_path),
+                .headers = std::move(headers),
+                .use_environment_credentials = use_environment_credentials,
+                .use_insecure_imds_request = use_insecure_imds_request,
+                .expiration_window_seconds = expiration_window_seconds,
+                .no_sign_request = no_sign_request,
             };
 }
 
@@ -155,6 +168,20 @@ void AuthSettings::updateFrom(const AuthSettings & from)
             access_key_id = from.access_key_id;
         if (!from.secret_access_key.empty())
             secret_access_key = from.secret_access_key;
+        if (!from.session_token.empty())
+            session_token = from.session_token;
+        if (!from.role_arn.empty())
+            role_arn = from.role_arn;
+        if (!from.role_session_name.empty())
+            role_session_name = from.role_session_name;
+        if (!from.http_client.empty())
+            http_client = from.http_client;
+        if (!from.service_account.empty())
+            service_account = from.service_account;
+        if (!from.metadata_service.empty())
+            metadata_service = from.metadata_service;
+        if (!from.request_token_path.empty())
+            request_token_path = from.request_token_path;
 
         headers = from.headers;
         region = from.region;

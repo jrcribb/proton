@@ -1479,6 +1479,12 @@ void StorageS3::updateConfiguration(ContextPtr ctx, StorageS3::Configuration & u
     client_configuration.maxConnections = static_cast<unsigned>(upd.request_settings.max_connections);
 
     auto credentials = Aws::Auth::AWSCredentials(upd.auth_settings.access_key_id, upd.auth_settings.secret_access_key);
+
+    client_configuration.http_client = upd.auth_settings.http_client;
+    client_configuration.service_account = upd.auth_settings.service_account;
+    client_configuration.metadata_service = upd.auth_settings.metadata_service;
+    client_configuration.request_token_path = upd.auth_settings.request_token_path;
+
     auto headers = upd.auth_settings.headers;
     if (!upd.headers_from_ast.empty())
         headers.insert(headers.end(), upd.headers_from_ast.begin(), upd.headers_from_ast.end());
@@ -1490,6 +1496,7 @@ void StorageS3::updateConfiguration(ContextPtr ctx, StorageS3::Configuration & u
         .use_virtual_addressing = upd.url.is_virtual_hosted_style,
         .disable_checksum = ctx->getSettingsRef().s3_disable_checksum,
         .gcs_issue_compose_request = ctx->getConfigRef().getBool("s3.gcs_issue_compose_request", false),
+        .is_s3express_bucket = S3::isS3ExpressEndpoint(upd.url.endpoint),
     };
 
     upd.client = DB::S3::ClientFactory::instance().create(
@@ -1501,11 +1508,15 @@ void StorageS3::updateConfiguration(ContextPtr ctx, StorageS3::Configuration & u
         upd.auth_settings.server_side_encryption_kms_config,
         std::move(headers),
         S3::CredentialsConfiguration{
-            upd.auth_settings.use_environment_credentials.value_or(ctx->getConfigRef().getBool("s3.use_environment_credentials", false)),
-            upd.auth_settings.use_insecure_imds_request.value_or(ctx->getConfigRef().getBool("s3.use_insecure_imds_request", false)),
-            upd.auth_settings.expiration_window_seconds.value_or(
+            .use_environment_credentials
+            = upd.auth_settings.use_environment_credentials.value_or(ctx->getConfigRef().getBool("s3.use_environment_credentials", false)),
+            .use_insecure_imds_request
+            = upd.auth_settings.use_insecure_imds_request.value_or(ctx->getConfigRef().getBool("s3.use_insecure_imds_request", false)),
+            .expiration_window_seconds = upd.auth_settings.expiration_window_seconds.value_or(
                 ctx->getConfigRef().getUInt64("s3.expiration_window_seconds", S3::DEFAULT_EXPIRATION_WINDOW_SECONDS)),
-            upd.auth_settings.no_sign_request.value_or(ctx->getConfigRef().getBool("s3.no_sign_request", false)),
+            .no_sign_request = upd.auth_settings.no_sign_request.value_or(ctx->getConfigRef().getBool("s3.no_sign_request", false)),
+            .role_arn = upd.auth_settings.role_arn,
+            .role_session_name = upd.auth_settings.role_session_name,
         });
 }
 

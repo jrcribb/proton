@@ -180,6 +180,7 @@
     M(LocalFileSystemShortWrite, "Short write to local file system") \
     \
     M(S3DiskNoKeyErrors, "The number of `NoSuchKey` errors that occur when reading data from S3 cloud storage through ClickHouse disks.") \
+    M(S3CachedCredentialsProviders, "Total number of cached credentials providers") \
 
 
 namespace CurrentMetrics

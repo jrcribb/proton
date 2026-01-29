@@ -1,4 +1,5 @@
 #include <Databases/ApacheIceberg/DatabaseIceberg.h>
+#include "Databases/ApacheIceberg/DatabaseIcebergSettings.h"
 
 #if USE_AVRO
 #include <Core/Settings.h>
@@ -44,6 +45,11 @@ extern const DatabaseApacheIcebergSettingsString storage_endpoint;
 extern const DatabaseApacheIcebergSettingsBool vended_credentials;
 extern const DatabaseApacheIcebergSettingsString storage_credential;
 extern const DatabaseApacheIcebergSettingsString credential;
+extern const DatabaseApacheIcebergSettingsString project_id;
+extern const DatabaseApacheIcebergSettingsString auth_type;
+extern const DatabaseApacheIcebergSettingsString auth_service_account;
+extern const DatabaseApacheIcebergSettingsString auth_metadata_service;
+extern const DatabaseApacheIcebergSettingsString auth_request_token_path;
 }
 
 namespace ErrorCodes
@@ -123,6 +129,14 @@ void DatabaseApacheIceberg::initCatalog() const
             if (credential.empty())
                 credential = settings[DatabaseApacheIcebergSetting::credential].value;
 
+            std::string oauth_server_uri = settings[DatabaseApacheIcebergSetting::auth_type].value == "gcp_oauth"
+                ? fmt::format(
+                      "http://{}/{}/{}/token",
+                      settings[DatabaseApacheIcebergSetting::auth_metadata_service].value,
+                      settings[DatabaseApacheIcebergSetting::auth_request_token_path].value,
+                      settings[DatabaseApacheIcebergSetting::auth_service_account].value)
+                : settings[DatabaseApacheIcebergSetting::oauth_server_uri].value;
+
             catalog_impl = std::make_shared<Apache::Iceberg::RestCatalog>(
                 settings[DatabaseApacheIcebergSetting::warehouse].value,
                 url,
@@ -130,11 +144,13 @@ void DatabaseApacheIceberg::initCatalog() const
                     .catalog_credential = credential,
                     .auth_scope = settings[DatabaseApacheIcebergSetting::auth_scope].value,
                     .auth_header = settings[DatabaseApacheIcebergSetting::auth_header],
-                    .oauth_server_uri = settings[DatabaseApacheIcebergSetting::oauth_server_uri].value,
+                    .oauth_server_uri = std::move(oauth_server_uri),
                     .use_environment_credentials = settings[DatabaseApacheIcebergSetting::use_environment_credentials].value,
                     .enable_sigv4 = settings[DatabaseApacheIcebergSetting::rest_catalog_sigv4_enabled].value,
                     .signing_region = settings[DatabaseApacheIcebergSetting::rest_catalog_signing_region].value,
                     .signing_name = settings[DatabaseApacheIcebergSetting::rest_catalog_signing_name].value,
+                    .auth_type = settings[DatabaseApacheIcebergSetting::auth_type].value,
+                    .gcp_project_id = settings[DatabaseApacheIcebergSetting::project_id].value,
                 },
                 Context::getGlobalContextInstance());
 
@@ -154,6 +170,8 @@ void DatabaseApacheIceberg::validateSettings()
     }
 
     auto validate_credential = [](const String & value, const String & name) {
+        if (value == "gcp_oauth")
+            return;
         if (value.find(':') == std::string::npos)
             throw DB::Exception(
                 DB::ErrorCodes::INVALID_SETTING_VALUE, "Unexpected format of {}: expected username and password separated by `:`", name);
@@ -266,6 +284,15 @@ StoragePtr DatabaseApacheIceberg::tryGetTable(const String & name [[maybe_unused
         {
             if (storage_credentials)
                 storage_credentials->addCredentialsToSettings(*stream_settings);
+        }
+
+        if (settings[DatabaseApacheIcebergSetting::auth_type].value == "gcp_oauth")
+        {
+            stream_settings->changes.setSetting("http_client", "gcp_oauth");
+            stream_settings->changes.setSetting("service_account", settings[DatabaseApacheIcebergSetting::auth_service_account].value);
+            stream_settings->changes.setSetting("metadata_service", settings[DatabaseApacheIcebergSetting::auth_metadata_service].value);
+            stream_settings->changes.setSetting(
+                "request_token_path", settings[DatabaseApacheIcebergSetting::auth_request_token_path].value);
         }
 
         stream_settings->changes.setSetting(
@@ -468,6 +495,14 @@ bool DatabaseApacheIceberg::configureTableEngine(ASTCreateQuery & create) const
 
     if (storage_credentials)
         storage_credentials->addCredentialsToSettings(*create.storage->settings);
+
+    if (settings[DatabaseApacheIcebergSetting::auth_type].value == "gcp_oauth")
+    {
+        create.storage->settings->changes.setSetting("http_client", "gcp_oauth");
+        create.storage->settings->changes.setSetting("service_account", settings[DatabaseApacheIcebergSetting::auth_service_account].value);
+        create.storage->settings->changes.setSetting("metadata_service", settings[DatabaseApacheIcebergSetting::auth_metadata_service].value);
+        create.storage->settings->changes.setSetting("request_token_path", settings[DatabaseApacheIcebergSetting::auth_request_token_path].value);
+    }
 
     create.storage->settings->changes.setSetting(
         "use_environment_credentials", settings[DatabaseApacheIcebergSetting::use_environment_credentials].value);

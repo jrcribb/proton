@@ -79,10 +79,17 @@ struct AuthSettings
 
     std::string access_key_id;
     std::string secret_access_key;
-    std::string session_token; /// proton: added
+    std::string session_token;
     std::string region;
     std::string server_side_encryption_customer_key_base64;
     ServerSideEncryptionKMSConfig server_side_encryption_kms_config;
+
+    std::string role_arn;
+    std::string role_session_name;
+    std::string http_client;
+    std::string service_account;
+    std::string metadata_service;
+    std::string request_token_path;
 
     HTTPHeaderEntries headers;
 

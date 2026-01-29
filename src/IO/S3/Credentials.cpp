@@ -1,8 +1,17 @@
+#include <atomic>
 #include <IO/ReadBufferFromFile.h>
 #include <IO/ReadHelpers.h>
 #include <IO/S3/Credentials.h>
 
 #if USE_AWS_MSK_IAM || USE_AWS_S3 /// proton: updated
+
+#    include <fmt/format.h>
+
+#    include <aws/core/Region.h>
+#    include <aws/core/client/ClientConfiguration.h>
+#    include <aws/s3/S3ErrorMarshaller.h>
+#    include <aws/core/endpoint/AWSEndpoint.h>
+#    include <aws/core/utils/xml/XmlSerializer.h>
 #    include <aws/core/Version.h>
 #    include <aws/core/platform/OSVersionInfo.h>
 #    include <aws/core/auth/STSCredentialsProvider.h>
@@ -12,13 +21,28 @@
 #    include <aws/core/utils/UUID.h>
 #    include <aws/core/http/HttpClientFactory.h>
 
-#    include <Common/logger_useful.h>
+#    include <aws/core/utils/HashingUtils.h>
+#    include <aws/core/platform/FileSystem.h>
 
+#    include <Common/logger_useful.h>
+#    include <Common/Concepts.h>
+#    include <Common/SipHash.h>
+#    include <Common/ProfileEvents.h>
 #    include <IO/S3/PocoHTTPClient.h>
-#    include <IO/S3/PocoHTTPClientFactory.h>
 #    include <IO/S3/Client.h>
 
 #    include <fstream>
+
+namespace ProfileEvents
+{
+    extern const Event S3CachedCredentialsProvidersReused;
+    extern const Event S3CachedCredentialsProvidersAdded;
+}
+
+namespace CurrentMetrics
+{
+    extern const Metric S3CachedCredentialsProviders;
+}
 
 namespace DB::S3
 {
@@ -35,7 +59,110 @@ bool areCredentialsEmptyOrExpired(const Aws::Auth::AWSCredentials & credentials,
     return now >= credentials.GetExpiration() - std::chrono::seconds(expiration_window_seconds);
 }
 
+const char SSO_CREDENTIALS_PROVIDER_LOG_TAG[] = "SSOCredentialsProvider";
 
+class CredentialsProviderCache : boost::noncopyable
+{
+    using CredentialsProviderKey
+        = std::variant<AwsAuthSTSAssumeRoleWebIdentityCredentialsProvider::CacheKey, AwsAuthSTSAssumeRoleCredentialsProvider::CacheKey>;
+
+    struct CredentialsKeyHash
+    {
+        size_t operator()(const CredentialsProviderKey & key) const
+        {
+            SipHash hash;
+            hash.update(key.index());
+            std::visit([&](auto const & info) { info.updateHash(hash); }, key);
+            return hash.get64();
+        }
+    };
+
+public:
+
+    using CredentialsProviderPtr = std::shared_ptr<Aws::Auth::AWSCredentialsProvider>;
+
+    explicit CredentialsProviderCache(size_t max_credentials_)
+        : max_credentials(max_credentials_)
+    {
+    }
+
+    static CredentialsProviderCache & instance()
+    {
+        static CredentialsProviderCache ret(/*max_credentials*/ 100);
+        return ret;
+    }
+
+    void setSize(size_t max_credentials_) { max_credentials.store(max_credentials_, std::memory_order::relaxed); }
+
+    template <typename T>
+    CredentialsProviderPtr getOrSet(T && cache_key, std::function<CredentialsProviderPtr()> creator)
+    {
+        static_assert(InVariant<T, CredentialsProviderKey>, "Cache key must be part of variant CredentialsKey");
+
+        auto current_max_credentials = max_credentials.load(std::memory_order::relaxed);
+
+        if (current_max_credentials == 0)
+            return creator();
+
+        CredentialsProviderKey key = std::forward<T>(cache_key);
+        std::lock_guard lock(mutex);
+        if (auto it = cached_credentials.find(key);
+            it == cached_credentials.end() || it->second == credentials_lru.end())
+        {
+            LOG_TEST(
+                getLogger("CredentialsProviderCache"),
+                "Total cached credentials size: {}, adding new credentials provider to cache",
+                cached_credentials.size());
+
+            if (it != cached_credentials.end())
+                cached_credentials.erase(it);
+
+            while (credentials_lru.size() >= current_max_credentials)
+            {
+                auto & credentials_value = credentials_lru.front();
+                cached_credentials.erase(*credentials_value.key);
+                credentials_lru.pop_front();
+            }
+
+            ProfileEvents::increment(ProfileEvents::S3CachedCredentialsProvidersAdded);
+            auto credentials = creator();
+            auto [credentials_it, inserted] = cached_credentials.emplace(std::move(key), credentials_lru.end());
+            chassert(inserted);
+            credentials_lru.emplace_back(CacheValue{&credentials_it->first, credentials});
+            credentials_it->second = std::prev(credentials_lru.end());
+            CurrentMetrics::set(CurrentMetrics::S3CachedCredentialsProviders,credentials_lru.size());
+            return credentials;
+        }
+        else
+        {
+            LOG_TEST(getLogger("CredentialsProviderCache"), "Total credentials size: {}, reusing credentials provider", cached_credentials.size());
+
+            ProfileEvents::increment(ProfileEvents::S3CachedCredentialsProvidersReused);
+            credentials_lru.splice(credentials_lru.end(), credentials_lru, it->second);
+            return it->second->credentials;
+        }
+    }
+
+private:
+    struct CacheValue
+    {
+        const CredentialsProviderKey * key;
+        CredentialsProviderPtr credentials;
+    };
+
+    using CredentialsLRUQueue = std::list<CacheValue>;
+
+    std::atomic<size_t> max_credentials;
+    std::mutex mutex;
+    std::unordered_map<CredentialsProviderKey, typename CredentialsLRUQueue::iterator, CredentialsKeyHash> cached_credentials;
+    CredentialsLRUQueue credentials_lru;
+};
+
+}
+
+void setCredentialsProviderCacheMaxSize(size_t cache_size)
+{
+    CredentialsProviderCache::instance().setSize(cache_size);
 }
 
 AWSEC2MetadataClient::AWSEC2MetadataClient(const Aws::Client::ClientConfiguration & client_configuration, const char * endpoint_)
@@ -253,6 +380,11 @@ Aws::Auth::AWSCredentials AWSInstanceProfileCredentialsProvider::GetAWSCredentia
 {
     refreshIfExpired();
     Aws::Utils::Threading::ReaderLockGuard guard(m_reloadLock);
+    return GetAWSCredentialsImpl();
+}
+
+Aws::Auth::AWSCredentials AWSInstanceProfileCredentialsProvider::GetAWSCredentialsImpl()
+{
     auto profile_it = ec2_metadata_config_loader->GetProfiles().find(Aws::Config::INSTANCE_PROFILE_KEY);
 
     if (profile_it != ec2_metadata_config_loader->GetProfiles().end())
@@ -265,14 +397,19 @@ Aws::Auth::AWSCredentials AWSInstanceProfileCredentialsProvider::GetAWSCredentia
 
 void AWSInstanceProfileCredentialsProvider::Reload()
 {
-    LOG_INFO(logger, "Credentials have expired attempting to repull from EC2 Metadata Service.");
+    LOG_INFO(logger, "Credentials have expired, attempting to repull from EC2 Metadata Service.");
+    auto old_credentials = GetAWSCredentialsImpl();
+
     ec2_metadata_config_loader->Load();
     AWSCredentialsProvider::Reload();
+
+    auto new_credentials = GetAWSCredentialsImpl();
+    LOG_INFO(logger, "Got {}credentials from EC2 Metadata Service",
+             new_credentials.IsEmpty() ? "empty " : ((new_credentials == old_credentials) ? "same " : ""));
 }
 
 void AWSInstanceProfileCredentialsProvider::refreshIfExpired()
 {
-    LOG_DEBUG(logger, "Checking if latest credential pull has expired.");
     Aws::Utils::Threading::ReaderLockGuard guard(m_reloadLock);
     if (!IsTimeToRefresh(load_frequency_ms))
     {
@@ -287,16 +424,23 @@ void AWSInstanceProfileCredentialsProvider::refreshIfExpired()
     Reload();
 }
 
-AwsAuthSTSAssumeRoleWebIdentityCredentialsProvider::AwsAuthSTSAssumeRoleWebIdentityCredentialsProvider(
-    DB::S3::PocoHTTPClientConfiguration & aws_client_configuration, uint64_t expiration_window_seconds_)
-    : logger(getLogger("AwsAuthSTSAssumeRoleWebIdentityCredentialsProvider"))
-    , expiration_window_seconds(expiration_window_seconds_)
+void AwsAuthSTSAssumeRoleWebIdentityCredentialsProvider::CacheKey::updateHash(SipHash & hash) const
 {
+    hash.update(role_arn);
+    hash.update(token_file);
+    hash.update(session_name);
+}
+
+std::shared_ptr<Aws::Auth::AWSCredentialsProvider> AwsAuthSTSAssumeRoleWebIdentityCredentialsProvider::create(
+    DB::S3::PocoHTTPClientConfiguration & aws_client_configuration, uint64_t expiration_window_seconds_, String role_arn_)
+{
+    auto logger = getLogger("AwsAuthSTSAssumeRoleWebIdentityCredentialsProvider");
+
     // check environment variables
     String tmp_region = Aws::Environment::GetEnv("AWS_DEFAULT_REGION");
-    role_arn = Aws::Environment::GetEnv("AWS_ROLE_ARN");
-    token_file = Aws::Environment::GetEnv("AWS_WEB_IDENTITY_TOKEN_FILE");
-    session_name = Aws::Environment::GetEnv("AWS_ROLE_SESSION_NAME");
+    Aws::String role_arn = role_arn_.empty() ? Aws::Environment::GetEnv("AWS_ROLE_ARN") : role_arn_;
+    Aws::String token_file = Aws::Environment::GetEnv("AWS_WEB_IDENTITY_TOKEN_FILE");
+    Aws::String session_name = Aws::Environment::GetEnv("AWS_ROLE_SESSION_NAME");
 
     // check profile_config if either m_roleArn or m_tokenFile is not loaded from environment variable
     // region source is not enforced, but we need it to construct sts endpoint, if we can't find from environment, we should check if it's set in config file.
@@ -316,25 +460,24 @@ AwsAuthSTSAssumeRoleWebIdentityCredentialsProvider::AwsAuthSTSAssumeRoleWebIdent
         }
     }
 
+    auto empty_credentials = std::make_shared<Aws::Auth::AnonymousAWSCredentialsProvider>();
     if (token_file.empty())
     {
         LOG_WARNING(logger, "Token file must be specified to use STS AssumeRole web identity creds provider.");
-        return; // No need to do further constructing
+        return empty_credentials;
     }
-    else
-    {
-        LOG_DEBUG(logger, "Resolved token_file from profile_config or environment variable to be {}", token_file);
-    }
+
+    LOG_DEBUG(logger, "Resolved token_file from profile_config or environment variable to be {}", token_file);
+
 
     if (role_arn.empty())
     {
         LOG_WARNING(logger, "RoleArn must be specified to use STS AssumeRole web identity creds provider.");
-        return; // No need to do further constructing
+        return empty_credentials;
     }
-    else
-    {
-        LOG_DEBUG(logger, "Resolved role_arn from profile_config or environment variable to be {}", role_arn);
-    }
+
+    LOG_DEBUG(logger, "Resolved role_arn from profile_config or environment variable to be {}", role_arn);
+
 
     if (tmp_region.empty())
     {
@@ -345,17 +488,46 @@ AwsAuthSTSAssumeRoleWebIdentityCredentialsProvider::AwsAuthSTSAssumeRoleWebIdent
         LOG_DEBUG(logger, "Resolved region from profile_config or environment variable to be {}", tmp_region);
     }
 
+    bool cache_on_session_name = true;
     if (session_name.empty())
     {
         session_name = Aws::Utils::UUID::RandomUUID();
+        cache_on_session_name = false;
     }
     else
     {
         LOG_DEBUG(logger, "Resolved session_name from profile_config or environment variable to be {}", session_name);
     }
 
+    return CredentialsProviderCache::instance().getOrSet(
+        AwsAuthSTSAssumeRoleWebIdentityCredentialsProvider::CacheKey{role_arn, token_file, cache_on_session_name ? session_name : ""},
+        [&]
+        {
+            return std::make_shared<AwsAuthSTSAssumeRoleWebIdentityCredentialsProvider>(
+                aws_client_configuration,
+                expiration_window_seconds_,
+                std::move(role_arn),
+                std::move(token_file),
+                std::move(session_name),
+                std::move(tmp_region));
+        });
+}
+
+AwsAuthSTSAssumeRoleWebIdentityCredentialsProvider::AwsAuthSTSAssumeRoleWebIdentityCredentialsProvider(
+    DB::S3::PocoHTTPClientConfiguration & aws_client_configuration,
+    uint64_t expiration_window_seconds_,
+    Aws::String role_arn_,
+    Aws::String token_file_,
+    Aws::String session_name_,
+    String tmp_region)
+    : role_arn(std::move(role_arn_))
+    , token_file(std::move(token_file_))
+    , session_name(std::move(session_name_))
+    , logger(getLogger("AwsAuthSTSAssumeRoleWebIdentityCredentialsProvider"))
+    , expiration_window_seconds(expiration_window_seconds_)
+{
     aws_client_configuration.scheme = Aws::Http::Scheme::HTTPS;
-    aws_client_configuration.region = tmp_region;
+    aws_client_configuration.region = std::move(tmp_region);
 
     std::vector<String> retryable_errors;
     retryable_errors.push_back("IDPCommunicationError");
@@ -365,20 +537,20 @@ AwsAuthSTSAssumeRoleWebIdentityCredentialsProvider::AwsAuthSTSAssumeRoleWebIdent
         retryable_errors, /* maxRetries = */3);
 
     client = std::make_unique<Aws::Internal::STSCredentialsClient>(aws_client_configuration);
-    initialized = true;
     LOG_INFO(logger, "Creating STS AssumeRole with web identity creds provider.");
 }
 
 Aws::Auth::AWSCredentials AwsAuthSTSAssumeRoleWebIdentityCredentialsProvider::GetAWSCredentials()
 {
-    // A valid client means required information like role arn and token file were constructed correctly.
-    // We can use this provider to load creds, otherwise, we can just return empty creds.
-    if (!initialized)
-    {
-        return Aws::Auth::AWSCredentials();
-    }
-    refreshIfExpired();
     Aws::Utils::Threading::ReaderLockGuard guard(m_reloadLock);
+    if (!IsSetNeedRefresh() && !areCredentialsEmptyOrExpired(credentials, expiration_window_seconds))
+        return credentials;
+
+    guard.UpgradeToWriterLock();
+    if (!IsSetNeedRefresh() && !areCredentialsEmptyOrExpired(credentials, expiration_window_seconds)) // double-checked lock to avoid refreshing twice
+        return credentials;
+
+    Reload();
     return credentials;
 }
 
@@ -400,32 +572,157 @@ void AwsAuthSTSAssumeRoleWebIdentityCredentialsProvider::Reload()
     Aws::Internal::STSCredentialsClient::STSAssumeRoleWithWebIdentityRequest request{session_name, role_arn, token};
 
     auto result = client->GetAssumeRoleWithWebIdentityCredentials(request);
-    LOG_TRACE(logger, "Successfully retrieved credentials.");
+    AWSCredentialsProvider::Reload();
+
+    LOG_INFO(logger, "Got {}credentials from STS",
+             result.creds.IsEmpty() ? "empty " : ((result.creds == credentials) ? "same " : ""));
+
     credentials = result.creds;
 }
 
-void AwsAuthSTSAssumeRoleWebIdentityCredentialsProvider::refreshIfExpired()
+
+SSOCredentialsProvider::SSOCredentialsProvider(DB::S3::PocoHTTPClientConfiguration aws_client_configuration_, uint64_t expiration_window_seconds_)
+    : profile_to_use(Aws::Auth::GetConfigProfileName())
+    , aws_client_configuration(std::move(aws_client_configuration_))
+    , expiration_window_seconds(expiration_window_seconds_)
+    , logger(getLogger(SSO_CREDENTIALS_PROVIDER_LOG_TAG))
+{
+    LOG_TRACE(logger, "Setting sso credentials provider to read config from {}", profile_to_use);
+}
+
+Aws::Auth::AWSCredentials SSOCredentialsProvider::GetAWSCredentials()
+{
+    refreshIfExpired();
+    Aws::Utils::Threading::ReaderLockGuard guard(m_reloadLock);
+    return credentials;
+}
+
+void SSOCredentialsProvider::Reload()
+{
+    auto profile = Aws::Config::GetCachedConfigProfile(profile_to_use);
+    const auto access_token = [&]
+    {
+        // If we have an SSO Session set, use the refreshed token.
+        if (profile.IsSsoSessionSet())
+        {
+            sso_region = profile.GetSsoSession().GetSsoRegion();
+            auto token = bearer_token_provider.GetAWSBearerToken();
+            expires_at = token.GetExpiration();
+            return token.GetToken();
+        }
+
+        Aws::String hashed_start_url = Aws::Utils::HashingUtils::HexEncode(Aws::Utils::HashingUtils::CalculateSHA1(profile.GetSsoStartUrl()));
+        auto profile_directory = Aws::Auth::ProfileConfigFileAWSCredentialsProvider::GetProfileDirectory();
+        Aws::StringStream ss_token;
+        ss_token << profile_directory;
+        ss_token << Aws::FileSystem::PATH_DELIM << "sso"  << Aws::FileSystem::PATH_DELIM << "cache" << Aws::FileSystem::PATH_DELIM << hashed_start_url << ".json";
+        auto sso_token_path = ss_token.str();
+        LOG_TEST(logger, "Loading token from: {}", sso_token_path);
+        sso_region = profile.GetSsoRegion();
+        return loadAccessTokenFile(sso_token_path);
+    }();
+
+    if (access_token.empty())
+        return;
+
+    if (expires_at < Aws::Utils::DateTime::Now())
+    {
+        LOG_TRACE(logger, "Cached Token expired at {}", expires_at.ToGmtString(Aws::Utils::DateFormat::ISO_8601));
+        return;
+    }
+
+    Aws::Internal::SSOCredentialsClient::SSOGetRoleCredentialsRequest request;
+    request.m_ssoAccountId = profile.GetSsoAccountId();
+    request.m_ssoRoleName = profile.GetSsoRoleName();
+    request.m_accessToken = access_token;
+
+    aws_client_configuration.scheme = Aws::Http::Scheme::HTTPS;
+    aws_client_configuration.region = sso_region;
+    LOG_TEST(logger, "Passing config to client for region: {}", sso_region);
+
+    Aws::Vector<Aws::String> retryable_errors;
+    retryable_errors.push_back("TooManyRequestsException");
+
+    aws_client_configuration.retryStrategy = Aws::MakeShared<Aws::Client::SpecifiedRetryableErrorsRetryStrategy>(
+        SSO_CREDENTIALS_PROVIDER_LOG_TAG, retryable_errors, /*maxRetries=*/3);
+    client = Aws::MakeUnique<Aws::Internal::SSOCredentialsClient>(SSO_CREDENTIALS_PROVIDER_LOG_TAG, aws_client_configuration);
+
+    LOG_TRACE(logger, "Requesting credentials with AWS_ACCESS_KEY: {}", sso_account_id);
+    auto result = client->GetSSOCredentials(request);
+    AWSCredentialsProvider::Reload();
+
+    LOG_INFO(logger, "Got {}credentials with AWS_ACCESS_KEY: {}",
+             result.creds.IsEmpty() ? "empty " : ((credentials == result.creds) ? "same " : ""),
+             result.creds.GetAWSAccessKeyId());
+
+    credentials = result.creds;
+}
+
+void SSOCredentialsProvider::refreshIfExpired()
 {
     Aws::Utils::Threading::ReaderLockGuard guard(m_reloadLock);
-    if (!areCredentialsEmptyOrExpired(credentials, expiration_window_seconds))
+    if (!IsSetNeedRefresh() && !areCredentialsEmptyOrExpired(credentials, expiration_window_seconds))
         return;
 
     guard.UpgradeToWriterLock();
-    if (!areCredentialsEmptyOrExpired(credentials, expiration_window_seconds)) // double-checked lock to avoid refreshing twice
+
+    if (!IsSetNeedRefresh() && !areCredentialsEmptyOrExpired(credentials, expiration_window_seconds)) // double-checked lock to avoid refreshing twice
         return;
 
     Reload();
 }
 
+Aws::String SSOCredentialsProvider::loadAccessTokenFile(const Aws::String & sso_access_token_path)
+{
+    LOG_TEST(logger, "Preparing to load token from: {}", sso_access_token_path);
+
+    Aws::IFStream input_file(sso_access_token_path.c_str());
+
+    if (input_file)
+    {
+        LOG_TEST(logger, "Reading content from token file: {}", sso_access_token_path);
+
+        Aws::Utils::Json::JsonValue token_doc(input_file);
+        if (!token_doc.WasParseSuccessful())
+        {
+            LOG_TRACE(logger, "Failed to parse token file: {}", sso_access_token_path);
+            return "";
+        }
+        Aws::Utils::Json::JsonView token_view(token_doc);
+        Aws::String tmp_access_token;
+        Aws::String expiration_str;
+        tmp_access_token = token_view.GetString("accessToken");
+        expiration_str = token_view.GetString("expiresAt");
+        Aws::Utils::DateTime expiration(expiration_str, Aws::Utils::DateFormat::ISO_8601);
+
+        LOG_TEST(logger, "Token cache file contains accessToken [{}], expiration [{}]", tmp_access_token, expiration_str);
+
+        if (tmp_access_token.empty() || !expiration.WasParseSuccessful())
+        {
+            LOG_TRACE(
+                logger,
+                "Token cache file failed because {}{}",
+                (tmp_access_token.empty() ? "AccessToken was empty " : ""),
+                (!expiration.WasParseSuccessful() ? "failed to parse expiration" : ""));
+            return "";
+        }
+        expires_at = expiration;
+        return tmp_access_token;
+    }
+
+    LOG_TEST(logger, "Unable to open token file on path: {}", sso_access_token_path);
+    return "";
+}
+
 S3CredentialsProviderChain::S3CredentialsProviderChain(
         const DB::S3::PocoHTTPClientConfiguration & configuration,
         const Aws::Auth::AWSCredentials & credentials,
-        CredentialsConfiguration credentials_configuration)
+        const CredentialsConfiguration & credentials_configuration)
 {
     auto logger = getLogger("S3CredentialsProviderChain");
 
     /// we don't provide any credentials to avoid signing
-    if (credentials_configuration.no_sign_request)
+    if (credentials_configuration.no_sign_request || configuration.http_client == "gcp_oauth")
         return;
 
     /// add explicit credentials to the front of the chain
@@ -458,7 +755,9 @@ S3CredentialsProviderChain::S3CredentialsProviderChain(
                 configuration.for_disk_s3,
                 configuration.get_request_throttler,
                 configuration.put_request_throttler);
-            AddProvider(std::make_shared<AwsAuthSTSAssumeRoleWebIdentityCredentialsProvider>(aws_client_configuration, credentials_configuration.expiration_window_seconds));
+            AddProvider(
+                AwsAuthSTSAssumeRoleWebIdentityCredentialsProvider::create(
+                    aws_client_configuration, credentials_configuration.expiration_window_seconds, credentials_configuration.kms_role_arn));
         }
 
         AddProvider(std::make_shared<Aws::Auth::EnvironmentAWSCredentialsProvider>());
@@ -510,7 +809,7 @@ S3CredentialsProviderChain::S3CredentialsProviderChain(
                 configuration.get_request_throttler,
                 configuration.put_request_throttler);
 
-            /// See MakeDefaultHttpResourceClientConfiguration().
+            /// See MakeDefaultHTTPResourceClientConfiguration().
             /// This is part of EC2 metadata client, but unfortunately it can't be accessed from outside
             /// of contrib/aws/aws-cpp-sdk-core/source/internal/AWSHttpResourceClient.cpp
             aws_client_configuration.maxConnections = 2;
@@ -538,9 +837,213 @@ S3CredentialsProviderChain::S3CredentialsProviderChain(
         }
     }
 
-    /// Quite verbose provider (argues if file with credentials doesn't exist) so iut's the last one
+    /// Quite verbose provider (argues if file with credentials doesn't exist) so it's the last one
     /// in chain.
     AddProvider(std::make_shared<Aws::Auth::ProfileConfigFileAWSCredentialsProvider>());
+}
+
+AssumeRoleRequest::AssumeRoleRequest(std::string role_arn_, std::string role_session_name_)
+    : role_arn(std::move(role_arn_)), role_session_name(std::move(role_session_name_))
+{
+}
+
+Aws::Http::HeaderValueCollection AssumeRoleRequest::GetHeaders() const
+{
+    return {{Aws::Http::HeaderValuePair(Aws::Http::CONTENT_TYPE_HEADER, Aws::AMZN_XML_CONTENT_TYPE)}};
+}
+
+void AssumeRoleRequest::AddQueryStringParameters(Aws::Http::URI & uri) const
+{
+    uri.AddQueryStringParameter("RoleArn", role_arn);
+    uri.AddQueryStringParameter("RoleSessionName", role_session_name);
+}
+
+AssumeRoleResult::AssumeRoleResult(Aws::AmazonWebServiceResult<Aws::Utils::Xml::XmlDocument> result)
+{
+    using namespace Aws::Utils::Xml;
+    const auto & xml_document = result.GetPayload();
+    auto response_node = xml_document.GetRootElement();
+
+    if (response_node.IsNull())
+    {
+        LOG_WARNING(log, "Response is empty");
+        return;
+    }
+
+    auto assume_role_result_node = response_node.FirstChild("AssumeRoleResult");
+    if (assume_role_result_node.IsNull())
+    {
+        LOG_WARNING(log, "AssumeRoleResult node is missing");
+        return;
+    }
+
+    auto credentials_node = assume_role_result_node.FirstChild("Credentials");
+    if (credentials_node.IsNull())
+    {
+        LOG_WARNING(log, "Credentials node is missing");
+        return;
+    }
+
+    const auto get_credential_value_from_node = [&](auto & dest, const std::string & node_name)
+    {
+        if (auto node = credentials_node.FirstChild(node_name);
+            !node.IsNull())
+            dest = DecodeEscapedXmlText(node.GetText());
+        else
+            LOG_WARNING(log, "{} node is missing", node_name);
+    };
+
+    get_credential_value_from_node(access_key_id, "AccessKeyId");
+    get_credential_value_from_node(secret_access_key, "SecretAccessKey");
+    get_credential_value_from_node(session_token, "SessionToken");
+    get_credential_value_from_node(expiration, "Expiration");
+}
+
+AWSAssumeRoleClient::AWSAssumeRoleClient(
+    const std::shared_ptr<Aws::Auth::AWSCredentialsProvider> & credentials_provider,
+    const Aws::Client::ClientConfiguration & client_configuration,
+    const std::string & sts_endpoint_override)
+    : Aws::Client::AWSXMLClient(
+        client_configuration,
+        std::make_shared<Aws::Auth::DefaultAuthSignerProvider>(
+            credentials_provider,
+            "sts",
+            Aws::Region::ComputeSignerRegion(client_configuration.region),
+            Aws::Client::AWSAuthV4Signer::PayloadSigningPolicy::Always,
+            /*doubleEncodeValue*/ false),
+        std::make_shared<Aws::Client::S3ErrorMarshaller>())
+{
+    if (!sts_endpoint_override.empty())
+    {
+        endpoint.SetURL(sts_endpoint_override);
+        return;
+    }
+
+    std::string endpoint_str;
+    if (client_configuration.scheme == Aws::Http::Scheme::HTTP)
+        endpoint_str = "http://sts.";
+    else
+        endpoint_str = "https://sts.";
+
+
+    if (client_configuration.region != "aws-global")
+        endpoint_str += client_configuration.region + ".";
+
+    endpoint_str += "amazonaws.com?Action=AssumeRole&Version=2011-06-15";
+
+    endpoint.SetURL(endpoint_str);
+}
+
+AssumeRoleOutcome AWSAssumeRoleClient::assumeRole(const AssumeRoleRequest & request) const
+{
+    return AssumeRoleOutcome(MakeRequest(request, endpoint, Aws::Http::HttpMethod::HTTP_POST));
+}
+
+void AwsAuthSTSAssumeRoleCredentialsProvider::CacheKey::updateHash(SipHash & hash) const
+{
+    hash.update(role_arn);
+    hash.update(session_name);
+    hash.update(endpoint);
+    hash.update(credentials.GetAWSAccessKeyId());
+    hash.update(credentials.GetAWSSecretKey());
+    hash.update(credentials.GetSessionToken());
+}
+
+std::shared_ptr<Aws::Auth::AWSCredentialsProvider> AwsAuthSTSAssumeRoleCredentialsProvider::create(
+    std::string role_arn_,
+    std::string session_name_,
+    uint64_t expiration_window_seconds_,
+    std::shared_ptr<Aws::Auth::AWSCredentialsProvider> credentials_provider,
+    const DB::S3::PocoHTTPClientConfiguration & client_configuration,
+    const std::string & sts_endpoint_override)
+{
+    auto client = std::make_shared<AWSAssumeRoleClient>(credentials_provider, client_configuration, sts_endpoint_override);
+    auto session_name = session_name_.empty() ? "ProtonSession" : std::move(session_name_);  /// proton: updates
+    return CredentialsProviderCache::instance().getOrSet(
+        AwsAuthSTSAssumeRoleCredentialsProvider::CacheKey{
+            role_arn_, session_name, client->getEndpoint().GetURL(), credentials_provider->GetAWSCredentials()},
+        [&]
+        {
+            return std::make_shared<AwsAuthSTSAssumeRoleCredentialsProvider>(
+                std::move(role_arn_), std::move(session_name), expiration_window_seconds_, std::move(client));
+        });
+}
+
+AwsAuthSTSAssumeRoleCredentialsProvider::AwsAuthSTSAssumeRoleCredentialsProvider(
+    std::string role_arn_,
+    std::string session_name_,
+    uint64_t expiration_window_seconds_,
+    std::shared_ptr<AWSAssumeRoleClient> client_)
+    : role_arn(std::move(role_arn_))
+    , session_name(session_name_.empty() ? "ProtonSession" : std::move(session_name_))  /// proton: updates
+    , expiration_window_seconds(expiration_window_seconds_)
+    , client(std::move(client_))
+    , logger(getLogger("AwsAuthSTSAssumeRoleCredentialsProvider"))
+{}
+
+Aws::Auth::AWSCredentials AwsAuthSTSAssumeRoleCredentialsProvider::GetAWSCredentials()
+{
+    Aws::Utils::Threading::ReaderLockGuard guard(m_reloadLock);
+    if (!areCredentialsEmptyOrExpired(credentials, expiration_window_seconds))
+        return credentials;
+
+    guard.UpgradeToWriterLock();
+    if (!areCredentialsEmptyOrExpired(credentials, expiration_window_seconds)) // double-checked lock to avoid refreshing twice
+        return credentials;
+
+    Reload();
+    return credentials;
+}
+
+void AwsAuthSTSAssumeRoleCredentialsProvider::Reload()
+{
+    LOG_INFO(logger, "Credentials are empty or expired, attempting to renew with AssumeRole");
+
+    AssumeRoleRequest request(role_arn, session_name);
+    auto outcome = client->assumeRole(request);
+    if (!outcome.IsSuccess())
+    {
+        LOG_WARNING(logger, "Failed to get credentials using AssumeRole. Error: {}", outcome.GetError().GetMessage());
+        return;
+    }
+
+    const auto & result = outcome.GetResult();
+    credentials.SetAWSAccessKeyId(result.getAccessKeyID());
+    credentials.SetAWSSecretKey(result.getSecretAccessKey());
+    credentials.SetSessionToken(result.getSessionToken());
+    credentials.SetExpiration(result.getExpiration());
+
+    LOG_TRACE(logger, "Successfully retrieved credentials");
+}
+
+std::shared_ptr<Aws::Auth::AWSCredentialsProvider> getCredentialsProvider(
+    const DB::S3::PocoHTTPClientConfiguration & configuration,
+    const Aws::Auth::AWSCredentials & credentials,
+    const CredentialsConfiguration & credentials_configuration)
+{
+    std::shared_ptr<Aws::Auth::AWSCredentialsProvider> credentials_provider;
+    if (credentials_configuration.no_sign_request || configuration.http_client == "gcp_oauth")
+    {
+        credentials_provider = std::make_shared<Aws::Auth::AnonymousAWSCredentialsProvider>();
+    }
+    else
+    {
+        credentials_provider
+            = std::make_shared<S3CredentialsProviderChain>(configuration, credentials, credentials_configuration);
+    }
+
+    if (!credentials_configuration.role_arn.empty())
+    {
+        credentials_provider = AwsAuthSTSAssumeRoleCredentialsProvider::create(
+            credentials_configuration.role_arn,
+            credentials_configuration.role_session_name,
+            credentials_configuration.expiration_window_seconds,
+            std::move(credentials_provider),
+            configuration,
+            credentials_configuration.sts_endpoint_override);
+    }
+
+    return credentials_provider;
 }
 
 }

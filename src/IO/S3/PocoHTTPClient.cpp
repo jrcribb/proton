@@ -7,7 +7,6 @@
 
 #include <IO/S3/PocoHTTPClient.h>
 
-#include <utility>
 #include <algorithm>
 #include <functional>
 
@@ -23,6 +22,7 @@
 #include <Interpreters/Context.h>
 
 #include <aws/core/http/HttpRequest.h>
+#include <smithy/tracing/NoopTelemetryProvider.h>
 #include <aws/core/http/HttpResponse.h>
 #include <aws/core/utils/xml/XmlSerializer.h>
 #include <aws/core/monitoring/HttpClientMetrics.h>
@@ -30,6 +30,9 @@
 #include <Poco/StreamCopier.h>
 #include <Poco/Net/HTTPRequest.h>
 #include <Poco/Net/HTTPResponse.h>
+#include <Poco/JSON/JSON.h>
+#include <Poco/JSON/Object.h>
+#include <Poco/JSON/Parser.h>
 
 #include <boost/algorithm/string.hpp>
 
@@ -84,6 +87,7 @@ namespace DB::ErrorCodes
     extern const int NOT_IMPLEMENTED;
     extern const int TOO_MANY_REDIRECTS;
     extern const int DNS_ERROR;
+    extern const int AUTHENTICATION_FAILED;
 }
 
 namespace DB::S3
@@ -109,6 +113,14 @@ PocoHTTPClientConfiguration::PocoHTTPClientConfiguration(
 {
     /// This is used to identify configurations created by us.
     userAgent = std::string(VERSION_FULL) + VERSION_OFFICIAL;
+
+    /// NOTE: In some places AWS SDK expects it to be non-null.
+    telemetryProvider = smithy::components::tracing::NoopTelemetryProvider::CreateProvider();
+
+    /// NOTE: Without these settings AWS SDK enable transfer-encoding: chunked and content-encoding: aws-chunked
+    /// We don't use them and MinIO server doesn't support them.
+    checksumConfig.requestChecksumCalculation = Aws::Client::RequestChecksumCalculation::WHEN_REQUIRED;
+    checksumConfig.responseChecksumValidation = Aws::Client::ResponseChecksumValidation::WHEN_REQUIRED;
 }
 
 void PocoHTTPClientConfiguration::updateSchemeAndRegion()
@@ -130,7 +142,7 @@ void PocoHTTPClientConfiguration::updateSchemeAndRegion()
             }
             else
             {
-                /// In global mode AWS C++ SDK send `us-east-1` but accept switching to another one if being suggested.
+                /// In global mode AWS C++ SDK sends `us-east-1` but accepts switching to another one if being suggested.
                 region = Aws::Region::AWS_GLOBAL;
             }
         }
@@ -249,6 +261,9 @@ PocoHTTPClient::S3MetricKind PocoHTTPClient::getMetricKind(const Aws::Http::Http
     {
         case Aws::Http::HttpMethod::HTTP_GET:
         case Aws::Http::HttpMethod::HTTP_HEAD:
+        case Aws::Http::HttpMethod::HTTP_TRACE:
+        case Aws::Http::HttpMethod::HTTP_OPTIONS:
+        case Aws::Http::HttpMethod::HTTP_CONNECT:
             return S3MetricKind::Read;
         case Aws::Http::HttpMethod::HTTP_POST:
         case Aws::Http::HttpMethod::HTTP_DELETE:
@@ -261,7 +276,8 @@ PocoHTTPClient::S3MetricKind PocoHTTPClient::getMetricKind(const Aws::Http::Http
 
 void PocoHTTPClient::addMetric(const Aws::Http::HttpRequest & request, S3MetricType type, ProfileEvents::Count amount) const
 {
-    const ProfileEvents::Event events_map[static_cast<size_t>(S3MetricType::EnumSize)][static_cast<size_t>(S3MetricKind::EnumSize)] = {
+    const ProfileEvents::Event events_map[static_cast<size_t>(S3MetricType::EnumSize)][static_cast<size_t>(S3MetricKind::EnumSize)] =
+    {
         {ProfileEvents::S3ReadMicroseconds, ProfileEvents::S3WriteMicroseconds},
         {ProfileEvents::S3ReadRequestsCount, ProfileEvents::S3WriteRequestsCount},
         {ProfileEvents::S3ReadRequestsErrors, ProfileEvents::S3WriteRequestsErrors},
@@ -350,6 +366,12 @@ String getMethod(const Aws::Http::HttpRequest & request)
             return Poco::Net::HTTPRequest::HTTP_HEAD;
         case Aws::Http::HttpMethod::HTTP_PATCH:
             return Poco::Net::HTTPRequest::HTTP_PATCH;
+        case Aws::Http::HttpMethod::HTTP_CONNECT:
+            return Poco::Net::HTTPRequest::HTTP_CONNECT;
+        case Aws::Http::HttpMethod::HTTP_TRACE:
+            return Poco::Net::HTTPRequest::HTTP_TRACE;
+        case Aws::Http::HttpMethod::HTTP_OPTIONS:
+            return Poco::Net::HTTPRequest::HTTP_OPTIONS;
     }
 }
 
@@ -379,6 +401,9 @@ void PocoHTTPClient::makeRequestInternalImpl(
     {
         case Aws::Http::HttpMethod::HTTP_GET:
         case Aws::Http::HttpMethod::HTTP_HEAD:
+        case Aws::Http::HttpMethod::HTTP_TRACE:
+        case Aws::Http::HttpMethod::HTTP_OPTIONS:
+        case Aws::Http::HttpMethod::HTTP_CONNECT:
             if (get_request_throttler)
             {
                 UInt64 sleep_us = get_request_throttler->add(1, ProfileEvents::S3GetRequestThrottlerCount, ProfileEvents::S3GetRequestThrottlerSleepMicroseconds);
@@ -476,7 +501,7 @@ void PocoHTTPClient::makeRequestInternalImpl(
 
             /// Headers coming from SDK are lower-cased.
             for (const auto & [header_name, header_value] : request.GetHeaders())
-                poco_request.set(header_name, header_value);
+                poco_request.set(boost::algorithm::to_lower_copy(header_name), header_value);
             for (const auto & [header_name, header_value] : extra_headers)
             {
                 // AWS S3 canonical headers must include `Host`, `Content-Type` and any `x-amz-*`.
@@ -629,6 +654,106 @@ void PocoHTTPClient::makeRequestInternalImpl(
 
         addMetric(request, S3MetricType::Errors);
     }
+}
+
+namespace
+{
+
+String getStringOrDefault(const String & str, const String & default_str)
+{
+    return str.empty() ? default_str : str;
+}
+
+constexpr auto DEFAULT_SERVICE_ACCOUNT = "default";
+constexpr auto DEFAULT_METADATA_SERVICE = "metadata.google.internal";
+constexpr auto DEFAULT_REQUEST_TOKEN_PATH = "computeMetadata/v1/instance/service-accounts";
+
+}
+
+PocoHTTPClientGCPOAuth::PocoHTTPClientGCPOAuth(const PocoHTTPClientConfiguration & client_configuration)
+    : PocoHTTPClient(client_configuration)
+    , service_account(getStringOrDefault(client_configuration.service_account, DEFAULT_SERVICE_ACCOUNT))
+    , metadata_service(getStringOrDefault(client_configuration.metadata_service, DEFAULT_METADATA_SERVICE))
+    , request_token_path(getStringOrDefault(client_configuration.request_token_path, DEFAULT_REQUEST_TOKEN_PATH))
+{
+}
+
+void PocoHTTPClientGCPOAuth::makeRequestInternal(
+    Aws::Http::HttpRequest & request,
+    std::shared_ptr<PocoHTTPResponse> & response,
+    Aws::Utils::RateLimits::RateLimiterInterface * readLimiter,
+    Aws::Utils::RateLimits::RateLimiterInterface * writeLimiter) const
+{
+    {
+        std::lock_guard lock(mutex);
+        if (!bearer_token || std::chrono::system_clock::now() > bearer_token->is_valid_to)
+            bearer_token = requestBearerToken();
+
+        request.SetHeaderValue("Authorization", fmt::format("Bearer {}", bearer_token->token));
+    }
+
+    PocoHTTPClient::makeRequestInternal(request, response, readLimiter, writeLimiter);
+}
+
+std::string PocoHTTPClientGCPOAuth::getBearerToken() const
+{
+    std::lock_guard lock(mutex);
+    if (!bearer_token || std::chrono::system_clock::now() > bearer_token->is_valid_to)
+        bearer_token = requestBearerToken();
+
+    return bearer_token->token;
+}
+
+PocoHTTPClientGCPOAuth::BearerToken PocoHTTPClientGCPOAuth::requestBearerToken() const
+{
+    assert(!request_token_path.empty());
+    assert(!metadata_service.empty());
+    assert(!service_account.empty());
+
+    Poco::URI url;
+    url.setScheme("http");
+    url.setHost(metadata_service);
+    url.setPath(fmt::format("{}/{}/token", request_token_path, service_account));
+
+    Poco::Net::HTTPRequest request(Poco::Net::HTTPRequest::HTTP_GET, url.toString(), Poco::Net::HTTPRequest::HTTP_1_1);
+    request.add("metadata-flavor", "Google");
+
+    auto log = getLogger("PocoHTTPClientGCPOAuth");
+    if (enable_s3_requests_logging)
+        LOG_TEST(log, "Make request to: {}", url.toString());
+
+    auto session = makeHTTPSession(url, timeouts);
+    session->sendRequest(request);
+
+    Poco::Net::HTTPResponse response;
+    auto & in = session->receiveResponse(response);
+
+    if (response.getStatus() != Poco::Net::HTTPResponse::HTTP_OK)
+        throw Exception(ErrorCodes::AUTHENTICATION_FAILED, "Failed to request bearer token: {}", response.getReason());
+
+    String token_json_raw;
+    Poco::StreamCopier::copyToString(in, token_json_raw);
+
+    if (enable_s3_requests_logging)
+        LOG_TEST(log, "Received token in response: {}", token_json_raw);
+
+    Poco::JSON::Parser parser;
+    auto object = parser.parse(token_json_raw).extract<Poco::JSON::Object::Ptr>();
+
+    if (!object->has("access_token") || !object->has("expires_in") || !object->has("token_type"))
+        throw Exception(ErrorCodes::AUTHENTICATION_FAILED,
+            "Unexpected structure of response. Response should have fields: 'access_token', 'expires_in', 'token_type'");
+
+    auto token_type = object->getValue<String>("token_type");
+    if (token_type != "Bearer")
+        throw Exception(ErrorCodes::AUTHENTICATION_FAILED,
+            "Unexpected structure of response. Expected Bearer token, got {}", token_type);
+
+    return
+    {
+        .token = object->getValue<String>("access_token"),
+        .is_valid_to = std::chrono::system_clock::now() + std::chrono::seconds(object->getValue<Int64>("expires_in"))
+    };
 }
 
 }

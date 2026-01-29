@@ -2,7 +2,7 @@
 
 #if USE_AWS_MSK_IAM || USE_AWS_S3 /// proton: updated
 
-#include "PocoHTTPClientFactory.h"
+#include <IO/S3/PocoHTTPClientFactory.h>
 
 #include <IO/S3/PocoHTTPClient.h>
 #include <aws/core/client/ClientConfiguration.h>
@@ -17,13 +17,20 @@ PocoHTTPClientFactory::CreateHttpClient(const Aws::Client::ClientConfiguration &
 {
     /// proton: starts. the prefix comes from PROJECT_NAME in CMakeLists.txt:3, we may rename later.
     using namespace std::literals;
-    static constexpr std::array prefixes{"Timeplus"sv, "proton"sv, "Proton"sv};
+    static constexpr std::array prefixes{"timeplus"sv, "Timeplus"sv, "proton"sv, "Proton"sv};
     const std::string_view ua = client_configuration.userAgent;
     if (std::ranges::any_of(prefixes, [&](auto p) { return ua.starts_with(p); }))
-        return std::make_shared<PocoHTTPClient>(static_cast<const PocoHTTPClientConfiguration &>(client_configuration));
+    {
+        const auto & poco_client_configuration = static_cast<const PocoHTTPClientConfiguration &>(client_configuration);
+        if (Poco::toLower(poco_client_configuration.http_client) == "gcp_oauth")
+            return std::make_shared<PocoHTTPClientGCPOAuth>(poco_client_configuration);
+
+        return std::make_shared<PocoHTTPClient>(poco_client_configuration);
+    }
     /// proton: ends.
-    else /// This client is created inside the AWS SDK with default settings to obtain ECS credentials from localhost.
-        return std::make_shared<PocoHTTPClient>(client_configuration);
+
+    /// This client is created inside the AWS SDK with default settings to obtain ECS credentials from localhost.
+    return std::make_shared<PocoHTTPClient>(client_configuration);
 }
 
 std::shared_ptr<Aws::Http::HttpRequest> PocoHTTPClientFactory::CreateHttpRequest(

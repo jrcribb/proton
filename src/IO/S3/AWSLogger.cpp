@@ -53,8 +53,7 @@ Aws::Utils::Logging::LogLevel AWSLogger::GetLogLevel() const
 {
     if (enable_s3_requests_logging)
         return Aws::Utils::Logging::LogLevel::Trace;
-    else
-        return Aws::Utils::Logging::LogLevel::Info;
+    return Aws::Utils::Logging::LogLevel::Info;
 }
 
 namespace
@@ -120,6 +119,13 @@ void AWSLogger::callLogImpl(Aws::Utils::Logging::LogLevel log_level, const char 
         LOG_IMPL(tag_loggers[tag], level, prio, fmt::runtime(message));
     else
         LOG_IMPL(default_logger, level, prio, "{}: {}", tag, message);
+}
+
+void AWSLogger::vaLog(Aws::Utils::Logging::LogLevel log_level, const char * tag, const char * format_str, va_list)
+{
+    if (is404Muted(format_str))
+        return;
+    callLogImpl(log_level, tag, format_str); /// FIXME. Variadic arguments?
 }
 
 }
