@@ -285,19 +285,6 @@ Client::~Client()
     }
 }
 
-
-Client::~Client()
-{
-    try
-    {
-        ClientCacheRegistry::instance().unregisterClient(cache.get());
-    }
-    catch (...)
-    {
-        tryLogCurrentException(log);
-    }
-}
-
 Aws::Auth::AWSCredentials Client::getCredentials() const
 {
     return credentials_provider->GetAWSCredentials();
@@ -698,7 +685,6 @@ Client::doRequest(RequestType & request, RequestFn request_fn) const
     throw Exception(ErrorCodes::TOO_MANY_REDIRECTS, "Too many redirects");
 }
 
-<<<<<<< HEAD
 template <bool IsReadMethod, typename RequestType, typename RequestFn>
 std::invoke_result_t<RequestFn, RequestType>
 Client::doRequestWithRetryNetworkErrors(RequestType & request, RequestFn request_fn) const

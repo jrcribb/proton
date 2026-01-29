@@ -132,9 +132,6 @@ public:
         RequestChecksum::setChecksumAlgorithm(*this);
     }
 
-    /// Disable checksum to avoid extra read of the input stream
-    void disableChecksum() const { checksum = false; }
-
 protected:
     mutable std::string region_override;
     mutable std::optional<S3::URI> uri_override;

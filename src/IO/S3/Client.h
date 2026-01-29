@@ -230,14 +230,12 @@ public:
 
     bool supportsMultiPartCopy() const;
 
+    bool isS3ExpressBucket() const { return client_settings.is_s3express_bucket; }
+
     bool isClientForDisk() const
     {
         return client_configuration.for_disk_s3;
     }
-
-    bool supportsMultiPartCopy() const;
-
-    bool isS3ExpressBucket() const { return client_settings.is_s3express_bucket; }
 
     ProviderType getProviderType() const { return provider_type; }
 
