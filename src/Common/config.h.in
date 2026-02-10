@@ -41,7 +41,7 @@
 #cmakedefine01 USE_MYSQL
 #cmakedefine01 USE_RDKAFKA
 #cmakedefine01 USE_AMQPCPP
-#cmakedefine01 USE_NATSIO
+#cmakedefine01 USE_NATS
 #cmakedefine01 USE_EMBEDDED_COMPILER
 #cmakedefine01 USE_LDAP
 #cmakedefine01 USE_ROCKSDB
