@@ -29,7 +29,7 @@ extern const int UNSUPPORTED;
 namespace
 {
 
-/// Validates _tp_message_key column type — must be string (or nullable string) for NATS subjects.
+
 void validateMessageKeyColumnType(const DataTypePtr & type)
 {
     if (type->isNullable())
@@ -46,7 +46,7 @@ void validateMessageKeyColumnType(const DataTypePtr & type)
             type->getName());
 }
 
-/// Validates _tp_message_headers column type — must be Map(String, String).
+
 void validateMessageHeadersColumnType(const DataTypePtr & type)
 {
     if (!WhichDataType{type}.isMap())
@@ -65,7 +65,7 @@ namespace ExternalStream
 namespace
 {
 
-/// Validates that required NATS JetStream settings are present and well-formed.
+
 ExternalStreamSettingsPtr validateNATSSettings(ExternalStreamSettingsPtr && settings)
 {
     assert(settings->type.value == StreamTypes::NATS_JETSTREAM);
@@ -91,7 +91,7 @@ ExternalStreamSettingsPtr validateNATSSettings(ExternalStreamSettingsPtr && sett
             "NATS JetStream: 'deliver_policy' must be 'all', 'last', 'new', "
             "'by_start_sequence', or 'by_start_time', got '{}'", deliver);
 
-    /// Validate authentication: at most one mechanism should be used
+    /// Only one auth mechanism at a time
     int auth_count = 0;
     if (!settings->nats_username.value.empty() && !settings->nats_password.value.empty())
         ++auth_count;
@@ -107,7 +107,7 @@ ExternalStreamSettingsPtr validateNATSSettings(ExternalStreamSettingsPtr && sett
             "NATS JetStream: only one authentication method can be used at a time "
             "(username/password, token, credentials file, or NKey)");
 
-    /// Validate TLS: cert and key must be used together
+
     if ((!settings->nats_cert_file.value.empty()) != (!settings->nats_key_file.value.empty()))
         throw Exception(ErrorCodes::INVALID_SETTING_VALUE,
             "NATS JetStream: 'nats_cert_file' and 'nats_key_file' must be used together for mTLS");
@@ -138,7 +138,7 @@ NATSJetstream::NATSJetstream(
 
     if (!attach)
     {
-        /// Verify connectivity and stream existence on creation (not on attach/restart).
+        /// Check stream exists on CREATE, skip on ATTACH
         connect();
 
         jsStreamInfo * stream_info = nullptr;
@@ -254,7 +254,7 @@ natsOptions * NATSJetstream::createConnectionOptions()
     natsOptions_SetReconnectBufSize(opts, 8 * 1024 * 1024); /// 8MB reconnect buffer
     natsOptions_SetRetryOnFailedConnect(opts, true, nullptr, nullptr);
 
-    /// Authentication — only one mechanism at a time (validated above)
+    /// Only one mechanism at a time
     const auto & username = settings->nats_username.value;
     const auto & password = settings->nats_password.value;
     const auto & token    = settings->nats_token.value;
@@ -329,7 +329,7 @@ void NATSJetstream::connect()
             getUrl(),
             natsStatus_GetText(status));
 
-    /// Create JetStream context
+
     jsOptions js_opts;
     jsOptions_Init(&js_opts);
 
@@ -461,7 +461,7 @@ NamesAndTypesList NATSJetstream::getVirtuals() const
 
 void NATSJetstream::cacheVirtualColumnNamesAndTypes()
 {
-    /// Match Kafka's exact virtual column list + NATS-specific columns
+    /// Standard virtual columns plus NATS-specific ones
     virtual_column_names_and_types.push_back(
         NameAndTypePair(ProtonConsts::RESERVED_APPEND_TIME, std::make_shared<DataTypeDateTime64>(3, "UTC")));
     virtual_column_names_and_types.push_back(

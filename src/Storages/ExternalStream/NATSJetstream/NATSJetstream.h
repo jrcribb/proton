@@ -23,27 +23,6 @@ namespace ExternalStream
 
 class NATSJetstreamSource;
 
-/// Storage implementation for NATS JetStream external streams.
-///
-/// Storage implementation for NATS JetStream external streams.
-///
-/// Supports:
-/// - Pull-based subscription with configurable batch size and fetch timeout
-/// - Durable consumers with automatic offset tracking by NATS server
-/// - Three ACK policies: none, all, explicit (at-least-once delivery with explicit)
-/// - Five deliver policies: all, last, new, by_start_sequence, by_start_time
-/// - Five authentication methods: user/pass, token, NKey, credentials file, mTLS
-/// - TLS with optional CA cert and client certificates (auto-detected from URL)
-/// - Automatic reconnection with configurable backoff (8MB reconnect buffer)
-/// - Virtual columns: _nats_subject, _nats_timestamp, _tp_message_key, _tp_message_headers, etc.
-/// - Stall detection and automatic subscription recovery
-/// - Checkpointing via durable consumer state for materialized view recovery
-///
-/// SQL Example:
-///   CREATE EXTERNAL STREAM js_orders (order_id UInt64, amount Float64, _tp_message_key String)
-///   SETTINGS type='nats_jetstream', url='nats://localhost:4222',
-///            stream_name='ORDERS', subject='orders.>', data_format='JSONEachRow';
-///
 class NATSJetstream final : public StorageExternalStreamImpl
 {
     friend class NATSJetstreamSource;
@@ -71,7 +50,7 @@ public:
 
     bool supportsSubcolumns() const override { return true; }
 
-    /// Accessors for settings used by source/sink
+    /// Accessors used by source/sink
     const String & getUrl() const { return settings->url.value; }
     const String & getStreamName() const { return settings->stream_name.value; }
     const String & getSubject() const { return settings->subject.value; }
@@ -83,12 +62,11 @@ public:
     bool produceOneMessagePerRow() const { return settings->one_message_per_row.value; }
     UInt64 stallTimeoutMs() const { return settings->nats_stall_timeout_ms.value.totalMilliseconds(); }
 
-    /// Thread-safe connection accessors
+
     jsCtx * getJetStreamContext();
     natsConnection * getConnection();
 
-    /// Creates a new pull subscription for the given consumer name.
-    /// Caller takes ownership and must eventually call natsSubscription_Destroy.
+    /// Creates a pull subscription. Caller owns the result.
     natsSubscription * createPullSubscription(const String & consumer_name_override, const ContextPtr & context);
 
 private:
@@ -110,12 +88,12 @@ private:
     static ExternalStreamSettingsPtr validateAndMoveSettings(ExternalStreamSettingsPtr && settings_);
     natsOptions * createConnectionOptions();
 
-    /// Connection state, protected by connection_mutex
+
     natsConnection * connection = nullptr;
     jsCtx * js_context = nullptr;
     mutable std::mutex connection_mutex;
 
-    /// Cached virtual columns
+
     NamesAndTypesList virtual_column_names_and_types;
 
     ExternalStreamCounterPtr external_stream_counter;

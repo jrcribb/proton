@@ -226,7 +226,7 @@ void NATSJetstreamSource::getPhysicalHeader()
         {
             physical_header.insert(column);
         }
-        /// _tp_append_time: same as message timestamp for NATS
+        /// _tp_append_time
         else if (column.name == ProtonConsts::RESERVED_APPEND_TIME)
         {
             virtual_col_value_functions[pos] = [](natsMsg * msg) -> Field {
@@ -292,7 +292,7 @@ void NATSJetstreamSource::getPhysicalHeader()
         }
         else
         {
-            /// Unknown column — treat as physical (same as Kafka)
+            /// Unknown column — physical
             physical_header.insert(column);
         }
 
@@ -536,7 +536,7 @@ Chunk NATSJetstreamSource::generate()
 
 std::pair<Int64, Int64> NATSJetstreamSource::sequenceRange() const
 {
-    /// NATS JetStream doesn't expose watermark offsets like Kafka.
+    /// NATS JetStream doesn't expose watermark offsets.
     /// Return best-effort range based on what we've processed.
     auto last_sn = lastProcessedSN();
     if (last_sn >= 0)
@@ -722,7 +722,7 @@ Strings NATSJetstreamSource::doFetchData(const Streaming::SequenceRange & sn_ran
 
         natsMsgList_Destroy(&msg_list);
 
-        /// No progress check (like Kafka)
+        /// No progress check
         if (results.empty())
             break;
     }

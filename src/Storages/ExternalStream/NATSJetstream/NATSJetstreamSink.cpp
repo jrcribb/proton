@@ -109,7 +109,7 @@ NATSJetstreamSink::NATSJetstreamSink(
         data_format,
         storage.getFormatSettings(context),
         max_rows_per_message,
-        0, /// max_message_size: unlimited for NATS (no Kafka-like message size limit)
+        0, /// max_message_size: unlimited for NATS
         context);
     format_executor->start();
 }

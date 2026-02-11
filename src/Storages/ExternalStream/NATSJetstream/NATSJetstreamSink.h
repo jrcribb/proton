@@ -17,14 +17,6 @@ namespace DB::ExternalStream
 
 class NATSJetstream;
 
-/// Sink for publishing data to NATS JetStream subjects.
-///
-/// Implements synchronous publishing with acknowledgement tracking:
-/// - Supports _tp_message_key for dynamic subject routing
-/// - Supports _tp_message_headers for setting NATS message headers
-/// - Checkpoint ensures all outstanding messages are ACKed by the server
-/// - Duplicate message detection using publisher ACKs
-///
 class NATSJetstreamSink final : public SinkToStorage
 {
 public:
@@ -44,13 +36,12 @@ public:
     void checkpoint(CheckpointContextPtr) override;
 
 private:
-    /// Publish a single formatted message to JetStream
     void sendMessage(const String & message, ColumnPtr key_col, ColumnPtr headers_col, ColumnPtr ts_col);
 
     jsCtx * js_context;
     String subject;
 
-    /// Column position tracking for _tp_message_key, _tp_message_headers, _tp_time
+
     std::optional<size_t> msg_key_column_pos;
     std::optional<size_t> headers_column_pos;
     std::optional<size_t> ts_column_pos;
@@ -59,7 +50,7 @@ private:
 
     std::unique_ptr<MessageQueueFormatExecutor> format_executor;
 
-    /// Row counter within current batch for per-row column extraction
+
     size_t current_batch_row{0};
 
     struct State
@@ -74,7 +65,7 @@ private:
 
     State state;
 
-    /// the number of outstanding messages for the current checkpoint period
+
     size_t outstandingMessages() const noexcept { return state.outstanding - (state.acked + state.error_count); }
 
     UInt64 checkpoint_timeout_ms{0};
