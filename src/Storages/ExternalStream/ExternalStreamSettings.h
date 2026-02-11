@@ -112,7 +112,9 @@ class ASTStorage;
     M(String, nats_cert_file, "", "Path to TLS client certificate for mTLS authentication", 0) \
     M(String, nats_key_file, "", "Path to TLS client private key for mTLS authentication", 0) \
     M(UInt64, reconnect_wait_ms, 2000, "Wait time in milliseconds between reconnect attempts", 0) \
-    M(Int64, max_reconnects, 60, "Maximum number of reconnect attempts. Set to -1 for unlimited.", 0)
+    M(Int64, max_reconnects, 60, "Maximum number of reconnect attempts. Set to -1 for unlimited.", 0) \
+    M(UInt64, start_sequence, 0, "Start sequence for deliver_policy=by_start_sequence", 0) \
+    M(String, start_time, "", "Start time (Unix timestamp in nanoseconds) for deliver_policy=by_start_time", 0)
 
 #define ALL_EXTERNAL_STREAM_SETTINGS(M, ALIAS) \
     M(String, type, "", "External stream type", 0) \
