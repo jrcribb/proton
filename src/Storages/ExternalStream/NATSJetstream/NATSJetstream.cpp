@@ -419,55 +419,23 @@ natsSubscription * NATSJetstream::createPullSubscription(
     else if (deliver == "by_start_time")
     {
         consumer_cfg.DeliverPolicy = js_DeliverByStartTime;
-        /// NATS C client expects time_t (seconds) or nanoseconds?
-        /// jsConsumerConfig definition says: int64_t OptStartTime; // Unix timestamp in nanoseconds
-        /// We need to parse ISO8601 string to nanoseconds.
-        /// For simplicity/robustness in this context, let's assume the user provides a raw timestamp or we strictly parse.
-        /// Actually, Proton implementation usually handles types.
-        /// Let's use ProtonCommon to parse if possible, or just assume format match.
-        /// For now, since we added String setting, let's try to parse or rely on NATS library?
-        /// C NATS Lib doesn't parse date strings for us in Config.
-        /// We need to convert String start_time to int64_t nanoseconds.
-        
-        /// NOTE: Parsing might be complex without header includes.
-        /// Let's stick to safe defaults or minimal implementation. 
-        /// Actually, let's look at `DataTypeDateTime64`.
-        /// Re-reading: The User might pass an integer in string form?
-        /// Let's defer complexity. If safe implementation is hard, maybe remove the policy support?
-        /// No, "give the full".
-        /// Let's look at how Proton handles time.
-        
-        /// BETTER: Use `parseDateTime64BestEffort` from `IO/ReadHelpers.h`?
-        /// We don't have that included in .cpp easily (it is in ReadHelpers but maybe not exposed).
-        /// To be safe and clean: implementation of by_start_time via simple string-to-int check (if user passes ns) 
-        /// or just leave as todo/fallback if I can't verify compile.
-        
-        /// DECISION: Support ONLY `by_start_sequence` fully now since it's UInt64.
-        /// `by_start_time` is risky without a parser.
-        /// I will Revert adding `start_time` setting and remove `by_start_time` from validation to be clean.
-        /// Wait, I already added checks in `validateNATSSettings`.
-        
-        /// REVISED PLAN: I will only implement `by_start_sequence` fully. 
-        /// I will REMOVE `by_start_time` from validation list in `NATSJetstream.cpp` line 89.
-        /// And I will remove `start_time` from Header in next step if checking fails.
-        
-        /// Actually, I need to match the previous tool call.
-        /// I added `start_time` to header.
-        /// I will ignore it here OR try to use it.
-        /// If I fail compilation, it's bad.
-        /// Let's just implement `by_start_sequence` and `by_start_time` (assuming user passes variable as string?).
-        /// jsConsumerConfig OptStartTime is `int64_t`.
-        /// Let's just assume the user passes a number in the string for now (microseconds/nanoseconds).
-        
-        consumer_cfg.DeliverPolicy = js_DeliverByStartTime;
-        // Basic parsing:
-        try {
-             // Assuming string contains nanoseconds timestamp
-             consumer_cfg.OptStartTime = std::stoll(settings->start_time.value); 
-        } catch (...) {
-             // Fallback
-             consumer_cfg.DeliverPolicy = js_DeliverAll; 
-             LOG_WARNING(logger, "Invalid start_time format, falling back to DeliverAll");
+
+        /// start_time is expected as a Unix timestamp in nanoseconds (int64 in string form).
+        /// Example: "1700000000000000000" for 2023-11-14T22:13:20Z
+        const auto & time_str = settings->start_time.value;
+        if (!time_str.empty())
+        {
+            try
+            {
+                consumer_cfg.OptStartTime = std::stoll(time_str);
+            }
+            catch (const std::exception &)
+            {
+                throw Exception(
+                    ErrorCodes::INVALID_SETTING_VALUE,
+                    "NATS JetStream: 'start_time' must be a Unix timestamp in nanoseconds, got '{}'",
+                    time_str);
+            }
         }
     }
 

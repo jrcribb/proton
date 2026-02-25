@@ -14,7 +14,7 @@ namespace DB
 
 namespace ErrorCodes
 {
-extern const int CANNOT_CONNECT_NATS;
+extern const int CANNOT_CONNECT_SERVER;
 extern const int TIMEOUT_EXCEEDED;
 }
 
@@ -30,7 +30,7 @@ std::unordered_map<String, String> getHeaders(const IColumn & column, size_t row
     const auto & column_map = assert_cast<const ColumnMap &>(column);
     const auto & column_array = column_map.getNestedColumn();
     const auto & offsets = column_array.getOffsets();
-    size_t offset = offsets[row - 1];
+    size_t offset = (row > 0) ? offsets[row - 1] : 0;
     size_t next_offset = offsets[row];
     size_t row_count = next_offset - offset;
     const auto & nested_columns = column_map.getNestedData();
@@ -151,7 +151,7 @@ void NATSJetstreamSink::sendMessage(
     {
         external_stream_counter->addWrittenFailed(1);
         throw Exception(
-            ErrorCodes::CANNOT_CONNECT_NATS,
+            ErrorCodes::CANNOT_CONNECT_SERVER,
             "Failed to create NATS message for subject '{}': {}",
             publish_subject,
             natsStatus_GetText(status));
@@ -181,7 +181,7 @@ void NATSJetstreamSink::sendMessage(
         state.last_error_code.store(static_cast<int32_t>(status));
         external_stream_counter->addWrittenFailed(1);
         throw Exception(
-            ErrorCodes::CANNOT_CONNECT_NATS,
+            ErrorCodes::CANNOT_CONNECT_SERVER,
             "Failed to publish message to JetStream subject '{}': {}",
             publish_subject,
             natsStatus_GetText(status));
@@ -210,62 +210,49 @@ void NATSJetstreamSink::consume(Chunk chunk)
 
     if (unlikely(is_finished.test()))
         throw Exception(
-            ErrorCodes::CANNOT_CONNECT_NATS,
+            ErrorCodes::CANNOT_CONNECT_SERVER,
             "NATSJetstreamSink cannot consume data because the sink has stopped");
 
     auto block = getHeader().cloneWithColumns(chunk.detachColumns());
 
     current_batch_row = 0;
 
-    if (msg_key_column_pos) /// using message key column for dynamic subject routing
+    /// Extract virtual columns before erasing. Collect positions to erase
+    /// in descending order so earlier erases don't shift later positions.
+    ColumnPtr key_column{nullptr};
+    ColumnPtr ts_column{nullptr};
+    ColumnPtr headers_column{nullptr};
+
+    /// Gather positions to erase (sorted descending to avoid index shifting)
+    std::vector<size_t> erase_positions;
+
+    if (msg_key_column_pos)
     {
-        ColumnPtr key_column = block.getByPosition(*msg_key_column_pos).column;
-        block.erase(*msg_key_column_pos);
-
-        ColumnPtr ts_column{nullptr};
-        if (ts_column_pos)
-        {
-            ts_column.swap(block.getByPosition(*ts_column_pos).column);
-            block.erase(*ts_column_pos);
-        }
-
-        ColumnPtr headers_column{nullptr};
-        if (headers_column_pos)
-        {
-            headers_column.swap(block.getByPosition(*headers_column_pos).column);
-            block.erase(*headers_column_pos);
-        }
-
-        format_executor->execute(
-            block,
-            [this, &ts_column, &key_column, &headers_column](const String & message, size_t) {
-                sendMessage(message, key_column, headers_column, ts_column);
-            },
-            /*flush_at_the_end=*/true);
+        key_column = block.getByPosition(*msg_key_column_pos).column;
+        erase_positions.push_back(*msg_key_column_pos);
     }
-    else /// no message key column: publish to the configured subject
+    if (ts_column_pos)
     {
-        ColumnPtr ts_column{nullptr};
-        if (ts_column_pos)
-        {
-            ts_column.swap(block.getByPosition(*ts_column_pos).column);
-            block.erase(*ts_column_pos);
-        }
-
-        ColumnPtr headers_column{nullptr};
-        if (headers_column_pos)
-        {
-            headers_column.swap(block.getByPosition(*headers_column_pos).column);
-            block.erase(*headers_column_pos);
-        }
-
-        format_executor->execute(
-            block,
-            [this, &ts_column, &headers_column](const String & message, size_t) {
-                sendMessage(message, nullptr, headers_column, ts_column);
-            },
-            /*flush_at_the_end=*/true);
+        ts_column = block.getByPosition(*ts_column_pos).column;
+        erase_positions.push_back(*ts_column_pos);
     }
+    if (headers_column_pos)
+    {
+        headers_column = block.getByPosition(*headers_column_pos).column;
+        erase_positions.push_back(*headers_column_pos);
+    }
+
+    /// Erase in reverse order so indices remain valid
+    std::sort(erase_positions.rbegin(), erase_positions.rend());
+    for (auto pos : erase_positions)
+        block.erase(pos);
+
+    format_executor->execute(
+        block,
+        [this, &ts_column, &key_column, &headers_column](const String & message, size_t) {
+            sendMessage(message, key_column, headers_column, ts_column);
+        },
+        /*flush_at_the_end=*/true);
 }
 
 void NATSJetstreamSink::onFinish()
@@ -297,7 +284,7 @@ void NATSJetstreamSink::checkpoint(CheckpointContextPtr context)
     {
         if (state.last_error_code.load() != 0)
             throw Exception(
-                ErrorCodes::CANNOT_CONNECT_NATS,
+                ErrorCodes::CANNOT_CONNECT_SERVER,
                 "NATS JetStream sink checkpoint failed: error_count={} last_error={}",
                 state.error_count.load(),
                 natsStatus_GetText(static_cast<natsStatus>(state.last_error_code.load())));
