@@ -1,6 +1,6 @@
 #include <Storages/ExternalStream/NATSJetstream/NATSJetstreamSink.h>
 
-#if USE_NATS
+#if USE_NATSIO
 
 #include <Columns/ColumnMap.h>
 #include <Columns/ColumnNullable.h>
@@ -66,7 +66,7 @@ NATSJetstreamSink::NATSJetstreamSink(
     ExternalStreamCounterPtr external_stream_counter_,
     LoggerPtr logger_,
     ContextPtr context)
-    : SinkToStorage(header, ProcessorID::ExternalTableDataSinkID)
+    : SinkToStorage(header, ProcessorID::NATSJetstreamSinkID)
     , js_context(storage.getJetStreamContext())
     , subject(storage.getSubject())
     , one_message_per_row(storage.produceOneMessagePerRow())

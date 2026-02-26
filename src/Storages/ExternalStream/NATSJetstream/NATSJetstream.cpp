@@ -1,6 +1,6 @@
 #include <Storages/ExternalStream/NATSJetstream/NATSJetstream.h>
 
-#if USE_NATS
+#if USE_NATSIO
 
 #include <DataTypes/DataTypeDateTime64.h>
 #include <DataTypes/DataTypeMap.h>

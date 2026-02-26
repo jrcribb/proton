@@ -2,14 +2,14 @@
 
 #include "config.h"
 
-#if USE_NATS
+#if USE_NATSIO
 
 #include <Storages/ExternalStream/ExternalStreamCounter.h>
 #include <Storages/ExternalStream/ExternalStreamSettings.h>
 #include <Storages/ExternalStream/StorageExternalStreamImpl.h>
 #include <Common/Logger.h>
 
-#include <nats/nats.h>
+#include <nats.h>
 
 #include <atomic>
 #include <mutex>

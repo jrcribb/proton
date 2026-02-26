@@ -32,8 +32,8 @@ if (TARGET ch_contrib::parquet)
     target_link_libraries(external_stream PRIVATE ch_contrib::parquet)
 endif()
 
-if (TARGET ch_contrib::nats)
-    target_link_libraries(external_stream PRIVATE ch_contrib::nats)
+if (TARGET ch_contrib::nats_io)
+    target_link_libraries(external_stream PRIVATE ch_contrib::nats_io)
 endif()
 
 target_link_libraries(external_stream PRIVATE ch_contrib::uv)

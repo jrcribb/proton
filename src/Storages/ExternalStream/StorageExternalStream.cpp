@@ -18,7 +18,7 @@
 #include <Storages/ExternalStream/Kafka/Kafka.h>
 #include <Storages/ExternalStream/Log/FileLog.h>
 #include <Storages/ExternalStream/Pulsar/Pulsar.h>
-#if USE_NATS
+#if USE_NATSIO
 #include <Storages/ExternalStream/NATSJetstream/NATSJetstream.h>
 #endif
 #if USE_PYTHON_UDF
@@ -141,7 +141,7 @@ StoragePtr createExternalStream(
 
 #endif
 
-#if USE_NATS
+#if USE_NATSIO
     if (type == StreamTypes::NATS_JETSTREAM)
         return std::make_unique<ExternalStream::NATSJetstream>(
             std::move(storage_id),

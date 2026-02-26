@@ -1,6 +1,6 @@
 #include <Storages/ExternalStream/NATSJetstream/NATSJetstreamSource.h>
 
-#if USE_NATS
+#if USE_NATSIO
 
 #include <Checkpoint/CheckpointContext.h>
 #include <Checkpoint/CheckpointCoordinator.h>
@@ -112,7 +112,7 @@ NATSJetstreamSource::NATSJetstreamSource(
     ExternalStreamCounterPtr counter,
     LoggerPtr logger_,
     const ContextPtr & context_)
-    : Streaming::ISource(header_, true, logger_, ProcessorID::ExternalStreamSourceID)
+    : Streaming::ISource(header_, true, logger_, ProcessorID::NATSJetstreamSourceID)
     , ExternalStreamSource(header_, storage_snapshot_, max_block_size_, context_)
     , virtual_col_value_functions(header.columns(), nullptr)
     , virtual_col_types(header.columns(), nullptr)
@@ -199,7 +199,7 @@ void NATSJetstreamSource::getPhysicalHeader()
                 }
 
                 /// The keys array must be freed
-                nats_Free((void *)keys);
+                free(static_cast<void *>(keys));
                 return result;
             };
             virtual_col_types[pos] = column.type;
@@ -417,7 +417,7 @@ Chunk NATSJetstreamSource::generate()
         jsFetchRequest fetch_req;
         jsFetchRequest_Init(&fetch_req);
         fetch_req.Batch = batch_size;
-        fetch_req.MaxWait = static_cast<int64_t>(timeout_ms) * 1'000'000; /// ms -> ns
+        fetch_req.Expires = static_cast<int64_t>(timeout_ms) * 1'000'000; /// ms -> ns
         fetch_req.NoWait = !is_streaming;
 
         natsStatus status = natsSubscription_FetchRequest(&msg_list, subscription, &fetch_req);
@@ -679,7 +679,7 @@ Strings NATSJetstreamSource::doFetchData(const Streaming::SequenceRange & sn_ran
         jsFetchRequest fetch_req;
         jsFetchRequest_Init(&fetch_req);
         fetch_req.Batch = static_cast<int>(count > 128 ? 128 : count);
-        fetch_req.MaxWait = record_consume_timeout_ms * 1'000'000LL;
+        fetch_req.Expires = record_consume_timeout_ms * 1'000'000LL;
 
         natsStatus status = natsSubscription_FetchRequest(&msg_list, fetch_sub, &fetch_req);
 

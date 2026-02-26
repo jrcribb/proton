@@ -100,7 +100,6 @@ class ASTStorage;
     M(UInt64, max_ack_pending, 1024, "Maximum number of outstanding acks before the server pauses delivery", 0) \
     M(UInt64, batch_size, 256, "Number of messages to fetch per pull request", 0) \
     M(UInt64, fetch_timeout_ms, 5000, "Timeout in milliseconds for each pull fetch request", 0) \
-    M(Bool, one_message_per_row, false, "If true, each NATS message maps to exactly one row. Required when _tp_message_key or _tp_message_headers columns are defined.", 0) \
     M(Milliseconds, nats_stall_timeout_ms, 60 * 1000, "Time in milliseconds without progress before the consumer subscription is considered stalled and recreated. Set to 0 to disable.", 0) \
     M(String, nats_username, "", "NATS username for user/password authentication", 0) \
     M(String, nats_password, "", "NATS password for user/password authentication", 0) \

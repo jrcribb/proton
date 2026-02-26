@@ -2,14 +2,14 @@
 
 #include "config.h"
 
-#if USE_NATS
+#if USE_NATSIO
 
 #include <Processors/Streaming/ISource.h>
 #include <Storages/ExternalStream/ExternalStreamCounter.h>
 #include <Storages/ExternalStream/ExternalStreamSource.h>
 #include <Common/Stopwatch.h>
 
-#include <nats/nats.h>
+#include <nats.h>
 
 namespace DB::ExternalStream
 {

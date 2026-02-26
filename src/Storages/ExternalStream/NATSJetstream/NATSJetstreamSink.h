@@ -2,13 +2,13 @@
 
 #include "config.h"
 
-#if USE_NATS
+#if USE_NATSIO
 
 #include <Processors/Executors/MessageQueueFormatExecutor.h>
 #include <Processors/Sinks/SinkToStorage.h>
 #include <Storages/ExternalStream/ExternalStreamCounter.h>
 
-#include <nats/nats.h>
+#include <nats.h>
 
 #include <atomic>
 
