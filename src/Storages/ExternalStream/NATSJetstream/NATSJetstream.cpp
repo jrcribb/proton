@@ -368,6 +368,9 @@ void NATSJetstream::disconnect()
 
 jsCtx * NATSJetstream::getJetStreamContext()
 {
+    /// NOTE: The returned pointer is valid only while this storage object is alive and not
+    /// disconnected. Callers (e.g. NATSJetstreamSink) must not hold the pointer across
+    /// a potential disconnect/reconnect cycle.
     std::lock_guard lock(connection_mutex);
     return js_context;
 }
@@ -444,14 +447,20 @@ natsSubscription * NATSJetstream::createPullSubscription(
     sub_opts.Config = consumer_cfg;
 
     natsSubscription * subscription = nullptr;
-    natsStatus status = js_PullSubscribe(
-        &subscription,
-        js_context,
-        getSubject().c_str(),
-        consumer_name_override.c_str(),
-        nullptr,
-        &sub_opts,
-        nullptr);
+    natsStatus status;
+    {
+        /// Hold the lock while accessing js_context to prevent use-after-free
+        /// if disconnect() is called concurrently on another thread.
+        std::lock_guard lock(connection_mutex);
+        status = js_PullSubscribe(
+            &subscription,
+            js_context,
+            getSubject().c_str(),
+            consumer_name_override.c_str(),
+            nullptr,
+            &sub_opts,
+            nullptr);
+    }
 
     if (status != NATS_OK)
         throw Exception(

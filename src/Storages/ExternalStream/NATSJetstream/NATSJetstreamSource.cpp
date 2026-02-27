@@ -198,8 +198,8 @@ void NATSJetstreamSource::getPhysicalHeader()
                         result.push_back(Tuple{String(keys[i]), String("null")});
                 }
 
-                /// The keys array must be freed
-                free(static_cast<void *>(keys));
+                /// The keys array must be freed (natsMsgHeader_Keys allocates a plain C array)
+                free(keys);
                 return result;
             };
             virtual_col_types[pos] = column.type;
@@ -433,12 +433,15 @@ Chunk NATSJetstreamSource::generate()
         }
 
         if (status != NATS_OK)
+        {
+            natsMsgList_Destroy(&msg_list); /// prevent resource leak before throw
             throw Exception(
                 ErrorCodes::CANNOT_RECEIVE_MESSAGE,
                 "Failed to fetch messages from NATS JetStream: subject='{}' stream='{}': {}",
                 current_subject,
                 storage->getStreamName(),
                 natsStatus_GetText(status));
+        }
 
         if (msg_list.Count == 0)
         {
