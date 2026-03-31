@@ -18,17 +18,39 @@ on: # yamllint disable-line rule:truthy
       - 'spec/**'
       - 'utils/check-style/aspell-ignore/**'
       - 'examples/**'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref to test'
+        required: true
+        type: string
+      head_sha:
+        description: 'Commit SHA used for image tags and cleanup'
+        required: true
+        type: string
+      pr_labels_csv:
+        description: 'Fork PR labels joined by commas'
+        required: false
+        default: ''
+        type: string
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
   build_address_x64:
     uses: timeplus-io/proton/.github/workflows/run_command.yml@develop
     if: |
-      github.event.pull_request.draft == false &&
-      (!startsWith(github.head_ref, 'porting/'))
+      (
+        github.event_name == 'workflow_dispatch' &&
+        inputs.ref != ''
+      ) || (
+        github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.event.pull_request.draft == false &&
+        (!startsWith(github.head_ref, 'porting/'))
+      )
     with:
       ec2-instance-type: ${{ vars.X64_INSTANCE_TYPE }}
       ec2-image-id: ${{ vars.X64_AMI }}
@@ -38,8 +60,19 @@ jobs:
       sanitizer: "address"
       arch: ${{ vars.X64_ARCH }}
       upjob: build_address_x64
+      ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || '' }}
       command: |
         cd $GITHUB_WORKSPACE
+
+        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          actual_sha="$(git rev-parse HEAD)"
+          expected_sha="${{ inputs.head_sha }}"
+          if [[ "$actual_sha" != "$expected_sha" ]]; then
+            echo "::error::Checked out $actual_sha but expected $expected_sha. The fork PR was updated after dispatch; rerun trusted_fork_pr_ci."
+            exit 1
+          fi
+          export GITHUB_SHA="$expected_sha"
+        fi
 
         # git config
         git config user.name "proton-robot"
@@ -97,7 +130,12 @@ jobs:
   unit_test_address_x64:
     needs: build_address_x64
     uses: timeplus-io/proton/.github/workflows/run_command.yml@develop
-    if: github.event.pull_request.draft == false
+    if: |
+      needs.build_address_x64.result == 'success' &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        github.event.pull_request.draft == false
+      )
     with:
       ec2-instance-type: c5.2xlarge
       ec2-image-id: ${{ vars.X64_TEST_AMI }}
@@ -107,8 +145,20 @@ jobs:
       arch: ${{ vars.X64_ARCH }}
       timeout: 60
       upjob: unit_test_address_x64
+      ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || '' }}
       command: |
         cd $GITHUB_WORKSPACE/tests/proton_ci
+
+        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          actual_sha="$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)"
+          expected_sha="${{ inputs.head_sha }}"
+          if [[ "$actual_sha" != "$expected_sha" ]]; then
+            echo "::error::Checked out $actual_sha but expected $expected_sha. The fork PR was updated after dispatch; rerun trusted_fork_pr_ci."
+            exit 1
+          fi
+          export GITHUB_SHA="$expected_sha"
+        fi
+
         export PROTON_VERSION=testing-$SANITIZER-$ARCH-$GITHUB_SHA
 
         # make virtualenv
@@ -135,7 +185,12 @@ jobs:
   smoke_test_address_x64:
     needs: build_address_x64
     uses: timeplus-io/proton/.github/workflows/run_command.yml@develop
-    if: github.event.pull_request.draft == false
+    if: |
+      needs.build_address_x64.result == 'success' &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        github.event.pull_request.draft == false
+      )
     with:
       ec2-instance-type: m6a.8xlarge
       ec2-image-id: ${{ vars.X64_TEST_AMI }}
@@ -145,7 +200,18 @@ jobs:
       arch: ${{ vars.X64_ARCH }}
       timeout: 80 # cover python-udf test
       upjob: smoke_test_address_x64
+      ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || '' }}
       command: |
+        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          actual_sha="$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)"
+          expected_sha="${{ inputs.head_sha }}"
+          if [[ "$actual_sha" != "$expected_sha" ]]; then
+            echo "::error::Checked out $actual_sha but expected $expected_sha. The fork PR was updated after dispatch; rerun trusted_fork_pr_ci."
+            exit 1
+          fi
+          export GITHUB_SHA="$expected_sha"
+        fi
+
         # run smoke test
         export PROTON_VERSION=testing-$SANITIZER-$ARCH-$GITHUB_SHA
         export PROTON_REPO=timeplus/proton_testing
@@ -158,9 +224,9 @@ jobs:
         sudo curl -L "https://github.com/docker/compose/releases/download/v2.5.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
         sudo chmod +x /usr/local/bin/docker-compose
 
-        LABELS="${{ join(github.event.pull_request.labels.*.name, ' ') }}"
+        LABELS="${{ github.event_name == 'workflow_dispatch' && inputs.pr_labels_csv || join(github.event.pull_request.labels.*.name, ',') }}"
         echo "PR Labels: $LABELS"
-        if echo "$LABELS" | grep -q "python-udf"; then
+        if printf ',%s,\n' "$LABELS" | grep -q ',python-udf,'; then
           bash run.sh python-udf-library
         else
           bash run.sh
@@ -179,7 +245,12 @@ jobs:
   stateless_test_address_x64:
     needs: build_address_x64
     uses: timeplus-io/proton/.github/workflows/run_command.yml@develop
-    if: github.event.pull_request.draft == false
+    if: |
+      needs.build_address_x64.result == 'success' &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        github.event.pull_request.draft == false
+      )
     with:
       ec2-instance-type: c7i.8xlarge
       ec2-image-id: ${{ vars.X64_TEST_AMI }}
@@ -189,9 +260,20 @@ jobs:
       arch: ${{ vars.X64_ARCH }}
       timeout: 60
       upjob: stateless_test_address_x64
+      ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || '' }}
       command: |
         cd $GITHUB_WORKSPACE/tests/proton_ci
         mkdir $GITHUB_WORKSPACE/output
+
+        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          actual_sha="$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)"
+          expected_sha="${{ inputs.head_sha }}"
+          if [[ "$actual_sha" != "$expected_sha" ]]; then
+            echo "::error::Checked out $actual_sha but expected $expected_sha. The fork PR was updated after dispatch; rerun trusted_fork_pr_ci."
+            exit 1
+          fi
+          export GITHUB_SHA="$expected_sha"
+        fi
 
         # make virtualenv
         ln -s /usr/bin/python3 /usr/bin/python
@@ -220,7 +302,12 @@ jobs:
   stateful_test_address_x64:
     needs: build_address_x64
     uses: timeplus-io/proton/.github/workflows/run_command.yml@develop
-    if: github.event.pull_request.draft == false
+    if: |
+      needs.build_address_x64.result == 'success' &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        github.event.pull_request.draft == false
+      )
     with:
       ec2-instance-type: c5.2xlarge
       ec2-image-id: ${{vars.X64_TEST_AMI }}
@@ -230,9 +317,20 @@ jobs:
       arch: ${{ vars.X64_ARCH }}
       timeout: 40
       upjob: stateful_test_address_x64
+      ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || '' }}
       command: |
         cd $GITHUB_WORKSPACE/tests/proton_ci
         mkdir $GITHUB_WORKSPACE/output
+
+        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          actual_sha="$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)"
+          expected_sha="${{ inputs.head_sha }}"
+          if [[ "$actual_sha" != "$expected_sha" ]]; then
+            echo "::error::Checked out $actual_sha but expected $expected_sha. The fork PR was updated after dispatch; rerun trusted_fork_pr_ci."
+            exit 1
+          fi
+          export GITHUB_SHA="$expected_sha"
+        fi
 
         # make virtualenv
         ln -s /usr/bin/python3 /usr/bin/python
@@ -258,7 +356,7 @@ jobs:
       TIMEPLUS_API_KEY: ${{ secrets.TIMEPLUS_API_KEY }}
       TIMEPLUS_WORKSPACE: ${{ secrets.TIMEPLUS_WORKSPACE }}
   SkipDraft:
-    if: github.event.pull_request.draft == true
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == true
     runs-on: ubuntu-latest
     timeout-minutes: 1
     # Steps represent a sequence of tasks that will be executed as part of the job
@@ -266,13 +364,22 @@ jobs:
     - name: Skip draft
       run: echo "Skip draft"
   SkipPortingBranch:
-    if: startsWith(github.head_ref, 'porting/')
+    if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'porting/')
     runs-on: ubuntu-latest
     timeout-minutes: 1
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
     - name: Skip porting branch
       run: echo "Skip porting branch"
+  SkipExternalFork:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+    - name: Skip external fork pull request
+      run: |
+        echo "Skipping secret-backed ProtonCI jobs for an external fork pull request."
+        echo "Run the trusted_fork_pr_ci workflow after review to dispatch ProtonCI against refs/pull/<pr>/head."
   clean_passed_test_image:
     needs:
       - unit_test_address_x64
@@ -296,3 +403,4 @@ jobs:
           GH_PERSONAL_ACCESS_TOKEN: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
           SANITIZER: "address"
           ARCH: ${{ vars.X64_ARCH }}
+          GITHUB_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.head_sha || github.sha }}
