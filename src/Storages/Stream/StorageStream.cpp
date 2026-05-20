@@ -43,6 +43,7 @@ extern const int UNSUPPORTED;
 extern const int UNSUPPORTED_PARAMETER;
 extern const int RESOURCE_NOT_INITED;
 extern const int RESOURCE_NOT_FOUND;
+extern const int LOGICAL_ERROR;
 }
 
 namespace
@@ -266,6 +267,16 @@ void StorageStream::doRead(
 {
     auto description = makeFormattedShards(shards_to_read);
     LOG_DEBUG(log, "Read {}", description);
+
+    /// Shard pruning can legitimately yield zero shards (e.g. when `optimize_skip_unused_shards_with_subqueries`
+    /// proves a historical WHERE predicate is unsatisfiable). Leave `query_plan` uninitialized;
+    /// the caller (`InterpreterSelectQuery`) attaches a `NullSource` via `addEmptySourceToQueryPlan`.
+    if (shards_to_read.shards.empty())
+    {
+        if (shards_to_read.mode != QueryMode::Historical)
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "Empty shard list is only valid for historical Stream reads");
+        return;
+    }
 
     /// Streaming read always uses the minimum number of threads unless the user specifies a different value with the setting \min_threads.
     size_t streaming_shard_num_streams = std::max<size_t>(
@@ -551,6 +562,7 @@ StorageStream::ShardsToRead StorageStream::getShardsToRead(
     const ContextPtr & local_context, const StorageSnapshotPtr & storage_snapshot, SelectQueryInfo & query_info) const
 {
     if (!query_info.shards_to_query)
+        /// shard pruning already sees query_info.prepared_sets, so bounded IN-subqueries can be materialized early here.
         query_info.shards_to_query = getPrunedShardsWithQueryMode(
             sharding_key_expr,
             sharding_key_is_deterministic,
@@ -1171,6 +1183,13 @@ QueryProcessingStage::Enum StorageStream::getQueryProcessingStage(
     auto shards_to_read = getShardsToRead(context_, storage_snapshot, query_info);
     if (shards_to_read.mode == QueryMode::Historical)
     {
+        /// Shard pruning may have eliminated every shard (e.g. the WHERE predicate is
+        /// provably unsatisfiable via `optimize_skip_unused_shards_with_subqueries`). With
+        /// no shard to delegate to, return `FetchColumns` so the interpreter wires up a
+        /// `NullSource` and runs the rest of the pipeline on top of it.
+        if (shards_to_read.shards.empty())
+            return QueryProcessingStage::Enum::FetchColumns;
+
         /// For now, we assume all shards of a stream will be co-located on the same node
         if (hasAnyVirtualReplica(shards_to_read.shards))
             return getHistoricalQueryProcessingStageRemote(
