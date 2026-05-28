@@ -332,16 +332,18 @@ bool StorageView::isStreamingQuery(ContextPtr query_context) const
         return false;
 
     const auto metadata_ptr = getInMemoryMetadataPtr();
-    auto select = metadata_ptr->getSelectQuery().inner_query;
-    auto local_ctx = Context::createCopy(query_context);
-    local_ctx->setCollectRequiredColumns(false);
 
     /// Parameterized views: same storage object can analyze to different queries across
     /// invocations, so do not cache and keep the original behavior.
     if (is_parameterized_view)
+    {
+        auto local_ctx = Context::createCopy(query_context);
+        local_ctx->setCollectRequiredColumns(false);
+        auto select = metadata_ptr->getSelectQuery().inner_query->clone();
         return InterpreterSelectWithUnionQuery(
                    select, local_ctx, SelectQueryOptions().createParameterizedView().noModify().analyze())
             .isStreamingQuery();
+    }
 
     const bool have_query_ctx = query_context->hasQueryContext();
     std::string cache_key;
@@ -366,6 +368,12 @@ bool StorageView::isStreamingQuery(ContextPtr query_context) const
             return *it->second.is_streaming;
     }
 
+    auto local_ctx = Context::createCopy(query_context);
+    local_ctx->setCollectRequiredColumns(false);
+
+    /// Analyzer mutates query_ptr in place, so concurrent analyses on the view's shared
+    /// inner_query race and tear the AST; clone before handing it off.
+    auto select = metadata_ptr->getSelectQuery().inner_query->clone();
     const bool result = InterpreterSelectWithUnionQuery(
                             select, local_ctx, SelectQueryOptions().noModify().analyze())
                             .isStreamingQuery();
@@ -381,7 +389,7 @@ bool StorageView::isStreamingQuery(ContextPtr query_context) const
 
 bool StorageView::hasStreamingGlobalAggregation() const
 {
-    auto select = getInMemoryMetadataPtr()->getSelectQuery().inner_query;
+    auto select = getInMemoryMetadataPtr()->getSelectQuery().inner_query->clone();
     auto ctx = Context::createCopy(local_context);
     ctx->setCollectRequiredColumns(false);
 
@@ -393,20 +401,23 @@ bool StorageView::hasStreamingGlobalAggregation() const
 
 Streaming::DataStreamSemanticEx StorageView::dataStreamSemantic() const
 {
+    std::lock_guard lock(data_stream_semantic_mutex);
     if (data_stream_semantic_resolved)
         return data_stream_semantic;
 
-    auto select = getInMemoryMetadataPtr()->getSelectQuery().inner_query;
+    auto select = getInMemoryMetadataPtr()->getSelectQuery().inner_query->clone();
     auto ctx = Context::createCopy(local_context);
     ctx->setCollectRequiredColumns(false);
 
     if (is_parameterized_view)
-        data_stream_semantic = InterpreterSelectWithUnionQuery(select, ctx, SelectQueryOptions().createParameterizedView().noModify().analyze()).getDataStreamSemantic();
+        data_stream_semantic
+            = InterpreterSelectWithUnionQuery(select, ctx, SelectQueryOptions().createParameterizedView().noModify().analyze())
+                  .getDataStreamSemantic();
     else
-        data_stream_semantic = InterpreterSelectWithUnionQuery(select, ctx, SelectQueryOptions().noModify().analyze()).getDataStreamSemantic();
+        data_stream_semantic
+            = InterpreterSelectWithUnionQuery(select, ctx, SelectQueryOptions().noModify().analyze()).getDataStreamSemantic();
 
     data_stream_semantic_resolved = true;
-
     return data_stream_semantic;
 }
 
