@@ -35,7 +35,9 @@ class ASTStorage;
     M(Bool, use_environment_credentials, false, "Use credentials from environment, where it's applicable", 0) \
     M(Bool, log_stats, false, "If set to true, print statistics to the logs. Note that, the statistics could contain quite a lot of data. The frequency of the statistics logs is control by the statistics.interval.ms property.", 0) \
     M(Milliseconds, consumer_stall_timeout_ms, 60 * 1000, "Define the amount of time when a consumer is not making any progress, then consider the consumer stalled, and then a new consumer will be created. Adjust the value based on how busy a topic is. Use small values for a busy topic to avoid big latency. Use big values for less busy topics to avoid disruption. Set to 0 to disable the behavior.", 0) \
-    M(Milliseconds, connection_timeout_ms, 10 * 1000, "Timeout in milliseconds for establishing a connection to a broker.", 0)
+    M(Milliseconds, connection_timeout_ms, 10 * 1000, "Timeout in milliseconds for establishing a connection to a broker.", 0) \
+    M(String, message_key_schema_name, "", "The schema name for the message key.", 0)
+    
 
 #define LOG_FILE_EXTERNAL_STREAM_SETTINGS(M, ALIAS) \
     M(String, log_files, "", "A comma-separated list of log files", 0) \

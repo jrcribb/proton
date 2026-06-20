@@ -21,6 +21,8 @@
 #include <Storages/parseShards.h>
 #include <Common/ProtonCommon.h>
 #include <Common/logger_useful.h>
+#include "Formats/FormatSettings.h"
+#include "Formats/KafkaSchemaRegistryForAvro.h"
 
 #include <boost/algorithm/string/classification.hpp>
 #include <boost/algorithm/string/predicate.hpp>
@@ -197,33 +199,21 @@ DB::Kafka::Conf createConfFromSettings(const KafkaExternalStreamSettings & setti
     return conf;
 }
 
-void validateMessageKeyColumnType(const DataTypePtr & type)
-{
-    static std::vector<TypeIndex> supported_types{
-        TypeIndex::Bool,
-        TypeIndex::UInt8,
-        TypeIndex::UInt16,
-        TypeIndex::UInt32,
-        TypeIndex::UInt64,
-        TypeIndex::Int8,
-        TypeIndex::Int16,
-        TypeIndex::Int32,
-        TypeIndex::Int64,
-        TypeIndex::Float32,
-        TypeIndex::Float64,
-        TypeIndex::String,
-        TypeIndex::FixedString,
-    };
+const std::vector<TypeIndex> raw_message_key_types{
+    TypeIndex::Bool, TypeIndex::UInt8, TypeIndex::UInt16, TypeIndex::UInt32, TypeIndex::UInt64,
+    TypeIndex::Int8, TypeIndex::Int16, TypeIndex::Int32, TypeIndex::Int64,
+    TypeIndex::Float32, TypeIndex::Float64, TypeIndex::String, TypeIndex::FixedString,
+};
 
+const std::vector<TypeIndex> avro_message_key_types{TypeIndex::String, TypeIndex::FixedString};
+
+void validateMessageKeyColumnType(const DataTypePtr & type, const std::vector<TypeIndex> & allowed)
+{
     if (type->isNullable())
-    {
-        validateMessageKeyColumnType(static_cast<const DataTypeNullable &>(*type).getNestedType());
-    }
-    else
-    {
-        if (std::ranges::none_of(supported_types, [type](auto supported_type) { return supported_type == type->getTypeId(); }))
-            throw Exception(ErrorCodes::ILLEGAL_COLUMN, "`_tp_message_key` column does not support type {}", type->getName());
-    }
+        validateMessageKeyColumnType(
+            static_cast<const DataTypeNullable &>(*type).getNestedType(), allowed);
+    else if (std::ranges::none_of(allowed, [&](auto t) { return t == type->getTypeId(); }))
+        throw Exception(ErrorCodes::ILLEGAL_COLUMN, "`_tp_message_key` column does not support type {}", type->getName());
 }
 
 void validateMessageHeadersColumnType(const DataTypePtr & type)
@@ -268,6 +258,12 @@ void Kafka::validateSettings(bool attach)
                 throw Exception(
                     ErrorCodes::INVALID_SETTING_VALUE,
                     "Kafka external stream with schema registry only supports 'ProtobufSingle' or 'Avro' data formats");
+        }
+    }
+
+    if (!settings->message_key_schema_name.value.empty()){
+        if (!hasSchemaRegistryUrl()){
+            throw Exception(ErrorCodes::INVALID_SETTING_VALUE, "`message_key_schema_name` is only supported when `kafka_schema_registry_url` is set");
         }
     }
 
@@ -344,13 +340,22 @@ Kafka::Kafka(
 
     if (columns.has(ProtonConsts::RESERVED_MESSAGE_KEY))
     {
-        validateMessageKeyColumnType(columns.getColumn({GetColumnsOptions::Kind::All}, ProtonConsts::RESERVED_MESSAGE_KEY).type);
+        validateMessageKeyColumnType(
+            columns.getColumn({GetColumnsOptions::Kind::All}, ProtonConsts::RESERVED_MESSAGE_KEY).type,
+            settings->message_key_schema_name.value.empty() ? raw_message_key_types : avro_message_key_types);
 
         if (hasCustomShardingExpr())
             throw Exception(
                 ErrorCodes::INVALID_SETTING_VALUE,
                 "`sharding_expr` cannot be set when the `{}` column is defined",
                 ProtonConsts::RESERVED_MESSAGE_KEY);
+
+        if (!settings->message_key_schema_name.value.empty())
+        {
+            FormatSettings key_format_settings = getFormatSettings(context);
+            key_format_settings.kafka_schema_registry.subject_name = settings->message_key_schema_name.value;
+            avro_key_schema_registry = KafkaSchemaRegistryForAvro::getOrCreate(key_format_settings);
+        }
     }
 
     if (columns.has(ProtonConsts::RESERVED_MESSAGE_HEADERS))
@@ -585,6 +590,8 @@ Pipe Kafka::read(
                 high_watermark,
                 max_block_size,
                 settings->consumer_stall_timeout_ms.totalMilliseconds(),
+                avro_key_schema_registry,
+                settings->message_key_schema_name.value,
                 external_stream_counter,
                 context,
                 logger));

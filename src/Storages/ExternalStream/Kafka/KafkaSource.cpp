@@ -4,17 +4,22 @@
 #include <Checkpoint/CheckpointCoordinator.h>
 #include <Cluster/Common/Constants.h>
 #include <DataTypes/DataTypeNullable.h>
+#include <DataTypes/DataTypeString.h>
+#include <Formats/Avro/InputStreamReadBufferAdapter.h>
 #include <Formats/FormatFactory.h>
+#include <Formats/KafkaSchemaRegistry.h>
 #include <IO/ReadBufferFromMemory.h>
 #include <IO/ReadBufferFromString.h>
 #include <IO/ReadHelpers.h>
 #include <IO/WriteHelpers.h>
 #include <Processors/Executors/StreamingFormatExecutor.h>
+#include <Processors/Formats/Impl/AvroRowInputFormat.h>
 #include <Storages/ExternalStream/Kafka/Kafka.h>
 #include <base/ClockUtils.h>
 #include <Common/Exception.h>
 #include <Common/ProtonCommon.h>
 
+#include <memory>
 #include <utility>
 
 namespace DB
@@ -144,6 +149,8 @@ KafkaSource::KafkaSource(
     std::optional<Int64> high_watermark_,
     size_t max_block_size_,
     UInt64 consumer_stall_timeout_ms,
+    std::shared_ptr<KafkaSchemaRegistryForAvro> avro_key_schema_registry_,
+    String avro_key_schema_subject_,
     ExternalStreamCounterPtr external_stream_counter_,
     ContextPtr query_context_,
     LoggerPtr logger_)
@@ -153,6 +160,8 @@ KafkaSource::KafkaSource(
     , virtual_col_value_functions(header.columns(), nullptr)
     , virtual_col_types(header.columns(), nullptr)
     , ignore_format_errors(format_settings.ignore_parsing_errors)
+    , avro_key_schema_registry(std::move(avro_key_schema_registry_))
+    , avro_key_schema_subject(std::move(avro_key_schema_subject_))
     , offset(offset_)
     , high_watermark(high_watermark_.value_or(std::numeric_limits<Int64>::max()))
     , consumer(std::move(consumer_))
@@ -259,7 +268,7 @@ void KafkaSource::readAndProcess()
     DB::Kafka::WatermarkOffsets skipped_messages;
 
     auto callback = [this, &skipped_messages](const void * rkmessage, size_t /*total_count*/, void * /*data*/) {
-        auto * message = static_cast<const rd_kafka_message_t *>(rkmessage);
+        const auto * message = static_cast<const rd_kafka_message_t *>(rkmessage);
         /// We have seen this happened, and do not know how. So, just in case.
         if (message->offset < offset)
         {
@@ -434,6 +443,23 @@ void KafkaSource::parseFormat(const rd_kafka_message_t * kmessage)
             }
         }
     }
+}
+
+Field KafkaSource::decodeAvroKey(const rd_kafka_message_t * kmessage) const
+{
+    ReadBufferFromMemory key_buf(static_cast<const char *>(kmessage->key), kmessage->key_len);
+    UInt32 schema_id = KafkaSchemaRegistry::readSchemaId(key_buf);
+    auto schema = avro_key_schema_registry->getSchema(schema_id);
+    auto avro_stream = std::make_unique<AvroInputStreamReadBufferAdapter>(key_buf);
+    auto avro_decoder = avro::binaryDecoder();
+    avro_decoder->init(*avro_stream);
+    Block key_header{ColumnWithTypeAndName(std::make_shared<DataTypeString>(), "_avro_key")};
+    FormatSettings fs;
+    AvroDeserializer deserializer(key_header, schema, /*allow_missing_fields=*/true, /*null_as_default=*/false, fs);
+    MutableColumns cols = key_header.cloneEmptyColumns();
+    RowReadExtension ext;
+    deserializer.deserializeRow(cols, *avro_decoder, ext);
+    return (*cols[0])[0];
 }
 
 void KafkaSource::getPhysicalHeader()
@@ -641,11 +667,23 @@ void KafkaSource::getPhysicalHeader()
                     [[fallthrough]];
                 case TypeIndex::FixedString:
                 {
-                    virtual_col_value_functions[pos] = [inside_nullable](const rd_kafka_message_t * kmessage) -> Field {
-                        if (inside_nullable && kmessage->key_len == 0)
-                            return Null{};
-                        return {static_cast<char *>(kmessage->key), kmessage->key_len};
-                    };
+                    if (avro_key_schema_registry)
+                    {
+                        virtual_col_value_functions[pos] = [this, inside_nullable](const rd_kafka_message_t * kmessage) -> Field
+                        {
+                            if (inside_nullable && kmessage->key_len == 0)
+                                return Null{};
+                            return decodeAvroKey(kmessage);
+                        };
+                    }
+                    else
+                    {
+                        virtual_col_value_functions[pos] = [inside_nullable](const rd_kafka_message_t * kmessage) -> Field {
+                            if (inside_nullable && kmessage->key_len == 0)
+                                return Null{};
+                            return {static_cast<char *>(kmessage->key), kmessage->key_len};
+                        };
+                    }
                     break;
                 }
                 default:
@@ -745,8 +783,20 @@ void KafkaSource::getPhysicalHeader()
         }
         else if (column.name == ProtonConsts::RESERVED_MESSAGE_KEY)
         {
-            virtual_col_value_functions[pos]
-                = [](const rd_kafka_message_t * kmessage) -> String { return {static_cast<char *>(kmessage->key), kmessage->key_len}; };
+            if (avro_key_schema_registry)
+            {
+                virtual_col_value_functions[pos] = [this](const rd_kafka_message_t * kmessage) -> Field
+                {
+                    if (kmessage->key_len == 0)
+                        return String{};
+                    return decodeAvroKey(kmessage);
+                };
+            }
+            else
+            {
+                virtual_col_value_functions[pos]
+                    = [](const rd_kafka_message_t * kmessage) -> String { return {static_cast<char *>(kmessage->key), kmessage->key_len}; };
+            }
             virtual_col_types[pos] = column.type;
         }
         else
@@ -896,7 +946,7 @@ Strings KafkaSource::doFetchData(const Streaming::SequenceRange & sn_range)
     auto callback = [&count, &results](const void * rkmessage, size_t /*total_count*/, void * /*data*/) {
         if (count > 0)
         {
-            auto * message = static_cast<const rd_kafka_message_t *>(rkmessage);
+            const auto * message = static_cast<const rd_kafka_message_t *>(rkmessage);
             results.emplace_back(static_cast<const char *>(message->payload), message->len);
             --count;
         }

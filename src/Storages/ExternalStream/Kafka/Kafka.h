@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Formats/KafkaSchemaRegistryForAvro.h>
 #include <IO/Kafka/Connection.h>
 #include <Storages/ExternalStream/ExternalStreamCounter.h>
 #include <Storages/ExternalStream/ExternalStreamSettings.h>
@@ -106,6 +107,8 @@ private:
     DB::Kafka::ConnectionPtr client;
 
     UInt64 poll_timeout_ms = 0;
+
+    std::shared_ptr<KafkaSchemaRegistryForAvro> avro_key_schema_registry;
 };
 
 }
