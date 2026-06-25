@@ -624,6 +624,17 @@ SinkToStoragePtr Kafka::write(const ASTPtr & /*query*/, const StorageMetadataPtr
     if (hasSchemaRegistryUrl() && data_format == "ProtobufSingle")
         throw Exception(ErrorCodes::NOT_IMPLEMENTED, "Write Protobuf data with schema registry is not supported");
 
+    /// Encoding _tp_message_key as Avro binary (Confluent wire format) on write is not yet implemented.
+    /// Currently only decoding Avro-encoded keys on read is supported. When this is implemented,
+    /// the sink will need to: fetch the schema from the registry, serialize the key JSON string
+    /// into a GenericDatum, binary-encode it, and prepend the Confluent wire header (magic byte + schema ID).
+    if (avro_key_schema_registry)
+        throw Exception(
+            ErrorCodes::NOT_IMPLEMENTED,
+            "Writing Avro-encoded message keys via schema registry is not yet supported. "
+            "`message_key_schema_name` is currently read-only. "
+            "To write a plain-text message key, omit `message_key_schema_name` and insert a string into `_tp_message_key` directly.");
+
     auto producer = client->getProducer(topicName());
 
     auto sink = std::make_shared<KafkaSink>(
