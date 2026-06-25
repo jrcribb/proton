@@ -11,7 +11,7 @@
 #include <Storages/StorageSnapshot.h>
 #include <Common/Stopwatch.h>
 #include <Common/TimeBasedThrottler.h>
-#include "Formats/KafkaSchemaRegistryForAvro.h"
+#include <Formats/KafkaSchemaRegistryForAvro.h>
 
 struct rd_kafka_message_s;
 

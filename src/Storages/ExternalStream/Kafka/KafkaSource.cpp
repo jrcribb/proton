@@ -4,20 +4,24 @@
 #include <Checkpoint/CheckpointCoordinator.h>
 #include <Cluster/Common/Constants.h>
 #include <DataTypes/DataTypeNullable.h>
-#include <DataTypes/DataTypeString.h>
 #include <Formats/Avro/InputStreamReadBufferAdapter.h>
+#include <Formats/Avro/OutputStreamWriteBufferAdapter.h>
 #include <Formats/FormatFactory.h>
 #include <Formats/KafkaSchemaRegistry.h>
 #include <IO/ReadBufferFromMemory.h>
 #include <IO/ReadBufferFromString.h>
 #include <IO/ReadHelpers.h>
+#include <IO/WriteBufferFromString.h>
 #include <IO/WriteHelpers.h>
 #include <Processors/Executors/StreamingFormatExecutor.h>
-#include <Processors/Formats/Impl/AvroRowInputFormat.h>
 #include <Storages/ExternalStream/Kafka/Kafka.h>
 #include <base/ClockUtils.h>
 #include <Common/Exception.h>
 #include <Common/ProtonCommon.h>
+
+#include <Encoder.hh>
+#include <Generic.hh>
+#include <Specific.hh>
 
 #include <memory>
 #include <utility>
@@ -445,19 +449,29 @@ void KafkaSource::parseFormat(const rd_kafka_message_t * kmessage)
 
 Field KafkaSource::decodeAvroKey(const rd_kafka_message_t * kmessage) const
 {
+    /// Decode the Avro-encoded Kafka message key and return it as a JSON string.
+    /// The key bytes follow the Confluent wire format: 1-byte magic (0x00) + 4-byte schema ID + Avro binary payload.
+    /// We deserialize the binary payload into a GenericDatum using the schema fetched from the registry,
+    /// then re-encode the datum as JSON so callers receive a human-readable string representation of the key record.
     ReadBufferFromMemory key_buf(static_cast<const char *>(kmessage->key), kmessage->key_len);
     UInt32 schema_id = KafkaSchemaRegistry::readSchemaId(key_buf);
     auto schema = avro_key_schema_registry->getSchema(schema_id);
-    auto avro_stream = std::make_unique<AvroInputStreamReadBufferAdapter>(key_buf);
-    auto avro_decoder = avro::binaryDecoder();
-    avro_decoder->init(*avro_stream);
-    Block key_header{ColumnWithTypeAndName(std::make_shared<DataTypeString>(), "_avro_key")};
-    FormatSettings fs;
-    AvroDeserializer deserializer(key_header, schema, /*allow_missing_fields=*/true, /*null_as_default=*/false, fs);
-    MutableColumns cols = key_header.cloneEmptyColumns();
-    RowReadExtension ext;
-    deserializer.deserializeRow(cols, *avro_decoder, ext);
-    return (*cols[0])[0];
+
+    auto avro_in = std::make_unique<Avro::InputStreamReadBufferAdapter>(key_buf);
+    auto bin_decoder = avro::validatingDecoder(schema, avro::binaryDecoder());
+    bin_decoder->init(*avro_in);
+
+    avro::GenericDatum datum(schema);
+    avro::decode(*bin_decoder, datum);
+
+    WriteBufferFromOwnString json_buf;
+    Avro::OutputStreamWriteBufferAdapter avro_out(json_buf);
+    auto json_encoder = avro::jsonEncoder(schema);
+    json_encoder->init(avro_out);
+    avro::encode(*json_encoder, datum);
+    json_encoder->flush();
+
+    return Field{json_buf.str()};
 }
 
 void KafkaSource::getPhysicalHeader()
