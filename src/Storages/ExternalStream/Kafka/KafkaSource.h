@@ -40,7 +40,6 @@ public:
         size_t max_block_size_,
         UInt64 consumer_stall_timeout_ms,
         std::shared_ptr<KafkaSchemaRegistryForAvro> avro_key_schema_registry_,
-        String avro_key_schema_subject_,
         ExternalStreamCounterPtr external_stream_counter_,
         ContextPtr query_context_,
         LoggerPtr logger_);
@@ -105,7 +104,6 @@ private:
     bool request_virtual_columns = false;
 
     std::shared_ptr<KafkaSchemaRegistryForAvro> avro_key_schema_registry;
-    String avro_key_schema_subject;
 
     std::vector<std::pair<Chunk, Streaming::SequenceRange>> result_chunks_with_sns;
     std::vector<std::pair<Chunk, Streaming::SequenceRange>>::iterator iter;

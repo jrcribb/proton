@@ -22,8 +22,8 @@
 #include <Storages/parseShards.h>
 #include <Common/ProtonCommon.h>
 #include <Common/logger_useful.h>
-#include "Formats/FormatSettings.h"
-#include "Formats/KafkaSchemaRegistryForAvro.h"
+#include <Formats/FormatSettings.h>
+#include <Formats/KafkaSchemaRegistryForAvro.h>
 
 #include <boost/algorithm/string/classification.hpp>
 #include <boost/algorithm/string/predicate.hpp>
@@ -598,7 +598,6 @@ Pipe Kafka::read(
                 max_block_size,
                 settings->consumer_stall_timeout_ms.totalMilliseconds(),
                 avro_key_schema_registry,
-                settings->message_key_schema_name.value,
                 external_stream_counter,
                 context,
                 logger));

@@ -150,7 +150,6 @@ KafkaSource::KafkaSource(
     size_t max_block_size_,
     UInt64 consumer_stall_timeout_ms,
     std::shared_ptr<KafkaSchemaRegistryForAvro> avro_key_schema_registry_,
-    String avro_key_schema_subject_,
     ExternalStreamCounterPtr external_stream_counter_,
     ContextPtr query_context_,
     LoggerPtr logger_)
@@ -161,7 +160,6 @@ KafkaSource::KafkaSource(
     , virtual_col_types(header.columns(), nullptr)
     , ignore_format_errors(format_settings.ignore_parsing_errors)
     , avro_key_schema_registry(std::move(avro_key_schema_registry_))
-    , avro_key_schema_subject(std::move(avro_key_schema_subject_))
     , offset(offset_)
     , high_watermark(high_watermark_.value_or(std::numeric_limits<Int64>::max()))
     , consumer(std::move(consumer_))
@@ -671,8 +669,8 @@ void KafkaSource::getPhysicalHeader()
                     {
                         virtual_col_value_functions[pos] = [this, inside_nullable](const rd_kafka_message_t * kmessage) -> Field
                         {
-                            if (inside_nullable && kmessage->key_len == 0)
-                                return Null{};
+                            if (kmessage->key_len == 0)
+                                return inside_nullable ? Field{Null{}} : Field{String{}};
                             return decodeAvroKey(kmessage);
                         };
                     }
