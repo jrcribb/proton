@@ -255,23 +255,29 @@ void Kafka::verifySettings(const ExternalStreamSettingsPtr & new_settings, bool 
     {
         const auto & format = new_settings->data_format.value;
         const bool format_supported = format == "ProtobufSingle" || format == "Avro";
-        if (!format_supported)
+        const bool key_uses_registry = !new_settings->message_key_schema_name.value.empty();
+        /// The schema registry URL is valid if either the message body format requires it
+        /// (Avro/ProtobufSingle) or the message key is Avro-encoded via `message_key_schema_name`.
+        if (!format_supported && !key_uses_registry)
         {
             LOG_ERROR(
                 logger,
-                "Kafka external stream with schema registry only supports 'ProtobufSingle' or 'Avro' data formats: actual='{}'",
+                "Kafka external stream with schema registry only supports 'ProtobufSingle' or 'Avro' data formats, "
+                "or `message_key_schema_name` for Avro-encoded keys: actual='{}'",
                 format);
 
             throw Exception(
                 ErrorCodes::INVALID_SETTING_VALUE,
-                "Kafka external stream with schema registry only supports 'ProtobufSingle' or 'Avro' data formats");
+                "Kafka external stream with schema registry only supports 'ProtobufSingle' or 'Avro' data formats, "
+                "or `message_key_schema_name` for Avro-encoded keys");
         }
     }
 
-    if (!settings->message_key_schema_name.value.empty()){
-        if (!hasSchemaRegistryUrl()){
-            throw Exception(ErrorCodes::INVALID_SETTING_VALUE, "`message_key_schema_name` is only supported when `kafka_schema_registry_url` is set");
-        }
+    if (!new_settings->message_key_schema_name.value.empty() && new_settings->kafka_schema_registry_url.value.empty())
+    {
+        throw Exception(
+            ErrorCodes::INVALID_SETTING_VALUE,
+            "`message_key_schema_name` is only supported when `kafka_schema_registry_url` is set");
     }
 
     const auto & columns = getInMemoryMetadataPtr()->getColumns();
