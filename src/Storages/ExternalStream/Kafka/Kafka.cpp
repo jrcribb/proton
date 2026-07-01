@@ -22,6 +22,8 @@
 #include <Storages/parseShards.h>
 #include <Common/ProtonCommon.h>
 #include <Common/logger_useful.h>
+#include <Formats/FormatSettings.h>
+#include <Formats/KafkaSchemaRegistryForAvro.h>
 
 #include <boost/algorithm/string/classification.hpp>
 #include <boost/algorithm/string/predicate.hpp>
@@ -200,33 +202,21 @@ DB::Kafka::Conf createConfFromSettings(const KafkaExternalStreamSettings & setti
     return conf;
 }
 
-void validateMessageKeyColumnType(const DataTypePtr & type)
-{
-    static std::vector<TypeIndex> supported_types{
-        TypeIndex::Bool,
-        TypeIndex::UInt8,
-        TypeIndex::UInt16,
-        TypeIndex::UInt32,
-        TypeIndex::UInt64,
-        TypeIndex::Int8,
-        TypeIndex::Int16,
-        TypeIndex::Int32,
-        TypeIndex::Int64,
-        TypeIndex::Float32,
-        TypeIndex::Float64,
-        TypeIndex::String,
-        TypeIndex::FixedString,
-    };
+const std::vector<TypeIndex> raw_message_key_types{
+    TypeIndex::Bool, TypeIndex::UInt8, TypeIndex::UInt16, TypeIndex::UInt32, TypeIndex::UInt64,
+    TypeIndex::Int8, TypeIndex::Int16, TypeIndex::Int32, TypeIndex::Int64,
+    TypeIndex::Float32, TypeIndex::Float64, TypeIndex::String, TypeIndex::FixedString,
+};
 
+const std::vector<TypeIndex> avro_message_key_types{TypeIndex::String, TypeIndex::FixedString};
+
+void validateMessageKeyColumnType(const DataTypePtr & type, const std::vector<TypeIndex> & allowed)
+{
     if (type->isNullable())
-    {
-        validateMessageKeyColumnType(static_cast<const DataTypeNullable &>(*type).getNestedType());
-    }
-    else
-    {
-        if (std::ranges::none_of(supported_types, [type](auto supported_type) { return supported_type == type->getTypeId(); }))
-            throw Exception(ErrorCodes::ILLEGAL_COLUMN, "`_tp_message_key` column does not support type {}", type->getName());
-    }
+        validateMessageKeyColumnType(
+            static_cast<const DataTypeNullable &>(*type).getNestedType(), allowed);
+    else if (std::ranges::none_of(allowed, [&](auto t) { return t == type->getTypeId(); }))
+        throw Exception(ErrorCodes::ILLEGAL_COLUMN, "`_tp_message_key` column does not support type {}", type->getName());
 }
 
 void validateMessageHeadersColumnType(const DataTypePtr & type)
@@ -265,17 +255,29 @@ void Kafka::verifySettings(const ExternalStreamSettingsPtr & new_settings, bool 
     {
         const auto & format = new_settings->data_format.value;
         const bool format_supported = format == "ProtobufSingle" || format == "Avro";
-        if (!format_supported)
+        const bool key_uses_registry = !new_settings->message_key_schema_name.value.empty();
+        /// The schema registry URL is valid if either the message body format requires it
+        /// (Avro/ProtobufSingle) or the message key is Avro-encoded via `message_key_schema_name`.
+        if (!format_supported && !key_uses_registry)
         {
             LOG_ERROR(
                 logger,
-                "Kafka external stream with schema registry only supports 'ProtobufSingle' or 'Avro' data formats: actual='{}'",
+                "Kafka external stream with schema registry only supports 'ProtobufSingle' or 'Avro' data formats, "
+                "or `message_key_schema_name` for Avro-encoded keys: actual='{}'",
                 format);
 
             throw Exception(
                 ErrorCodes::INVALID_SETTING_VALUE,
-                "Kafka external stream with schema registry only supports 'ProtobufSingle' or 'Avro' data formats");
+                "Kafka external stream with schema registry only supports 'ProtobufSingle' or 'Avro' data formats, "
+                "or `message_key_schema_name` for Avro-encoded keys");
         }
+    }
+
+    if (!new_settings->message_key_schema_name.value.empty() && new_settings->kafka_schema_registry_url.value.empty())
+    {
+        throw Exception(
+            ErrorCodes::INVALID_SETTING_VALUE,
+            "`message_key_schema_name` is only supported when `kafka_schema_registry_url` is set");
     }
 
     const auto & columns = getInMemoryMetadataPtr()->getColumns();
@@ -351,13 +353,22 @@ Kafka::Kafka(
 
     if (has_message_key)
     {
-        validateMessageKeyColumnType(columns.getColumn({GetColumnsOptions::Kind::All}, ProtonConsts::RESERVED_MESSAGE_KEY).type);
+        validateMessageKeyColumnType(
+            columns.getColumn({GetColumnsOptions::Kind::All}, ProtonConsts::RESERVED_MESSAGE_KEY).type,
+            settings->message_key_schema_name.value.empty() ? raw_message_key_types : avro_message_key_types);
 
         if (hasCustomShardingExpr())
             throw Exception(
                 ErrorCodes::INVALID_SETTING_VALUE,
                 "`sharding_expr` cannot be set when the `{}` column is defined",
                 ProtonConsts::RESERVED_MESSAGE_KEY);
+
+        if (!settings->message_key_schema_name.value.empty())
+        {
+            FormatSettings key_format_settings = getFormatSettings(context);
+            key_format_settings.kafka_schema_registry.subject_name = settings->message_key_schema_name.value;
+            avro_key_schema_registry = KafkaSchemaRegistryForAvro::getOrCreate(key_format_settings);
+        }
     }
 
     if (has_message_headers)
@@ -592,6 +603,7 @@ Pipe Kafka::read(
                 high_watermark,
                 max_block_size,
                 settings->consumer_stall_timeout_ms.totalMilliseconds(),
+                avro_key_schema_registry,
                 external_stream_counter,
                 context,
                 logger));
@@ -617,6 +629,17 @@ SinkToStoragePtr Kafka::write(const ASTPtr & /*query*/, const StorageMetadataPtr
 {
     if (hasSchemaRegistryUrl() && data_format == "ProtobufSingle")
         throw Exception(ErrorCodes::NOT_IMPLEMENTED, "Write Protobuf data with schema registry is not supported");
+
+    /// Encoding _tp_message_key as Avro binary (Confluent wire format) on write is not yet implemented.
+    /// Currently only decoding Avro-encoded keys on read is supported. When this is implemented,
+    /// the sink will need to: fetch the schema from the registry, serialize the key JSON string
+    /// into a GenericDatum, binary-encode it, and prepend the Confluent wire header (magic byte + schema ID).
+    if (avro_key_schema_registry)
+        throw Exception(
+            ErrorCodes::NOT_IMPLEMENTED,
+            "Writing Avro-encoded message keys via schema registry is not yet supported. "
+            "`message_key_schema_name` is currently read-only. "
+            "To write a plain-text message key, omit `message_key_schema_name` and insert a string into `_tp_message_key` directly.");
 
     auto producer = client->getProducer(topicName());
 
