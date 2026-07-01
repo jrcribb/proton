@@ -33,6 +33,7 @@ namespace ErrorCodes
 extern const int CANNOT_PARSE_DATA;
 extern const int CANNOT_RECEIVE_MESSAGE;
 extern const int ILLEGAL_COLUMN;
+extern const int INCORRECT_DATA;
 extern const int RECOVER_CHECKPOINT_FAILED;
 }
 
@@ -449,29 +450,36 @@ void KafkaSource::parseFormat(const rd_kafka_message_t * kmessage)
 
 Field KafkaSource::decodeAvroKey(const rd_kafka_message_t * kmessage) const
 {
-    /// Decode the Avro-encoded Kafka message key and return it as a JSON string.
-    /// The key bytes follow the Confluent wire format: 1-byte magic (0x00) + 4-byte schema ID + Avro binary payload.
-    /// We deserialize the binary payload into a GenericDatum using the schema fetched from the registry,
-    /// then re-encode the datum as JSON so callers receive a human-readable string representation of the key record.
-    ReadBufferFromMemory key_buf(static_cast<const char *>(kmessage->key), kmessage->key_len);
-    UInt32 schema_id = KafkaSchemaRegistry::readSchemaId(key_buf);
-    auto schema = avro_key_schema_registry->getSchema(schema_id);
-
-    auto avro_in = std::make_unique<Avro::InputStreamReadBufferAdapter>(key_buf);
-    auto bin_decoder = avro::validatingDecoder(schema, avro::binaryDecoder());
-    bin_decoder->init(*avro_in);
-
-    avro::GenericDatum datum(schema);
-    avro::decode(*bin_decoder, datum);
-
-    WriteBufferFromOwnString json_buf;
-    Avro::OutputStreamWriteBufferAdapter avro_out(json_buf);
-    auto json_encoder = avro::jsonEncoder(schema);
-    json_encoder->init(avro_out);
-    avro::encode(*json_encoder, datum);
-    json_encoder->flush();
-
-    return Field{json_buf.str()};
+    try
+    {
+        /// Decode the Avro-encoded Kafka message key and return it as a JSON string.
+        /// The key bytes follow the Confluent wire format: 1-byte magic (0x00) + 4-byte schema ID + Avro binary payload.
+        /// We deserialize the binary payload into a GenericDatum using the schema fetched from the registry,
+        /// then re-encode the datum as JSON so callers receive a human-readable string representation of the key record.
+        ReadBufferFromMemory key_buf(static_cast<const char *>(kmessage->key), kmessage->key_len);
+        UInt32 schema_id = KafkaSchemaRegistry::readSchemaId(key_buf);
+        auto schema = avro_key_schema_registry->getSchema(schema_id);
+    
+        auto avro_in = std::make_unique<Avro::InputStreamReadBufferAdapter>(key_buf);
+        auto bin_decoder = avro::validatingDecoder(schema, avro::binaryDecoder());
+        bin_decoder->init(*avro_in);
+    
+        avro::GenericDatum datum(schema);
+        avro::decode(*bin_decoder, datum);
+    
+        WriteBufferFromOwnString json_buf;
+        Avro::OutputStreamWriteBufferAdapter avro_out(json_buf);
+        auto json_encoder = avro::jsonEncoder(schema);
+        json_encoder->init(avro_out);
+        avro::encode(*json_encoder, datum);
+        json_encoder->flush();
+    
+        return Field{json_buf.str()};
+    }
+    catch (...)
+    {
+        throw DB::Exception(ErrorCodes::INCORRECT_DATA, "Failed to decode Avro message key: {}", getCurrentExceptionMessage(false));
+    }
 }
 
 void KafkaSource::getPhysicalHeader()
