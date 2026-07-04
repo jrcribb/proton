@@ -52,6 +52,9 @@ private:
     void generateManifest(const UUID & commit_uuid);
     void writeManifest() const;
 
+    // refresh the manifest list and metadata
+    void refreshTableState();
+
     void commit();
 
     void finalize();

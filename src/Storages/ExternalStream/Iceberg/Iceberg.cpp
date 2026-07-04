@@ -142,12 +142,17 @@ Apache::Iceberg::TableMetadata Iceberg::tryGetTableMetadata() const
 
 std::list<Apache::Iceberg::ManifestList> Iceberg::fetchManifestList(const Apache::Iceberg::TableMetadata & table_metadata) const
 {
+    return fetchManifestList(table_metadata, s3_configuration, logger);
+}
+
+std::list<Apache::Iceberg::ManifestList> Iceberg::fetchManifestList(const Apache::Iceberg::TableMetadata & table_metadata, const IcebergS3Configuration & s3_configuration, LoggerPtr log)
+{
     std::list<Apache::Iceberg::ManifestList> manifest_lists;
 
     const auto & manifest_list_uri = table_metadata.getManifestList();
     if (manifest_list_uri.empty())
     {
-        LOG_INFO(logger, "Table metadata does not have a manifest list.");
+        LOG_INFO(log, "Table metadata does not have a manifest list.");
         return manifest_lists;
     }
 
@@ -171,7 +176,7 @@ std::list<Apache::Iceberg::ManifestList> Iceberg::fetchManifestList(const Apache
     Apache::Iceberg::ManifestList manifest_list;
     while (reader.read(manifest_list))
     {
-        LOG_INFO(logger, "Got manifest_list sn = {} sid = {}", manifest_list.sequence_number, manifest_list.added_snapshot_id);
+        LOG_INFO(log, "Got manifest_list sn = {} sid = {}", manifest_list.sequence_number, manifest_list.added_snapshot_id);
         manifest_lists.push_back(std::move(manifest_list));
     }
 

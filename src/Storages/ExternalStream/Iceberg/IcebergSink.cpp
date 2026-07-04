@@ -1,4 +1,5 @@
 #include <Storages/ExternalStream/Iceberg/IcebergSink.h>
+#include "Storages/ExternalStream/Iceberg/Iceberg.h"
 
 #if USE_AWS_S3 && USE_AVRO && USE_PARQUET
 
@@ -45,6 +46,11 @@ String genKey(const String & prefix)
     return result;
 }
 
+}
+
+namespace ErrorCodes
+{
+extern const int ICEBERG_CONFLICT_ERROR;
 }
 
 namespace ExternalStream
@@ -241,80 +247,99 @@ void IcebergSink::commit()
     /// TODO make sure that snapshot_id is not being used.
     auto snapshot_id = genSnapshotID();
     auto commit_uuid = UUIDHelpers::generateV4();
-    auto sequence_number = metadata.getSequenceNumber() + 1;
     size_t attempts = 0;
-
+    
     /// The manifest files and manifest list must be generated before calling commitTable on the catalog.
     /// Otherwise, if it fails to write those files after it calls commitTable, the table will be in a bad state.
     generateManifest(commit_uuid);
     writeManifest();
+    
+    while (true) {
+        auto sequence_number = metadata.getSequenceNumber() + 1;
+        generateManifestList(commit_uuid, snapshot_id, sequence_number, attempts);
+        writeManifestList();
 
-    /// TODO if commitTable fails later due to conflict (409), we should re-generate the manifest list (increase attempts).
-    generateManifestList(commit_uuid, snapshot_id, sequence_number, attempts);
-    writeManifestList();
+        const auto & current_manifest_list = manifest_lists.front();
 
-    const auto & current_manifest_list = manifest_lists.front();
+        auto total_data_files = current_manifest_list.added_files_count;
+        auto total_delete_files = current_manifest_list.deleted_files_count;
+        auto total_records = current_manifest_list.added_rows_count;
+        auto total_files_size = current_manifest.data_file.file_size_in_bytes;
+        auto total_position_deletes = 0;
+        auto total_equality_deletes = 0;
 
-    auto total_data_files = current_manifest_list.added_files_count;
-    auto total_delete_files = current_manifest_list.deleted_files_count;
-    auto total_records = current_manifest_list.added_rows_count;
-    auto total_files_size = current_manifest.data_file.file_size_in_bytes;
-    auto total_position_deletes = 0;
-    auto total_equality_deletes = 0;
+        const auto & current_snapshot = metadata.getCurrentSnapshot();
 
-    const auto & current_snapshot = metadata.getCurrentSnapshot();
+        if (current_snapshot.isValid())
+        {
+            total_data_files += std::stol(current_snapshot.summary.total_data_files);
+            total_delete_files += std::stol(current_snapshot.summary.total_delete_files);
+            total_records += std::stoll(current_snapshot.summary.total_records);
+            total_files_size += std::stoll(current_snapshot.summary.total_files_size);
+            total_position_deletes += std::stoll(current_snapshot.summary.total_position_deletes);
+            total_equality_deletes += std::stoll(current_snapshot.summary.total_equality_deletes);
+        }
 
-    if (current_snapshot.isValid())
-    {
-        total_data_files += std::stol(current_snapshot.summary.total_data_files);
-        total_delete_files += std::stol(current_snapshot.summary.total_delete_files);
-        total_records += std::stoll(current_snapshot.summary.total_records);
-        total_files_size += std::stoll(current_snapshot.summary.total_files_size);
-        total_position_deletes += std::stoll(current_snapshot.summary.total_position_deletes);
-        total_equality_deletes += std::stoll(current_snapshot.summary.total_equality_deletes);
+        Apache::Iceberg::Snapshot snapshot{
+            .snapshot_id = snapshot_id,
+            .parent_snapshot_id = metadata.getSnapshotID() < 0 ? std::nullopt : std::optional<uint64_t>(metadata.getSnapshotID()),
+            .sequence_number = sequence_number,
+            .timestamp_ms = UTCMilliseconds::now(),
+            .manifest_list = current_manifest_list_uri,
+            .summary = {
+                /// TODO make this a enum
+                .operation = "append",
+                .added_files_size = fmt::format("{}", current_manifest.data_file.file_size_in_bytes),
+                .added_data_files = "1",
+                .added_records = fmt::format("{}", current_manifest_list.added_rows_count),
+                /// FIXME all total_ fields
+                .total_data_files = std::to_string(total_data_files),
+                .total_delete_files = std::to_string(total_delete_files),
+                .total_records = std::to_string(total_records),
+                .total_files_size = std::to_string(total_files_size),
+                .total_position_deletes = std::to_string(total_position_deletes),
+                .total_equality_deletes = std::to_string(total_equality_deletes),
+            },
+            .schema_id = metadata.getCurrentSchemaID(),
+        };
+
+        Apache::Iceberg::Updates updates;
+        updates.reserve(2);
+        updates.push_back(std::make_unique<Apache::Iceberg::AddSnopshotUpdate>(snapshot));
+        updates.push_back(std::make_unique<Apache::Iceberg::SetSnapshotRefUpdate>(Apache::Iceberg::SnapshotReference{
+            .name = "main",
+            .type = "branch",
+            .snapshot_id = snapshot_id,
+        }));
+
+        Apache::Iceberg::Requirements requirements;
+        requirements.reserve(2);
+        if (metadata.getSnapshotID() > 0)
+            requirements.push_back(std::make_unique<Apache::Iceberg::AssertRefSnapshotID>("main", metadata.getSnapshotID()));
+        requirements.push_back(std::make_unique<Apache::Iceberg::AssertTableUUID>(metadata.getTableUUID()));
+
+        /// TODO
+        /// Retry on failure. When retry, should re-generate the manifest list path (increase attempts).
+
+        try 
+        {
+            catalog->commitTable(storage_id.getDatabaseName(), storage_id.getTableName(), requirements, updates, metadata);
+        } 
+        catch(const Exception & e)
+        {
+            if (e.code() == ErrorCodes::ICEBERG_CONFLICT_ERROR){
+                // in case of conflict, we should re-generate the manifest list and try again
+                LOG_INFO(logger, "Conflict detected, re-generating manifest list and trying again");
+                // refresh the manifest list and metadata
+                refreshTableState();
+                attempts++;
+                continue;
+            } else{
+                throw;
+            }
+        }
+        return;
     }
-
-    Apache::Iceberg::Snapshot snapshot{
-        .snapshot_id = snapshot_id,
-        .parent_snapshot_id = metadata.getSnapshotID() < 0 ? std::nullopt : std::optional<uint64_t>(metadata.getSnapshotID()),
-        .sequence_number = sequence_number,
-        .timestamp_ms = UTCMilliseconds::now(),
-        .manifest_list = current_manifest_list_uri,
-        .summary = {
-            /// TODO make this a enum
-            .operation = "append",
-            .added_files_size = fmt::format("{}", current_manifest.data_file.file_size_in_bytes),
-            .added_data_files = "1",
-            .added_records = fmt::format("{}", current_manifest_list.added_rows_count),
-            /// FIXME all total_ fields
-            .total_data_files = std::to_string(total_data_files),
-            .total_delete_files = std::to_string(total_delete_files),
-            .total_records = std::to_string(total_records),
-            .total_files_size = std::to_string(total_files_size),
-            .total_position_deletes = std::to_string(total_position_deletes),
-            .total_equality_deletes = std::to_string(total_equality_deletes),
-        },
-        .schema_id = metadata.getCurrentSchemaID(),
-    };
-
-    Apache::Iceberg::Updates updates;
-    updates.reserve(2);
-    updates.push_back(std::make_unique<Apache::Iceberg::AddSnopshotUpdate>(snapshot));
-    updates.push_back(std::make_unique<Apache::Iceberg::SetSnapshotRefUpdate>(Apache::Iceberg::SnapshotReference{
-        .name = "main",
-        .type = "branch",
-        .snapshot_id = snapshot_id,
-    }));
-
-    Apache::Iceberg::Requirements requirements;
-    requirements.reserve(2);
-    if (metadata.getSnapshotID() > 0)
-        requirements.push_back(std::make_unique<Apache::Iceberg::AssertRefSnapshotID>("main", metadata.getSnapshotID()));
-    requirements.push_back(std::make_unique<Apache::Iceberg::AssertTableUUID>(metadata.getTableUUID()));
-
-    /// TODO
-    /// Retry on failure. When retry, should re-generate the manifest list path (increase attempts).
-    catalog->commitTable(storage_id.getDatabaseName(), storage_id.getTableName(), requirements, updates, metadata);
 }
 
 void IcebergSink::writeManifestList() const
@@ -465,6 +490,11 @@ void IcebergSink::generateManifest(const UUID & commit_uuid)
     current_manifest = std::move(manifest);
 }
 
+void IcebergSink::refreshTableState()
+{
+    catalog->getTableMetadata(storage_id.getDatabaseName(), storage_id.getTableName(), metadata);
+manifest_lists = Iceberg::fetchManifestList(metadata, s3_configuration, logger);
+}
 
 }
 }
