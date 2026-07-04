@@ -19,10 +19,10 @@
 #include <Storages/Iceberg/ManifestList.h>
 #include <Storages/Iceberg/Requirement.h>
 #include <Storages/Iceberg/Update.h>
-#include <base/sleep.h>
 #include <Common/CurrentMetrics.h>
 #include <Common/Stopwatch.h>
 #include <Common/logger_useful.h>
+#include <base/sleep.h>
 
 #include <parquet/arrow/writer.h>
 #include <parquet/metadata.h>
