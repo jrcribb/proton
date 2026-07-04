@@ -1,5 +1,5 @@
+#include <Storages/ExternalStream/Iceberg/Iceberg.h>
 #include <Storages/ExternalStream/Iceberg/IcebergSink.h>
-#include "Storages/ExternalStream/Iceberg/Iceberg.h"
 
 #if USE_AWS_S3 && USE_AVRO && USE_PARQUET
 
@@ -19,7 +19,9 @@
 #include <Storages/Iceberg/ManifestList.h>
 #include <Storages/Iceberg/Requirement.h>
 #include <Storages/Iceberg/Update.h>
+#include <base/sleep.h>
 #include <Common/CurrentMetrics.h>
+#include <Common/Stopwatch.h>
 #include <Common/logger_useful.h>
 
 #include <parquet/arrow/writer.h>
@@ -67,7 +69,8 @@ IcebergSink::IcebergSink(
     Apache::Iceberg::TableMetadata metadata_,
     std::list<Apache::Iceberg::ManifestList> current_manifest_lists,
     const Apache::Iceberg::CatalogPtr & catalog_,
-    ContextPtr context_)
+    ContextPtr context_,
+    IcebergCommitRetryPolicy retry_policy_)
     : SinkToStorage(sample_block_, ProcessorID::IcebergSinkID)
     , storage_id(storage_id_)
     , format(format_)
@@ -80,6 +83,7 @@ IcebergSink::IcebergSink(
     , format_settings(format_settings_)
     , min_upload_file_size(min_upload_file_size_)
     , max_upload_idle_seconds(max_upload_idle_seconds_)
+    , retry_policy(retry_policy_)
     , context(context_)
     , logger(getLogger("IcebergSink"))
 {
@@ -248,13 +252,16 @@ void IcebergSink::commit()
     auto snapshot_id = genSnapshotID();
     auto commit_uuid = UUIDHelpers::generateV4();
     size_t attempts = 0;
-    
+    UInt64 wait_ms = retry_policy.min_wait_ms;
+
     /// The manifest files and manifest list must be generated before calling commitTable on the catalog.
     /// Otherwise, if it fails to write those files after it calls commitTable, the table will be in a bad state.
     generateManifest(commit_uuid);
     writeManifest();
-    
-    while (true) {
+
+    Stopwatch total_timer;
+    while (true)
+    {
         auto sequence_number = metadata.getSequenceNumber() + 1;
         generateManifestList(commit_uuid, snapshot_id, sequence_number, attempts);
         writeManifestList();
@@ -306,11 +313,12 @@ void IcebergSink::commit()
         Apache::Iceberg::Updates updates;
         updates.reserve(2);
         updates.push_back(std::make_unique<Apache::Iceberg::AddSnopshotUpdate>(snapshot));
-        updates.push_back(std::make_unique<Apache::Iceberg::SetSnapshotRefUpdate>(Apache::Iceberg::SnapshotReference{
-            .name = "main",
-            .type = "branch",
-            .snapshot_id = snapshot_id,
-        }));
+        updates.push_back(
+            std::make_unique<Apache::Iceberg::SetSnapshotRefUpdate>(Apache::Iceberg::SnapshotReference{
+                .name = "main",
+                .type = "branch",
+                .snapshot_id = snapshot_id,
+            }));
 
         Apache::Iceberg::Requirements requirements;
         requirements.reserve(2);
@@ -318,27 +326,35 @@ void IcebergSink::commit()
             requirements.push_back(std::make_unique<Apache::Iceberg::AssertRefSnapshotID>("main", metadata.getSnapshotID()));
         requirements.push_back(std::make_unique<Apache::Iceberg::AssertTableUUID>(metadata.getTableUUID()));
 
-        /// TODO
-        /// Retry on failure. When retry, should re-generate the manifest list path (increase attempts).
-
-        try 
+        try
         {
             catalog->commitTable(storage_id.getDatabaseName(), storage_id.getTableName(), requirements, updates, metadata);
-        } 
-        catch(const Exception & e)
-        {
-            if (e.code() == ErrorCodes::ICEBERG_CONFLICT_ERROR){
-                // in case of conflict, we should re-generate the manifest list and try again
-                LOG_INFO(logger, "Conflict detected, re-generating manifest list and trying again");
-                // refresh the manifest list and metadata
-                refreshTableState();
-                attempts++;
-                continue;
-            } else{
-                throw;
-            }
+            return;
         }
-        return;
+        catch (const Exception & e)
+        {
+            if (e.code() != ErrorCodes::ICEBERG_CONFLICT_ERROR)
+                throw;
+
+            if (attempts >= retry_policy.num_retries)
+                throw Exception(
+                    ErrorCodes::ICEBERG_CONFLICT_ERROR, "Iceberg commit failed after {} retries: {}", attempts, e.displayText());
+
+            if (static_cast<UInt64>(total_timer.elapsedMilliseconds()) >= retry_policy.total_timeout_ms)
+                throw Exception(
+                    ErrorCodes::ICEBERG_CONFLICT_ERROR,
+                    "Iceberg commit timed out after {}ms ({} attempts): {}",
+                    total_timer.elapsedMilliseconds(),
+                    attempts,
+                    e.displayText());
+
+            LOG_WARNING(logger, "Iceberg commit conflict (409), attempt={}, retrying in {}ms", attempts, wait_ms);
+
+            sleepForMilliseconds(wait_ms);
+            wait_ms = std::min(wait_ms * 2, retry_policy.max_wait_ms);
+            ++attempts;
+            refreshTableState();
+        }
     }
 }
 
@@ -493,7 +509,7 @@ void IcebergSink::generateManifest(const UUID & commit_uuid)
 void IcebergSink::refreshTableState()
 {
     catalog->getTableMetadata(storage_id.getDatabaseName(), storage_id.getTableName(), metadata);
-manifest_lists = Iceberg::fetchManifestList(metadata, s3_configuration, logger);
+    manifest_lists = Iceberg::fetchManifestList(metadata, s3_configuration, logger);
 }
 
 }

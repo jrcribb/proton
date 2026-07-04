@@ -145,7 +145,8 @@ std::list<Apache::Iceberg::ManifestList> Iceberg::fetchManifestList(const Apache
     return fetchManifestList(table_metadata, s3_configuration, logger);
 }
 
-std::list<Apache::Iceberg::ManifestList> Iceberg::fetchManifestList(const Apache::Iceberg::TableMetadata & table_metadata, const IcebergS3Configuration & s3_configuration, LoggerPtr log)
+std::list<Apache::Iceberg::ManifestList> Iceberg::fetchManifestList(
+    const Apache::Iceberg::TableMetadata & table_metadata, const IcebergS3Configuration & s3_configuration, LoggerPtr log)
 {
     std::list<Apache::Iceberg::ManifestList> manifest_lists;
 
@@ -265,19 +266,20 @@ Pipe Iceberg::read(
         const size_t max_download_threads = local_context->getSettingsRef().max_download_threads;
         for (size_t i = 0; i < num_streams; ++i)
         {
-            pipes.emplace_back(std::make_shared<IcebergSource>(
-                requested_virtual_columns,
-                "Parquet", /// for now, only parquet data files are supported
-                getName(),
-                block_for_format,
-                local_context,
-                getFormatSettings(local_context),
-                columns_description,
-                max_block_size,
-                /*compression_method=*/"none",
-                s3_configuration,
-                iterator_wrapper,
-                max_download_threads));
+            pipes.emplace_back(
+                std::make_shared<IcebergSource>(
+                    requested_virtual_columns,
+                    "Parquet", /// for now, only parquet data files are supported
+                    getName(),
+                    block_for_format,
+                    local_context,
+                    getFormatSettings(local_context),
+                    columns_description,
+                    max_block_size,
+                    /*compression_method=*/"none",
+                    s3_configuration,
+                    iterator_wrapper,
+                    max_download_threads));
         }
     }
 
@@ -303,6 +305,14 @@ SinkToStoragePtr Iceberg::write(const ASTPtr &, const StorageMetadataPtr & metad
 
     auto format_settings = getFormatSettings(local_context);
 
+    const auto & settings = local_context->getSettingsRef();
+    IcebergCommitRetryPolicy retry_policy{
+        .num_retries = settings.iceberg_commit_retry_num_retries,
+        .min_wait_ms = settings.iceberg_commit_retry_min_wait_ms,
+        .max_wait_ms = settings.iceberg_commit_retry_max_wait_ms,
+        .total_timeout_ms = settings.iceberg_commit_retry_total_timeout_ms,
+    };
+
     return std::make_shared<IcebergSink>(
         getStorageID(),
         "Parquet",
@@ -314,7 +324,8 @@ SinkToStoragePtr Iceberg::write(const ASTPtr &, const StorageMetadataPtr & metad
         std::move(table_metadata),
         std::move(manifest_lists),
         getCatalog(),
-        local_context);
+        local_context,
+        retry_policy);
 }
 
 FormatSettings Iceberg::getFormatSettings(const ContextPtr & local_context) const
