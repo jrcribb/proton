@@ -266,20 +266,19 @@ Pipe Iceberg::read(
         const size_t max_download_threads = local_context->getSettingsRef().max_download_threads;
         for (size_t i = 0; i < num_streams; ++i)
         {
-            pipes.emplace_back(
-                std::make_shared<IcebergSource>(
-                    requested_virtual_columns,
-                    "Parquet", /// for now, only parquet data files are supported
-                    getName(),
-                    block_for_format,
-                    local_context,
-                    getFormatSettings(local_context),
-                    columns_description,
-                    max_block_size,
-                    /*compression_method=*/"none",
-                    s3_configuration,
-                    iterator_wrapper,
-                    max_download_threads));
+            pipes.emplace_back(std::make_shared<IcebergSource>(
+                requested_virtual_columns,
+                "Parquet", /// for now, only parquet data files are supported
+                getName(),
+                block_for_format,
+                local_context,
+                getFormatSettings(local_context),
+                columns_description,
+                max_block_size,
+                /*compression_method=*/"none",
+                s3_configuration,
+                iterator_wrapper,
+                max_download_threads));
         }
     }
 
