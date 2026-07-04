@@ -424,6 +424,11 @@ class ClickHouseCluster:
 
         self.with_azurite = False
 
+        self.with_iceberg_rest = False
+        self.iceberg_rest_host = "iceberg_rest"
+        self.iceberg_rest_ip = None
+        self.iceberg_rest_port = 8181
+
         # available when with_hdfs == True
         self.hdfs_host = "hdfs1"
         self.hdfs_ip = None
@@ -1263,6 +1268,26 @@ class ClickHouseCluster:
         ]
         return self.base_azurite_cmd
 
+    def setup_iceberg_rest_cmd(self, instance, env_variables, docker_compose_yml_dir):
+        self.with_iceberg_rest = True
+        env_variables["ICEBERG_REST_PORT"] = str(self.iceberg_rest_port)
+        self.base_cmd.extend(
+            [
+                "--file",
+                p.join(docker_compose_yml_dir, "docker_compose_iceberg_rest.yml"),
+            ]
+        )
+        self.base_iceberg_rest_cmd = [
+            "docker-compose",
+            "--env-file",
+            instance.env_file,
+            "--project-name",
+            self.project_name,
+            "--file",
+            p.join(docker_compose_yml_dir, "docker_compose_iceberg_rest.yml"),
+        ]
+        return self.base_iceberg_rest_cmd
+
     def setup_cassandra_cmd(self, instance, env_variables, docker_compose_yml_dir):
         self.with_cassandra = True
         env_variables["CASSANDRA_PORT"] = str(self.cassandra_port)
@@ -1362,6 +1387,7 @@ class ClickHouseCluster:
         with_redis=False,
         with_minio=False,
         with_azurite=False,
+        with_iceberg_rest=False,
         with_cassandra=False,
         with_jdbc_bridge=False,
         with_hive=False,
@@ -1447,6 +1473,7 @@ class ClickHouseCluster:
             with_redis=with_redis,
             with_minio=with_minio,
             with_azurite=with_azurite,
+            with_iceberg_rest=with_iceberg_rest,
             with_cassandra=with_cassandra,
             with_jdbc_bridge=with_jdbc_bridge,
             with_hive=with_hive,
@@ -1644,6 +1671,13 @@ class ClickHouseCluster:
         if with_azurite and not self.with_azurite:
             cmds.append(
                 self.setup_azurite_cmd(instance, env_variables, docker_compose_yml_dir)
+            )
+
+        if with_iceberg_rest and not self.with_iceberg_rest:
+            cmds.append(
+                self.setup_iceberg_rest_cmd(
+                    instance, env_variables, docker_compose_yml_dir
+                )
             )
 
         if minio_certs_dir is not None:
@@ -2614,6 +2648,21 @@ class ClickHouseCluster:
                 logging.info("Trying to connect to Azurite")
                 self.wait_azurite_to_start()
 
+            if self.with_iceberg_rest and self.base_iceberg_rest_cmd:
+                iceberg_rest_start_cmd = self.base_iceberg_rest_cmd + common_opts
+                logging.info(
+                    "Trying to create Iceberg REST catalog by command %s",
+                    " ".join(map(str, iceberg_rest_start_cmd)),
+                )
+                run_and_check(iceberg_rest_start_cmd)
+                self.up_called = True
+                self.iceberg_rest_ip = self.get_instance_ip(self.iceberg_rest_host)
+                logging.info(
+                    "Iceberg REST catalog started at %s:%d",
+                    self.iceberg_rest_ip,
+                    self.iceberg_rest_port,
+                )
+
             if self.with_cassandra and self.base_cassandra_cmd:
                 subprocess_check_call(self.base_cassandra_cmd + ["up", "-d"])
                 self.up_called = True
@@ -2895,6 +2944,7 @@ class ClickHouseInstance:
         with_redis,
         with_minio,
         with_azurite,
+        with_iceberg_rest,
         with_jdbc_bridge,
         with_hive,
         with_coredns,
@@ -2978,6 +3028,7 @@ class ClickHouseInstance:
         self.with_redis = with_redis
         self.with_minio = with_minio
         self.with_azurite = with_azurite
+        self.with_iceberg_rest = with_iceberg_rest
         self.with_cassandra = with_cassandra
         self.with_jdbc_bridge = with_jdbc_bridge
         self.with_hive = with_hive
