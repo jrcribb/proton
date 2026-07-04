@@ -1,9 +1,0 @@
-<clickhouse>
-  <named_collections>
-    <minio_iceberg>
-        <url>http://minio1:9001/root/</url>
-        <access_key_id>minio</access_key_id>
-        <secret_access_key>minio123</secret_access_key>
-    </minio_iceberg>
-  </named_collections>
-</clickhouse>
