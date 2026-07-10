@@ -140,20 +140,15 @@ Apache::Iceberg::TableMetadata Iceberg::tryGetTableMetadata() const
     return metadata;
 }
 
-std::list<Apache::Iceberg::ManifestList> Iceberg::fetchManifestList(const Apache::Iceberg::TableMetadata & table_metadata) const
-{
-    return fetchManifestList(table_metadata, s3_configuration, logger);
-}
-
 std::list<Apache::Iceberg::ManifestList> Iceberg::fetchManifestList(
-    const Apache::Iceberg::TableMetadata & table_metadata, const IcebergS3Configuration & s3_configuration, LoggerPtr log)
+    const Apache::Iceberg::TableMetadata & table_metadata, const IcebergS3Configuration & s3_configuration, LoggerPtr logger_)
 {
     std::list<Apache::Iceberg::ManifestList> manifest_lists;
 
     const auto & manifest_list_uri = table_metadata.getManifestList();
     if (manifest_list_uri.empty())
     {
-        LOG_INFO(log, "Table metadata does not have a manifest list.");
+        LOG_INFO(logger_, "Table metadata does not have a manifest list.");
         return manifest_lists;
     }
 
@@ -177,7 +172,7 @@ std::list<Apache::Iceberg::ManifestList> Iceberg::fetchManifestList(
     Apache::Iceberg::ManifestList manifest_list;
     while (reader.read(manifest_list))
     {
-        LOG_INFO(log, "Got manifest_list sn = {} sid = {}", manifest_list.sequence_number, manifest_list.added_snapshot_id);
+        LOG_INFO(logger_, "Got manifest_list sn = {} sid = {}", manifest_list.sequence_number, manifest_list.added_snapshot_id);
         manifest_lists.push_back(std::move(manifest_list));
     }
 
@@ -215,7 +210,7 @@ Pipe Iceberg::read(
     size_t num_streams)
 {
     auto table_metadata = getTableMetadata();
-    auto manifest_lists = fetchManifestList(table_metadata);
+    auto manifest_lists = fetchManifestList(table_metadata, s3_configuration, logger);
 
     auto header = storage_snapshot->getSampleBlockForColumns(column_names);
 
@@ -290,7 +285,7 @@ Pipe Iceberg::read(
 SinkToStoragePtr Iceberg::write(const ASTPtr &, const StorageMetadataPtr & metadata_snapshot, ContextPtr local_context)
 {
     auto table_metadata = getTableMetadata();
-    auto manifest_lists = fetchManifestList(table_metadata);
+    auto manifest_lists = fetchManifestList(table_metadata, s3_configuration, logger);
 
     auto min_upload_file_size_ = local_context->getSettingsRef().s3_min_upload_file_size.changed
         ? local_context->getSettingsRef().s3_min_upload_file_size.value

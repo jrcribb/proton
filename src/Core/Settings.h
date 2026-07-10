@@ -118,8 +118,8 @@ static constexpr UInt64 operator""_GiB(unsigned long long value)
     /* proton: starts */ \
     M(UInt64, s3_min_upload_file_size, 500*1024*1024, "The minimum size of file to upload to S3, i.e. once the file reaches this size, the multipart upload will finish, or the file will be uploaded via single part upload if this size is smaller than s3_max_single_part_upload_size.", 0) \
     M(UInt64, s3_max_upload_idle_seconds, 1, "The maximum idle time (in seconds) to wait for new data before complete a upload to S3, 0 means no limits.", 0) \
-    M(UInt64, iceberg_commit_retry_num_retries, 20, "Maximum number of retries for Iceberg table commit on conflict (HTTP 409). Matches Java Iceberg commit.retry.num-retries.", 0) \
-    M(UInt64, iceberg_commit_retry_min_wait_ms, 10000, "Minimum wait time in milliseconds between Iceberg commit retries. Matches Java Iceberg commit.retry.min-wait-ms.", 0) \
+    M(UInt64, iceberg_commit_retry_num_retries, 4, "Maximum number of retries for Iceberg table commit on conflict (HTTP 409). Matches Java Iceberg commit.retry.num-retries.", 0) \
+    M(UInt64, iceberg_commit_retry_min_wait_ms, 100, "Minimum wait time in milliseconds between Iceberg commit retries. Matches Java Iceberg commit.retry.min-wait-ms.", 0) \
     M(UInt64, iceberg_commit_retry_max_wait_ms, 60000, "Maximum wait time in milliseconds between Iceberg commit retries (exponential backoff cap). Matches Java Iceberg commit.retry.max-wait-ms.", 0) \
     M(UInt64, iceberg_commit_retry_total_timeout_ms, 1800000, "Total wall-clock timeout in milliseconds for all Iceberg commit retry attempts. Matches Java Iceberg commit.retry.total-timeout-ms.", 0) \
     /* proton: ends */ \

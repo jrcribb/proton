@@ -22,8 +22,8 @@ namespace ExternalStream
 
 struct IcebergCommitRetryPolicy
 {
-    UInt64 num_retries{20};
-    UInt64 min_wait_ms{10000};
+    UInt64 num_retries{4};
+    UInt64 min_wait_ms{100};
     UInt64 max_wait_ms{60000};
     UInt64 total_timeout_ms{1800000};
 };
