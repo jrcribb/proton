@@ -11,7 +11,7 @@ class Client:
         self.port = port
         self.command = [command]
 
-        if os.path.basename(command) == 'clickhouse':
+        if os.path.basename(command) in ('clickhouse', 'proton'):
             self.command.append('client')
 
         self.command += ['--host', self.host, '--port', str(self.port), '--stacktrace']
@@ -80,7 +80,6 @@ class Client:
 
         return CommandRequest(command, stdin, timeout, ignore_error)
 
-    @stacktraces_on_timeout_decorator
     def query_and_get_error(
         self,
         sql,

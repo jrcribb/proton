@@ -69,6 +69,7 @@ void Iceberg::prepareS3Configuration(const ContextPtr & context)
     configuration.auth_settings.access_key_id = settings->access_key_id;
     configuration.auth_settings.secret_access_key = settings->secret_access_key;
     configuration.auth_settings.session_token = settings->session_token;
+    configuration.auth_settings.region = settings->region;
     configuration.auth_settings.use_environment_credentials = settings->use_environment_credentials;
 
     configuration.auth_settings.http_client = settings->http_client;
