@@ -1409,7 +1409,7 @@ class ClickHouseCluster:
         main_config_name="config.xml",
         users_config_name="users.xml",
         copy_common_configs=True,
-        config_root_name="proton",
+        config_root_name="clickhouse",
         extra_configs=[],
     ) -> "ClickHouseInstance":
 
@@ -2974,7 +2974,7 @@ class ClickHouseInstance:
         with_installed_binary=False,
         external_dirs=None,
         tmpfs=None,
-        config_root_name="proton",
+        config_root_name="clickhouse",
         extra_configs=[],
     ):
 

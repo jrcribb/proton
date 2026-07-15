@@ -80,6 +80,7 @@ class Client:
 
         return CommandRequest(command, stdin, timeout, ignore_error)
 
+    @stacktraces_on_timeout_decorator
     def query_and_get_error(
         self,
         sql,

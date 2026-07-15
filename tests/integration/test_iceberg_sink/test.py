@@ -38,9 +38,13 @@ def started_cluster():
         cluster = ClickHouseCluster(__file__)
         cluster.add_instance(
             "node1",
-            main_configs=["configs/config.d/named_collections.xml"],
+            main_configs=[
+                "configs/config.d/named_collections.xml",
+                "configs/config.d/s3_url_mapper.xml",
+            ],
             with_minio=True,
             with_iceberg_rest=True,
+            config_root_name="proton",
         )
 
         logging.info("Starting cluster...")

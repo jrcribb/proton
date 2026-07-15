@@ -23,12 +23,6 @@
         </tcp>
     </node>
 
-    <url_scheme_mappers>
-        <s3>
-            <to>http://minio1:9001/{bucket}</to>
-        </s3>
-    </url_scheme_mappers>
-
     <!-- For tests which check compatibility with older versions. -->
     <users_config>users.xml</users_config>
 
