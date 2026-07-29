@@ -1,4 +1,5 @@
 #include <Cluster/Common/Constants.h>
+#include <Cluster/Common/LogTrack.h>
 #include <DataTypes/DataTypeDateTime64.h>
 #include <DataTypes/DataTypeMap.h>
 #include <DataTypes/DataTypeNullable.h>
@@ -21,6 +22,8 @@
 #include <Storages/parseShards.h>
 #include <Common/ProtonCommon.h>
 #include <Common/logger_useful.h>
+#include <Formats/FormatSettings.h>
+#include <Formats/KafkaSchemaRegistryForAvro.h>
 
 #include <boost/algorithm/string/classification.hpp>
 #include <boost/algorithm/string/predicate.hpp>
@@ -28,8 +31,10 @@
 #include <boost/algorithm/string/trim.hpp>
 
 #include <filesystem>
+#include <mutex>
 #include <optional>
 #include <ranges>
+#include <string_view>
 
 namespace DB
 {
@@ -197,33 +202,21 @@ DB::Kafka::Conf createConfFromSettings(const KafkaExternalStreamSettings & setti
     return conf;
 }
 
-void validateMessageKeyColumnType(const DataTypePtr & type)
-{
-    static std::vector<TypeIndex> supported_types{
-        TypeIndex::Bool,
-        TypeIndex::UInt8,
-        TypeIndex::UInt16,
-        TypeIndex::UInt32,
-        TypeIndex::UInt64,
-        TypeIndex::Int8,
-        TypeIndex::Int16,
-        TypeIndex::Int32,
-        TypeIndex::Int64,
-        TypeIndex::Float32,
-        TypeIndex::Float64,
-        TypeIndex::String,
-        TypeIndex::FixedString,
-    };
+const std::vector<TypeIndex> raw_message_key_types{
+    TypeIndex::Bool, TypeIndex::UInt8, TypeIndex::UInt16, TypeIndex::UInt32, TypeIndex::UInt64,
+    TypeIndex::Int8, TypeIndex::Int16, TypeIndex::Int32, TypeIndex::Int64,
+    TypeIndex::Float32, TypeIndex::Float64, TypeIndex::String, TypeIndex::FixedString,
+};
 
+const std::vector<TypeIndex> avro_message_key_types{TypeIndex::String, TypeIndex::FixedString};
+
+void validateMessageKeyColumnType(const DataTypePtr & type, const std::vector<TypeIndex> & allowed)
+{
     if (type->isNullable())
-    {
-        validateMessageKeyColumnType(static_cast<const DataTypeNullable &>(*type).getNestedType());
-    }
-    else
-    {
-        if (std::ranges::none_of(supported_types, [type](auto supported_type) { return supported_type == type->getTypeId(); }))
-            throw Exception(ErrorCodes::ILLEGAL_COLUMN, "`_tp_message_key` column does not support type {}", type->getName());
-    }
+        validateMessageKeyColumnType(
+            static_cast<const DataTypeNullable &>(*type).getNestedType(), allowed);
+    else if (std::ranges::none_of(allowed, [&](auto t) { return t == type->getTypeId(); }))
+        throw Exception(ErrorCodes::ILLEGAL_COLUMN, "`_tp_message_key` column does not support type {}", type->getName());
 }
 
 void validateMessageHeadersColumnType(const DataTypePtr & type)
@@ -241,34 +234,50 @@ void validateMessageHeadersColumnType(const DataTypePtr & type)
 namespace ExternalStream
 {
 
-void Kafka::validateSettings(bool attach)
+void Kafka::verifySettings(const ExternalStreamSettingsPtr & new_settings, bool /*change_settings*/, ContextPtr /*context_*/) const
 {
-    chassert(settings->type.value == StreamTypes::KAFKA || settings->type.value == StreamTypes::REDPANDA);
+    chassert(new_settings->type.value == StreamTypes::KAFKA || new_settings->type.value == StreamTypes::REDPANDA);
 
-    if (settings->topic.value.empty())
-        throw Exception(ErrorCodes::INVALID_SETTING_VALUE, "Empty `topic` setting for {} external stream", settings->type.value);
-
-    if (!settings->message_key.value.empty())
+    if (new_settings->topic.value.empty())
     {
-        if (attach)
-            LOG_ERROR(logger, "Setting `message_key` is deprecated, it won't be used");
-        else
-            throw Exception(
-                ErrorCodes::INVALID_SETTING_VALUE, "Setting `message_key` is deprecated, define the _tp_message_key column instead");
+        LOG_ERROR(logger, "Setting `topic` is empty");
+        throw Exception(ErrorCodes::INVALID_SETTING_VALUE, "Empty `topic` setting for {} external stream", settings->type.value);
     }
 
-    if (hasSchemaRegistryUrl())
+    if (!new_settings->message_key.value.empty())
     {
-        const auto & format = settings->data_format.value;
+        LOG_ERROR(logger, "Setting `message_key` is deprecated, it won't be used");
+        throw Exception(
+            ErrorCodes::INVALID_SETTING_VALUE, "Setting `message_key` is deprecated, define the _tp_message_key column instead");
+    }
+
+    if (!new_settings->kafka_schema_registry_url.value.empty())
+    {
+        const auto & format = new_settings->data_format.value;
         const bool format_supported = format == "ProtobufSingle" || format == "Avro";
-        if (!format_supported)
+        const bool key_uses_registry = !new_settings->message_key_schema_name.value.empty();
+        /// The schema registry URL is valid if either the message body format requires it
+        /// (Avro/ProtobufSingle) or the message key is Avro-encoded via `message_key_schema_name`.
+        if (!format_supported && !key_uses_registry)
         {
-            LOG_ERROR(logger, "Kafka external stream with schema registry only supports 'ProtobufSingle' or 'Avro' data formats: actual='{}'", format);
-            if (!attach)
-                throw Exception(
-                    ErrorCodes::INVALID_SETTING_VALUE,
-                    "Kafka external stream with schema registry only supports 'ProtobufSingle' or 'Avro' data formats");
+            LOG_ERROR(
+                logger,
+                "Kafka external stream with schema registry only supports 'ProtobufSingle' or 'Avro' data formats, "
+                "or `message_key_schema_name` for Avro-encoded keys: actual='{}'",
+                format);
+
+            throw Exception(
+                ErrorCodes::INVALID_SETTING_VALUE,
+                "Kafka external stream with schema registry only supports 'ProtobufSingle' or 'Avro' data formats, "
+                "or `message_key_schema_name` for Avro-encoded keys");
         }
+    }
+
+    if (!new_settings->message_key_schema_name.value.empty() && new_settings->kafka_schema_registry_url.value.empty())
+    {
+        throw Exception(
+            ErrorCodes::INVALID_SETTING_VALUE,
+            "`message_key_schema_name` is only supported when `kafka_schema_registry_url` is set");
     }
 
     const auto & columns = getInMemoryMetadataPtr()->getColumns();
@@ -278,34 +287,27 @@ void Kafka::validateSettings(bool attach)
 
     if (has_event_time)
     {
-        if (attach)
-        {
-            LOG_WARNING(
-                logger,
-                "Column `{}` is a reserved virtual column for Kafka/Redpanda external streams and is no longer supported as a physical column. "
-                "It will be ignored in payload parsing and treated as transport metadata.",
-                ProtonConsts::RESERVED_EVENT_TIME);
-        }
-        else
-        {
-            throw Exception(
-                ErrorCodes::ILLEGAL_COLUMN,
-                "Column `{}` is a reserved virtual column for Kafka/Redpanda external streams and cannot be defined as a physical column",
-                ProtonConsts::RESERVED_EVENT_TIME);
-        }
+        LOG_WARNING(
+            logger,
+            "Column `{}` is a reserved virtual column for Kafka/Redpanda external streams and is no longer supported as a physical column. "
+            "It will be ignored in payload parsing and treated as transport metadata.",
+            ProtonConsts::RESERVED_EVENT_TIME);
+
+        throw Exception(
+            ErrorCodes::ILLEGAL_COLUMN,
+            "Column `{}` is a reserved virtual column for Kafka/Redpanda external streams and cannot be defined as a physical column",
+            ProtonConsts::RESERVED_EVENT_TIME);
     }
 
     if (has_event_time || has_message_key || has_message_headers)
     {
-        if (settings->isChanged("one_message_per_row") && !settings->one_message_per_row)
+        if (new_settings->isChanged("one_message_per_row") && !new_settings->one_message_per_row)
             throw Exception(
                 ErrorCodes::INVALID_SETTING_VALUE,
                 "`one_message_per_row` cannot be set to `false` when the `{}` / `{}` / `{}` column is defined",
                 ProtonConsts::RESERVED_EVENT_TIME,
                 ProtonConsts::RESERVED_MESSAGE_KEY,
                 ProtonConsts::RESERVED_MESSAGE_HEADERS);
-
-        settings->set("one_message_per_row", true);
     }
 }
 
@@ -338,22 +340,38 @@ Kafka::Kafka(
 {
     assert(external_stream_counter);
 
-    validateSettings(attach);
+    if (!attach)
+        verifySettings(settings, false, context);
 
     const auto & columns = getInMemoryMetadataPtr()->getColumns();
+    const bool has_event_time = columns.has(ProtonConsts::RESERVED_EVENT_TIME);
+    const bool has_message_key = columns.has(ProtonConsts::RESERVED_MESSAGE_KEY);
+    const bool has_message_headers = columns.has(ProtonConsts::RESERVED_MESSAGE_HEADERS);
 
-    if (columns.has(ProtonConsts::RESERVED_MESSAGE_KEY))
+    if (has_event_time || has_message_key || has_message_headers)
+        settings->set("one_message_per_row", true);
+
+    if (has_message_key)
     {
-        validateMessageKeyColumnType(columns.getColumn({GetColumnsOptions::Kind::All}, ProtonConsts::RESERVED_MESSAGE_KEY).type);
+        validateMessageKeyColumnType(
+            columns.getColumn({GetColumnsOptions::Kind::All}, ProtonConsts::RESERVED_MESSAGE_KEY).type,
+            settings->message_key_schema_name.value.empty() ? raw_message_key_types : avro_message_key_types);
 
         if (hasCustomShardingExpr())
             throw Exception(
                 ErrorCodes::INVALID_SETTING_VALUE,
                 "`sharding_expr` cannot be set when the `{}` column is defined",
                 ProtonConsts::RESERVED_MESSAGE_KEY);
+
+        if (!settings->message_key_schema_name.value.empty())
+        {
+            FormatSettings key_format_settings = getFormatSettings(context);
+            key_format_settings.kafka_schema_registry.subject_name = settings->message_key_schema_name.value;
+            avro_key_schema_registry = KafkaSchemaRegistryForAvro::getOrCreate(key_format_settings);
+        }
     }
 
-    if (columns.has(ProtonConsts::RESERVED_MESSAGE_HEADERS))
+    if (has_message_headers)
         validateMessageHeadersColumnType(columns.getColumn({GetColumnsOptions::Kind::All}, ProtonConsts::RESERVED_MESSAGE_HEADERS).type);
 
     cacheVirtualColumnNamesAndTypes();
@@ -585,6 +603,7 @@ Pipe Kafka::read(
                 high_watermark,
                 max_block_size,
                 settings->consumer_stall_timeout_ms.totalMilliseconds(),
+                avro_key_schema_registry,
                 external_stream_counter,
                 context,
                 logger));
@@ -610,6 +629,17 @@ SinkToStoragePtr Kafka::write(const ASTPtr & /*query*/, const StorageMetadataPtr
 {
     if (hasSchemaRegistryUrl() && data_format == "ProtobufSingle")
         throw Exception(ErrorCodes::NOT_IMPLEMENTED, "Write Protobuf data with schema registry is not supported");
+
+    /// Encoding _tp_message_key as Avro binary (Confluent wire format) on write is not yet implemented.
+    /// Currently only decoding Avro-encoded keys on read is supported. When this is implemented,
+    /// the sink will need to: fetch the schema from the registry, serialize the key JSON string
+    /// into a GenericDatum, binary-encode it, and prepend the Confluent wire header (magic byte + schema ID).
+    if (avro_key_schema_registry)
+        throw Exception(
+            ErrorCodes::NOT_IMPLEMENTED,
+            "Writing Avro-encoded message keys via schema registry is not yet supported. "
+            "`message_key_schema_name` is currently read-only. "
+            "To write a plain-text message key, omit `message_key_schema_name` and insert a string into `_tp_message_key` directly.");
 
     auto producer = client->getProducer(topicName());
 
@@ -651,6 +681,23 @@ void Kafka::onLog(const struct rd_kafka_s * rk, int level, const char * fac, con
         LOG_INFO(cbLogger(), "{}|{} {}", rd_kafka_name(rk), fac, buf);
 }
 
+namespace
+{
+std::pair<bool, uint64_t> shouldLogKafkaError(uint64_t log_key)
+{
+    static std::mutex mu;
+    static cluster::LogTrackContainer tracked_logs;
+
+    std::lock_guard lock{mu};
+    /// Client names like `rdkafka#consumer-N` are never reused within a process, so stale
+    /// keys accumulate; reset the container instead of letting it grow unboundedly.
+    if (tracked_logs.size() > 10000)
+        tracked_logs.clear();
+
+    return cluster::shouldLog(tracked_logs, log_key, /*throttling_sec=*/30);
+}
+}
+
 void Kafka::onError(struct rd_kafka_s * rk, int err, const char * reason, void * /*opaque*/)
 {
     if (err == RD_KAFKA_RESP_ERR__FATAL)
@@ -661,12 +708,17 @@ void Kafka::onError(struct rd_kafka_s * rk, int err, const char * reason, void *
     }
     else
     {
-        LOG_WARNING(
-            cbLogger(),
-            "Error occurred on {}, error={}, reason={}",
-            rd_kafka_name(rk),
-            rd_kafka_err2str(static_cast<rd_kafka_resp_err_t>(err)),
-            reason);
+        /// During a broker outage librdkafka reports transport failures many times per second
+        /// on every client; throttle per (client, error code) to keep the server log readable.
+        auto log_key = std::hash<std::string_view>{}(rd_kafka_name(rk)) ^ static_cast<uint64_t>(err);
+        if (auto [should_log, log_count] = shouldLogKafkaError(log_key); should_log)
+            LOG_WARNING(
+                cbLogger(),
+                "Error occurred on {}, error={}, reason={}, log_recurring={}",
+                rd_kafka_name(rk),
+                rd_kafka_err2str(static_cast<rd_kafka_resp_err_t>(err)),
+                reason,
+                log_count);
     }
 }
 

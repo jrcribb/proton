@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Formats/KafkaSchemaRegistryForAvro.h>
 #include <IO/Kafka/Connection.h>
 #include <Storages/ExternalStream/ExternalStreamCounter.h>
 #include <Storages/ExternalStream/ExternalStreamSettings.h>
@@ -46,6 +47,8 @@ public:
     void startup() override;
     void shutdown(bool dropping) override;
 
+    void verifySettings(const ExternalStreamSettingsPtr & new_settings, bool change_settings, ContextPtr context_) const override;
+
     bool supportsAccurateSeekTo() const noexcept override { return true; }
     bool supportsSubcolumns() const override { return true; }
     bool squashInsert() const noexcept override { return false; }
@@ -76,7 +79,7 @@ public:
     bool hasSslCaPem() const { return !settings->ssl_ca_pem.value.empty(); }
 
 private:
-    void validateSettings(bool attach);
+    void validateSettings(const ExternalStreamSettingsPtr & settings_, bool throw_on_error);
 
     DB::Kafka::Conf createConf(KafkaExternalStreamSettings settings_);
     void cacheVirtualColumnNamesAndTypes();
@@ -106,6 +109,8 @@ private:
     DB::Kafka::ConnectionPtr client;
 
     UInt64 poll_timeout_ms = 0;
+
+    std::shared_ptr<KafkaSchemaRegistryForAvro> avro_key_schema_registry;
 };
 
 }

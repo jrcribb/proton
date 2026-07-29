@@ -35,7 +35,9 @@ class ASTStorage;
     M(Bool, use_environment_credentials, false, "Use credentials from environment, where it's applicable", 0) \
     M(Bool, log_stats, false, "If set to true, print statistics to the logs. Note that, the statistics could contain quite a lot of data. The frequency of the statistics logs is control by the statistics.interval.ms property.", 0) \
     M(Milliseconds, consumer_stall_timeout_ms, 60 * 1000, "Define the amount of time when a consumer is not making any progress, then consider the consumer stalled, and then a new consumer will be created. Adjust the value based on how busy a topic is. Use small values for a busy topic to avoid big latency. Use big values for less busy topics to avoid disruption. Set to 0 to disable the behavior.", 0) \
-    M(Milliseconds, connection_timeout_ms, 10 * 1000, "Timeout in milliseconds for establishing a connection to a broker.", 0)
+    M(Milliseconds, connection_timeout_ms, 10 * 1000, "Timeout in milliseconds for establishing a connection to a broker.", 0) \
+    M(String, message_key_schema_name, "", "The schema name for the message key.", 0)
+    
 
 #define LOG_FILE_EXTERNAL_STREAM_SETTINGS(M, ALIAS) \
     M(String, log_files, "", "A comma-separated list of log files", 0) \
@@ -123,6 +125,10 @@ class ASTStorage;
     M(Bool, local, false, "In a distributed env, local=true means it is a stream which is local to that node only and is not visible to other nodes in the cluster", 0) \
     M(String, read_function_name, "", "Python external stream entrypoint name, defaults to stream name", 0) \
     M(String, write_function_name, "", "Python external stream sink function name, defaults to read_function_name", 0) \
+    M(String, init_function_name, "", "Python external stream initialization hook name, called once before read/write processing", 0) \
+    M(String, init_function_parameters, "", "Optional Python external stream initialization parameters passed as a string to init()", 0) \
+    M(String, deinit_function_name, "", "Python external stream cleanup hook name, called once after read/write processing", 0) \
+    M(String, flush_function_name, "", "Python sink flush hook, called on checkpoints and before cleanup", 0) \
     M(String, mode, "", "Python external stream execution mode: 'auto', 'streaming', or 'batch' (empty defaults to auto)", 0) \
     KAFKA_EXTERNAL_STREAM_SETTINGS(M, ALIAS) \
     LOG_FILE_EXTERNAL_STREAM_SETTINGS(M, ALIAS) \
@@ -160,6 +166,7 @@ DECLARE_SETTINGS_TRAITS(ExternalStreamSettingsTraits, LIST_OF_EXTERNAL_STREAM_SE
 struct ExternalStreamSettings : public BaseSettings<ExternalStreamSettingsTraits>
 {
     void loadFromQuery(ASTStorage & storage_def, bool throw_on_unknown = true);
+    void apply(const SettingChange & change, bool throw_on_unknown);
 
     KafkaExternalStreamSettings getKafkaSettings() const
     {

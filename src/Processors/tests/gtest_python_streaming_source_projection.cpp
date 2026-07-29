@@ -142,7 +142,7 @@ TEST_F(CPythonTest, PythonStreamingSourceProjectionRespectsHeader)
             ASSERT_TRUE(iterator);
         }
 
-        auto source = std::make_shared<PythonStreamingSource>(header, std::move(iterator), tuple_type, "" /* module_name */);
+        auto source = std::make_shared<PythonStreamingSource>(header, std::move(iterator), tuple_type, cpython::PythonModuleSessionPtr{});
         auto sink = std::make_shared<CollectBlocksSink>(source->getPort().getHeader());
 
         connect(source->getPort(), sink->getPort());
@@ -196,7 +196,7 @@ TEST_F(CPythonTest, PythonStreamingSourceProjectionSkipsUnselectedConversion)
             ASSERT_TRUE(iterator);
         }
 
-        auto source = std::make_shared<PythonStreamingSource>(header, std::move(iterator), tuple_type, "" /* module_name */);
+        auto source = std::make_shared<PythonStreamingSource>(header, std::move(iterator), tuple_type, cpython::PythonModuleSessionPtr{});
         auto sink = std::make_shared<CollectBlocksSink>(source->getPort().getHeader());
 
         connect(source->getPort(), sink->getPort());
@@ -249,7 +249,7 @@ TEST_F(CPythonTest, PythonStreamingSourceProjectionRejectsWrongArity)
             ASSERT_TRUE(iterator);
         }
 
-        auto source = std::make_shared<PythonStreamingSource>(header, std::move(iterator), tuple_type, "" /* module_name */);
+        auto source = std::make_shared<PythonStreamingSource>(header, std::move(iterator), tuple_type, cpython::PythonModuleSessionPtr{});
         auto sink = std::make_shared<CollectBlocksSink>(source->getPort().getHeader());
 
         connect(source->getPort(), sink->getPort());
@@ -309,7 +309,7 @@ TEST_F(CPythonTest, PythonStreamingSourcePreservesRowCountWhenNoColumnsProjected
             ASSERT_TRUE(iterator);
         }
 
-        auto source = std::make_shared<PythonStreamingSource>(header, std::move(iterator), tuple_type, "" /* module_name */);
+        auto source = std::make_shared<PythonStreamingSource>(header, std::move(iterator), tuple_type, cpython::PythonModuleSessionPtr{});
         auto sink = std::make_shared<RowCountSink>(source->getPort().getHeader());
 
         connect(source->getPort(), sink->getPort());
@@ -356,7 +356,7 @@ TEST_F(CPythonTest, PythonStreamingSourceNoColumnsRejectsWrongArity)
             ASSERT_TRUE(iterator);
         }
 
-        auto source = std::make_shared<PythonStreamingSource>(header, std::move(iterator), tuple_type, "" /* module_name */);
+        auto source = std::make_shared<PythonStreamingSource>(header, std::move(iterator), tuple_type, cpython::PythonModuleSessionPtr{});
         auto sink = std::make_shared<RowCountSink>(source->getPort().getHeader());
 
         connect(source->getPort(), sink->getPort());
@@ -418,7 +418,7 @@ TEST_F(CPythonTest, PythonStreamingSourceSkipsEmptyBatches)
             ASSERT_TRUE(iterator);
         }
 
-        auto source = std::make_shared<PythonStreamingSource>(header, std::move(iterator), tuple_type, "" /* module_name */);
+        auto source = std::make_shared<PythonStreamingSource>(header, std::move(iterator), tuple_type, cpython::PythonModuleSessionPtr{});
         auto sink = std::make_shared<CollectBlocksSink>(source->getPort().getHeader());
 
         connect(source->getPort(), sink->getPort());
@@ -496,7 +496,8 @@ class BlockingIterator:
         String first_type_value;
         bool got_first_block = false;
         {
-            auto source = std::make_shared<PythonStreamingSource>(header, std::move(iterator), tuple_type, module_name);
+            auto source
+                = std::make_shared<PythonStreamingSource>(header, std::move(iterator), tuple_type, cpython::PythonModuleSessionPtr{});
             auto sink = std::make_shared<NotifyingCollectBlocksSink>(source->getPort().getHeader());
 
             connect(source->getPort(), sink->getPort());
@@ -606,10 +607,12 @@ class BlockingIterator:
             }
         }
 
-        /// Class objects and their MRO tuples can form reference cycles; collect them explicitly
-        /// so assertNoLeak doesn't report a false-positive.
+        /// Unload the manually-created module and collect cycles so assertNoLeak doesn't
+        /// report false-positives from class MRO tuples.
         {
             cpython::GILGuard gil_guard(/*use_need_cleanup=*/true);
+            if (cpython::hasModule(module_name))
+                cpython::unloadModule(module_name);
             cpython::PyObjectPtr gc_module{PyImport_ImportModule("gc")};
             ASSERT_TRUE(gc_module);
             cpython::PyObjectPtr collect_result{PyObject_CallMethod(gc_module.get(), "collect", nullptr)};
@@ -674,7 +677,8 @@ class BlockingIteratorWithoutCancel:
         }
 
         {
-            auto source = std::make_shared<PythonStreamingSource>(header, std::move(iterator), tuple_type, module_name);
+            auto source
+                = std::make_shared<PythonStreamingSource>(header, std::move(iterator), tuple_type, cpython::PythonModuleSessionPtr{});
             auto sink = std::make_shared<NotifyingCollectBlocksSink>(source->getPort().getHeader());
 
             connect(source->getPort(), sink->getPort());
@@ -741,7 +745,23 @@ class BlockingIteratorWithoutCancel:
                 EXPECT_TRUE(finished_cv.wait_for(lock, std::chrono::seconds(2), [&] { return finished; }));
             }
 
-            EXPECT_TRUE(finished_after_cancel);
+            if constexpr (!cpython::GILGuard::buildSupportsFreeThreading())
+            {
+                /// GIL build: onCancel injects KeyboardInterrupt, which interrupts even a
+                /// non-cooperative loop, so executor.cancel() alone always completes
+                /// cancellation before the 500ms wait above expires.
+                EXPECT_TRUE(finished_after_cancel);
+            }
+            /// Free-threaded build: PyThreadState_SetAsyncExc is compiled out of onCancel
+            /// (under FT it would race a thread-pool recycle and misroute the
+            /// KeyboardInterrupt onto an unrelated query's recycled tstate). With it gone,
+            /// executor.cancel() can only end the iterator when cancel_requested is observed
+            /// at a generate() loop boundary — a timing race against the iterator re-entering
+            /// its blocking `while: pass`. finished_after_cancel is therefore non-deterministic
+            /// under FT (true when cancel wins the race, false otherwise), so it is not
+            /// asserted here. When cancel loses the race, the stop_for_test() cooperative path
+            /// above unblocks the iterator; the clean-shutdown join and the single-block check
+            /// below are the FT invariants.
 
             if (execution_exception)
             {
@@ -765,6 +785,13 @@ class BlockingIteratorWithoutCancel:
         {
             cpython::GILGuard gil_guard(/*use_need_cleanup=*/true);
             iterator_owner.reset();
+            if (cpython::hasModule(module_name))
+                cpython::unloadModule(module_name);
+            cpython::PyObjectPtr gc_module{PyImport_ImportModule("gc")};
+            ASSERT_TRUE(gc_module);
+            cpython::PyObjectPtr collect_result{PyObject_CallMethod(gc_module.get(), "collect", nullptr)};
+            if (!collect_result)
+                PyErr_Clear();
         }
     });
 }

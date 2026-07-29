@@ -4,10 +4,14 @@
 #include <Checkpoint/CheckpointCoordinator.h>
 #include <Cluster/Common/Constants.h>
 #include <DataTypes/DataTypeNullable.h>
+#include <Formats/Avro/InputStreamReadBufferAdapter.h>
+#include <Formats/Avro/OutputStreamWriteBufferAdapter.h>
 #include <Formats/FormatFactory.h>
+#include <Formats/KafkaSchemaRegistry.h>
 #include <IO/ReadBufferFromMemory.h>
 #include <IO/ReadBufferFromString.h>
 #include <IO/ReadHelpers.h>
+#include <IO/WriteBufferFromString.h>
 #include <IO/WriteHelpers.h>
 #include <Processors/Executors/StreamingFormatExecutor.h>
 #include <Storages/ExternalStream/Kafka/Kafka.h>
@@ -15,6 +19,11 @@
 #include <Common/Exception.h>
 #include <Common/ProtonCommon.h>
 
+#include <Encoder.hh>
+#include <Generic.hh>
+#include <Specific.hh>
+
+#include <memory>
 #include <utility>
 
 namespace DB
@@ -24,6 +33,7 @@ namespace ErrorCodes
 extern const int CANNOT_PARSE_DATA;
 extern const int CANNOT_RECEIVE_MESSAGE;
 extern const int ILLEGAL_COLUMN;
+extern const int INCORRECT_DATA;
 extern const int RECOVER_CHECKPOINT_FAILED;
 }
 
@@ -144,6 +154,7 @@ KafkaSource::KafkaSource(
     std::optional<Int64> high_watermark_,
     size_t max_block_size_,
     UInt64 consumer_stall_timeout_ms,
+    std::shared_ptr<KafkaSchemaRegistryForAvro> avro_key_schema_registry_,
     ExternalStreamCounterPtr external_stream_counter_,
     ContextPtr query_context_,
     LoggerPtr logger_)
@@ -153,6 +164,7 @@ KafkaSource::KafkaSource(
     , virtual_col_value_functions(header.columns(), nullptr)
     , virtual_col_types(header.columns(), nullptr)
     , ignore_format_errors(format_settings.ignore_parsing_errors)
+    , avro_key_schema_registry(std::move(avro_key_schema_registry_))
     , offset(offset_)
     , high_watermark(high_watermark_.value_or(std::numeric_limits<Int64>::max()))
     , consumer(std::move(consumer_))
@@ -259,7 +271,7 @@ void KafkaSource::readAndProcess()
     DB::Kafka::WatermarkOffsets skipped_messages;
 
     auto callback = [this, &skipped_messages](const void * rkmessage, size_t /*total_count*/, void * /*data*/) {
-        auto * message = static_cast<const rd_kafka_message_t *>(rkmessage);
+        const auto * message = static_cast<const rd_kafka_message_t *>(rkmessage);
         /// We have seen this happened, and do not know how. So, just in case.
         if (message->offset < offset)
         {
@@ -433,6 +445,40 @@ void KafkaSource::parseFormat(const rd_kafka_message_t * kmessage)
                 }
             }
         }
+    }
+}
+
+Field KafkaSource::decodeAvroKey(const rd_kafka_message_t * kmessage) const
+{
+    try
+    {
+        /// Decode the Avro-encoded Kafka message key and return it as a JSON string.
+        /// The key bytes follow the Confluent wire format: 1-byte magic (0x00) + 4-byte schema ID + Avro binary payload.
+        /// We deserialize the binary payload into a GenericDatum using the schema fetched from the registry,
+        /// then re-encode the datum as JSON so callers receive a human-readable string representation of the key record.
+        ReadBufferFromMemory key_buf(static_cast<const char *>(kmessage->key), kmessage->key_len);
+        UInt32 schema_id = KafkaSchemaRegistry::readSchemaId(key_buf);
+        auto schema = avro_key_schema_registry->getSchema(schema_id);
+    
+        auto avro_in = std::make_unique<Avro::InputStreamReadBufferAdapter>(key_buf);
+        auto bin_decoder = avro::validatingDecoder(schema, avro::binaryDecoder());
+        bin_decoder->init(*avro_in);
+    
+        avro::GenericDatum datum(schema);
+        avro::decode(*bin_decoder, datum);
+    
+        WriteBufferFromOwnString json_buf;
+        Avro::OutputStreamWriteBufferAdapter avro_out(json_buf);
+        auto json_encoder = avro::jsonEncoder(schema);
+        json_encoder->init(avro_out);
+        avro::encode(*json_encoder, datum);
+        json_encoder->flush();
+    
+        return Field{json_buf.str()};
+    }
+    catch (...)
+    {
+        throw DB::Exception(ErrorCodes::INCORRECT_DATA, "Failed to decode Avro message key: {}", getCurrentExceptionMessage(false));
     }
 }
 
@@ -641,11 +687,23 @@ void KafkaSource::getPhysicalHeader()
                     [[fallthrough]];
                 case TypeIndex::FixedString:
                 {
-                    virtual_col_value_functions[pos] = [inside_nullable](const rd_kafka_message_t * kmessage) -> Field {
-                        if (inside_nullable && kmessage->key_len == 0)
-                            return Null{};
-                        return {static_cast<char *>(kmessage->key), kmessage->key_len};
-                    };
+                    if (avro_key_schema_registry)
+                    {
+                        virtual_col_value_functions[pos] = [this, inside_nullable](const rd_kafka_message_t * kmessage) -> Field
+                        {
+                            if (kmessage->key_len == 0)
+                                return inside_nullable ? Field{Null{}} : Field{String{}};
+                            return decodeAvroKey(kmessage);
+                        };
+                    }
+                    else
+                    {
+                        virtual_col_value_functions[pos] = [inside_nullable](const rd_kafka_message_t * kmessage) -> Field {
+                            if (inside_nullable && kmessage->key_len == 0)
+                                return Null{};
+                            return {static_cast<char *>(kmessage->key), kmessage->key_len};
+                        };
+                    }
                     break;
                 }
                 default:
@@ -745,8 +803,20 @@ void KafkaSource::getPhysicalHeader()
         }
         else if (column.name == ProtonConsts::RESERVED_MESSAGE_KEY)
         {
-            virtual_col_value_functions[pos]
-                = [](const rd_kafka_message_t * kmessage) -> String { return {static_cast<char *>(kmessage->key), kmessage->key_len}; };
+            if (avro_key_schema_registry)
+            {
+                virtual_col_value_functions[pos] = [this](const rd_kafka_message_t * kmessage) -> Field
+                {
+                    if (kmessage->key_len == 0)
+                        return String{};
+                    return decodeAvroKey(kmessage);
+                };
+            }
+            else
+            {
+                virtual_col_value_functions[pos]
+                    = [](const rd_kafka_message_t * kmessage) -> String { return {static_cast<char *>(kmessage->key), kmessage->key_len}; };
+            }
             virtual_col_types[pos] = column.type;
         }
         else
@@ -896,7 +966,7 @@ Strings KafkaSource::doFetchData(const Streaming::SequenceRange & sn_range)
     auto callback = [&count, &results](const void * rkmessage, size_t /*total_count*/, void * /*data*/) {
         if (count > 0)
         {
-            auto * message = static_cast<const rd_kafka_message_t *>(rkmessage);
+            const auto * message = static_cast<const rd_kafka_message_t *>(rkmessage);
             results.emplace_back(static_cast<const char *>(message->payload), message->len);
             --count;
         }

@@ -4,6 +4,7 @@
 
 #include <CPython/ConvertDatatypes.h>
 #include <CPython/GILGuard.h>
+#include <CPython/PythonModuleSession.h>
 #include <CPython/Utils.h>
 #include <Columns/ColumnTuple.h>
 #include <DataTypes/DataTypeTuple.h>
@@ -17,7 +18,6 @@ namespace DB
 namespace ErrorCodes
 {
 extern const int BAD_ARGUMENTS;
-extern const int UDF_RUNNING_ERROR;
 extern const int UNSUPPORTED;
 }
 
@@ -43,19 +43,19 @@ DataTypePtr buildTupleType(const ColumnsDescription & columns)
 PythonTableTransform::PythonTableTransform(
     const Block & input_header,
     Block output_header,
-    String python_source_,
-    String function_name_,
     Names input_column_names_,
     ColumnsDescription output_columns_,
     Names requested_output_columns_,
-    PythonTableMode mode_)
+    PythonTableMode mode_,
+    cpython::PythonModuleSessionPtr session_,
+    PythonTableTransformSharedStatePtr shared_state_)
     : ISimpleTransform(input_header, std::move(output_header), true, ProcessorID::PythonTableTransformID)
     , requested_output_columns(std::move(requested_output_columns_))
     , output_columns(std::move(output_columns_))
     , tuple_type(buildTupleType(output_columns))
     , mode(mode_)
-    , python_source(std::move(python_source_))
-    , function_name(std::move(function_name_))
+    , session(std::move(session_))
+    , shared_state(std::move(shared_state_))
 {
     input_positions.reserve(input_column_names_.size());
     for (const auto & name : input_column_names_)
@@ -65,56 +65,126 @@ PythonTableTransform::PythonTableTransform(
         input_positions.push_back(input_header.getPositionByName(name));
     }
 
-    initPython();
+    if (shared_state)
+        shared_state->retain();
 }
 
 PythonTableTransform::~PythonTableTransform()
 {
-    if (py_function && Py_IsInitialized())
+    if (shared_state)
     {
-        cpython::GILGuard gil_guard;
-        py_function.reset();
-        if (!module_name.empty())
-            cpython::unloadModule(module_name);
+        if (!finalization_completed)
+        {
+            /// work() never ran our finalization branch (abnormal exit).
+            /// Release our share so siblings can correctly identify the
+            /// last live owner; do not run the close here — the session's
+            /// own destructor (fires when the last shared_ptr is released)
+            /// is the safety net for the abort path, with
+            /// ignore_exceptions=true.
+            shared_state->live_count.fetch_sub(1, std::memory_order_acq_rel);
+        }
+        return;
     }
+
+    /// Single-owner case (no shared state). If work() did not finalize,
+    /// run a best-effort close so deinit still gets a chance.
+    finishSession(/*ignore_exceptions=*/true);
+}
+
+void PythonTableTransform::finishSession(bool ignore_exceptions)
+{
+    std::call_once(finish_once, [&] {
+        cpython::PythonModuleSession::closeSession(session, ignore_exceptions);
+    });
+}
+
+PythonTableTransform::Status PythonTableTransform::prepare()
+{
+    if (finalization_completed)
+        return Status::Finished;
+
+    if (finalization_pending)
+        return Status::Ready;
+
+    const bool input_finished_before = !has_input && input.isFinished();
+    const bool output_finished_before = output.isFinished();
+
+    auto status = ISimpleTransform::prepare();
+    if (status == Status::Finished)
+    {
+        /// Normal completion: input drained and downstream still has room
+        /// for the close-side effects (this is the only state in which we
+        /// want deinit exceptions to propagate). Otherwise (abort, broken
+        /// pipe, etc.) swallow exceptions to avoid masking the original
+        /// failure.
+        finalization_ignore_exceptions = !(input_finished_before && !output_finished_before);
+        finalization_pending = true;
+        return Status::Ready;
+    }
+
+    return status;
+}
+
+void PythonTableTransform::work()
+{
+    if (finalization_pending)
+    {
+        /// In the parallel-pipeline case (shared_state != nullptr), only the
+        /// last live owner runs the explicit close. Earlier finalizers just
+        /// drop their share; the session stays open for siblings still in
+        /// transform(). The single-owner case (shared_state == nullptr,
+        /// e.g. unit tests) is always "last" so close runs unconditionally
+        /// with the finalization_ignore_exceptions semantics derived in
+        /// prepare().
+        const bool we_are_last = !shared_state || shared_state->releaseAndClaimLast();
+        if (we_are_last)
+            finishSession(finalization_ignore_exceptions);
+
+        finalization_pending = false;
+        finalization_completed = true;
+        return;
+    }
+
+    ISimpleTransform::work();
 }
 
 void PythonTableTransform::onCancel() noexcept
 {
     cancel_requested.store(true, std::memory_order_release);
 
-    if (!Py_IsInitialized())
-        return;
-
-    try
+    /// Fall back to interrupting the executing thread — but ONLY on a GIL
+    /// build. PyThreadState_SetAsyncExc routes by thread id, which is a valid
+    /// query-ownership token only while the GIL is held: onCancel holds it, so
+    /// the worker is pinned in THIS query and cannot finish, clear its tid, be
+    /// recycled by the pipeline thread pool, and start another query's Python
+    /// before we inject. On a free-threaded (cp314t) build the GIL no longer
+    /// serializes (GILGuard only attaches a thread state), so that recycle can
+    /// race the load()/inject and the KeyboardInterrupt would land on an
+    /// unrelated query sharing the recycled PyThreadState. Compiled out under
+    /// free-threading; cancel_requested (checked on each transform() entry) is
+    /// the cancellation path there.
+    if constexpr (!cpython::GILGuard::buildSupportsFreeThreading())
     {
-        cpython::GILGuard gil_guard;
-
-        const auto thread_id = python_thread_id.load(std::memory_order_acquire);
-        if (thread_id == 0)
+        if (!Py_IsInitialized())
             return;
 
-        const int set = PyThreadState_SetAsyncExc(thread_id, PyExc_KeyboardInterrupt);
-        if (set > 1)
-            PyThreadState_SetAsyncExc(thread_id, nullptr);
+        try
+        {
+            cpython::GILGuard gil_guard;
+
+            const auto tid = python_thread_id.load(std::memory_order_acquire);
+            if (tid == 0)
+                return;
+
+            const int set = PyThreadState_SetAsyncExc(tid, PyExc_KeyboardInterrupt);
+            if (set > 1)
+                PyThreadState_SetAsyncExc(tid, nullptr);
+        }
+        catch (...)
+        {
+            /// no-throw on cancellation path
+        }
     }
-    catch (...)
-    {
-        /// no-throw on cancellation path
-    }
-}
-
-void PythonTableTransform::initPython()
-{
-    if (Py_IsInitialized() == 0)
-        throw Exception(ErrorCodes::UDF_RUNNING_ERROR, "Python Interpreter is not initialized, please check the python_path configuration");
-
-    module_name = getName() + cpython::randomModuleName();
-
-    cpython::GILGuard gil_guard;
-    auto byte_code = cpython::compile(python_source);
-    cpython::executeByteCode(byte_code, module_name);
-    py_function = cpython::getFunction(function_name, module_name);
 }
 
 Block PythonTableTransform::convertPythonResultToBlock(const cpython::PyObjectPtr & py_result) const
@@ -166,21 +236,26 @@ void PythonTableTransform::transform(Chunk & chunk)
         return;
     }
 
+    const auto & input_header = getInputPort().getHeader();
+    const auto & columns = chunk.getColumns();
+
     cpython::GILGuard gil_guard;
 
-    python_thread_id.store(PyThread_get_thread_ident(), std::memory_order_release);
-    SCOPE_EXIT({ python_thread_id.store(0, std::memory_order_release); });
+    auto this_thread_id = PyThread_get_thread_ident();
+    python_thread_id.store(this_thread_id, std::memory_order_release);
+    SCOPE_EXIT({
+        python_thread_id.compare_exchange_strong(this_thread_id, 0, std::memory_order_release);
+    });
 
-    Block input_block = getInputPort().getHeader().cloneWithColumns(chunk.detachColumns());
     cpython::PyObjectPtr py_args{PyTuple_New(static_cast<Py_ssize_t>(input_positions.size()))};
     for (size_t i = 0; i < input_positions.size(); ++i)
     {
-        const auto & col_with_type = input_block.getByPosition(input_positions[i]);
-        auto py_col = cpython::convertColumnToPythonList(col_with_type);
+        const auto & col_with_type = input_header.getByPosition(input_positions[i]);
+        auto py_col = cpython::convertColumnToPythonList(*columns[input_positions[i]], col_with_type.type);
         PyTuple_SetItem(py_args.get(), static_cast<Py_ssize_t>(i), py_col.release());
     }
 
-    auto py_result = cpython::executeObject(py_function, py_args);
+    auto py_result = session->execute(py_args);
 
     if (cpython::isAsyncGeneratorOrCoroutine(py_result))
         throw Exception(

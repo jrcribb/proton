@@ -2,6 +2,7 @@
 
 #if USE_PYTHON_UDF
 
+#include <CPython/AsyncPythonPackageManager.h>
 #include <CPython/GILGuard.h>
 #include <CPython/PythonPackage.h>
 #include <CPython/Utils.h>
@@ -67,6 +68,27 @@ TEST(PythonPackageTest, ParsesExtrasAndVersionSpecifiers)
     EXPECT_EQ(package.package_with_version, "confluent-kafka[protobuf, avro]>=2.1.1");
 }
 
+TEST(PythonPackageTest, RemoveCompletedTaskIgnoresUnknownTasks)
+{
+    AsyncPythonPackageManager manager(nullptr);
+    /// Unknown ids are reported as not removed and must not crash or affect tracking.
+    EXPECT_FALSE(manager.removeCompletedTask("no-such-task"));
+    EXPECT_TRUE(manager.getAllTaskResults().empty());
+    manager.shutdown();
+}
+
+TEST(PythonPackageTest, HasEffectiveRequirementLinesMatchesParserSkipRules)
+{
+    EXPECT_FALSE(PythonPackage::hasEffectiveRequirementLines(""));
+    EXPECT_FALSE(PythonPackage::hasEffectiveRequirementLines("\n\n"));
+    EXPECT_FALSE(PythonPackage::hasEffectiveRequirementLines("# comment only\n  \t\n#another\n"));
+    EXPECT_TRUE(PythonPackage::hasEffectiveRequirementLines("requests==2.31.0\n"));
+    EXPECT_TRUE(PythonPackage::hasEffectiveRequirementLines("# header\n  six==1.17.0  \n"));
+    /// Mirror of the parser's contract: content without effective lines makes parse throw, so
+    /// callers must consult this helper first when "nothing to install" is a valid outcome.
+    EXPECT_THROW(PythonPackage::parseRequirementsText("# comment only\n"), DB::Exception);
+}
+
 TEST(PythonPackageTest, ParsesRequirementsTextWithExtras)
 {
     const auto requirements = PythonPackage::parseRequirementsText(R"(
@@ -86,7 +108,9 @@ TEST_F(CPythonTest, RefreshImportStateProcessesPthFiles)
     const auto unique_suffix = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
     const auto test_root = fs::absolute(fs::path("tmp") / ("gtest_python_package_refresh_" + unique_suffix));
     const auto user_base = test_root / "userbase";
-    const auto site_packages = user_base / "lib/python3.10/site-packages";
+    /// Use the suffix refreshImportState actually scans under PYTHONUSERBASE;
+    /// it varies with the interpreter version and ABI (e.g. lib/python3.14t/site-packages).
+    const auto site_packages = user_base / PythonPackage::getPythonInterpreterInfo().user_site_suffix;
     const auto extra_modules = test_root / "extra_modules";
     const auto module_name = "python_package_refresh_" + unique_suffix;
 
@@ -232,17 +256,24 @@ TEST_F(CPythonTest, RefreshImportStateExtendsNamespacePackagePaths)
 {
     namespace fs = std::filesystem;
 
-    auto pkg_resources_module = PyObjectPtr{PyImport_ImportModule("pkg_resources")};
-    if (!pkg_resources_module)
+    /// Skip if pkg_resources is not available (needed for declare_namespace).
+    /// Must hold the GIL: an earlier test may have released it via PyEval_SaveThread.
     {
-        PyErr_Clear();
-        GTEST_SKIP() << "pkg_resources not available, skipping namespace package test";
+        GILGuard gil_guard(true);
+        auto pkg_resources_module = PyObjectPtr{PyImport_ImportModule("pkg_resources")};
+        if (!pkg_resources_module)
+        {
+            PyErr_Clear();
+            GTEST_SKIP() << "pkg_resources not available, skipping namespace package test";
+        }
     }
 
     const auto unique_suffix = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
     const auto test_root = fs::absolute(fs::path("tmp") / ("gtest_python_package_ns_" + unique_suffix));
     const auto user_base = test_root / "userbase";
-    const auto site_packages = user_base / "lib/python3.10/site-packages";
+    /// Use the suffix refreshImportState actually scans under PYTHONUSERBASE;
+    /// it varies with the interpreter version and ABI (e.g. lib/python3.14t/site-packages).
+    const auto site_packages = user_base / PythonPackage::getPythonInterpreterInfo().user_site_suffix;
 
     const auto dir1 = test_root / "dir1";
     const auto dir2 = test_root / "dir2";
@@ -323,6 +354,8 @@ TEST_F(CPythonTest, RefreshImportStateExtendsNamespacePackagePaths)
     if (PyErr_Occurred())
         PyErr_Clear();
 
+    auto pkg_resources_module = PyObjectPtr{PyImport_ImportModule("pkg_resources")};
+    ASSERT_TRUE(pkg_resources_module);
     auto ns_packages_dict = PyObjectPtr{PyObject_GetAttrString(pkg_resources_module.get(), "_namespace_packages")};
     if (ns_packages_dict && PyDict_Check(ns_packages_dict.get()))
         PyDict_DelItem(ns_packages_dict.get(), ns_key.get());
