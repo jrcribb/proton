@@ -66,7 +66,7 @@ private:
 
     void parseFormat(natsMsg * msg);
 
-    Chunk doCheckpoint(CheckpointContextPtr ckpt_ctx_) override;
+    void doCheckpoint(CheckpointContextPtr ckpt_ctx_) override;
     void doRecover(CheckpointContextPtr ckpt_ctx_) override;
     void doResetStartSN(Int64 sn) override;
 
@@ -76,7 +76,8 @@ private:
 
     std::vector<std::function<Field(natsMsg *)>> virtual_col_value_functions;
     std::vector<DataTypePtr> virtual_col_types;
-    bool request_virtual_columns = false;
+
+    std::shared_ptr<StreamingFormatExecutor> format_executor;
 
 
     Int32 record_consume_timeout_ms{100};

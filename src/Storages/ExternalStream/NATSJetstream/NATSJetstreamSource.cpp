@@ -132,7 +132,8 @@ NATSJetstreamSource::NATSJetstreamSource(
     if (auto consume_timeout = context_->getSettingsRef().record_consume_timeout_ms; consume_timeout != 0)
         record_consume_timeout_ms = static_cast<Int32>(consume_timeout.value);
 
-    initInputFormatExecutor(data_format, format_settings);
+    getPhysicalHeader();
+    format_executor = getInputFormatExecutor(data_format, format_settings).first;
 
     header_chunk = Chunk(header.getColumns(), 0);
 
@@ -569,11 +570,8 @@ void NATSJetstreamSource::onCancel() noexcept
     }
 }
 
-Chunk NATSJetstreamSource::doCheckpoint(CheckpointContextPtr ckpt_ctx_)
+void NATSJetstreamSource::doCheckpoint(CheckpointContextPtr ckpt_ctx_)
 {
-    auto result = header_chunk.clone();
-    result.setCheckpointContext(ckpt_ctx_);
-
     ckpt_ctx_->coordinator->checkpoint(getVersion(), getLogicID(), ckpt_ctx_, [&](WriteBuffer & wb) {
         writeStringBinary(current_subject, wb);
         writeStringBinary(current_consumer_name, wb);
@@ -581,8 +579,6 @@ Chunk NATSJetstreamSource::doCheckpoint(CheckpointContextPtr ckpt_ctx_)
     });
 
     LOG_INFO(logger, "Saved checkpoint subject='{}' consumer='{}' sn={}", current_subject, current_consumer_name, lastProcessedSN());
-
-    return result;
 }
 
 void NATSJetstreamSource::doRecover(CheckpointContextPtr ckpt_ctx_)

@@ -22,6 +22,7 @@
 #include <Storages/parseShards.h>
 #include <Common/ProtonCommon.h>
 #include <Common/logger_useful.h>
+#include "Storages/ExternalStream/StorageExternalStreamImpl.h"
 #include <Formats/FormatSettings.h>
 #include <Formats/KafkaSchemaRegistryForAvro.h>
 
@@ -41,6 +42,7 @@ namespace DB
 
 namespace ErrorCodes
 {
+extern const int ABORTED;
 extern const int ILLEGAL_COLUMN;
 extern const int INVALID_CONFIG_PARAMETER;
 extern const int INVALID_SETTING_VALUE;
@@ -234,14 +236,180 @@ void validateMessageHeadersColumnType(const DataTypePtr & type)
 namespace ExternalStream
 {
 
-void Kafka::verifySettings(const ExternalStreamSettingsPtr & new_settings, bool /*change_settings*/, ContextPtr /*context_*/) const
+DB::Kafka::Conf Kafka::createConf(KafkaExternalStreamSettings settings_)
+{
+    if (const auto & ca_pem = settings_.ssl_ca_pem.value; !ca_pem.empty())
+    {
+        createTempDirIfNotExists();
+        broker_ca_file = tmpdir / "broker_ca.pem";
+        WriteBufferFromFile wb{broker_ca_file};
+        wb.write(ca_pem.data(), ca_pem.size());
+        settings_.ssl_ca_cert_file = broker_ca_file;
+    }
+    return createConfFromSettings(settings_);
+}
+
+Kafka::Kafka(
+    StorageID storage_id,
+    StorageInMemoryMetadata storage_metadata_,
+    std::unique_ptr<ExternalStreamSettings> settings_,
+    ASTs engine_args_,
+    bool /*attach*/,
+    ExternalStreamCounterPtr external_stream_counter_,
+    ContextPtr context)
+    : StorageExternalStreamImpl(std::move(storage_id), storage_metadata_, std::move(settings_), context)
+    , engine_args(std::move(engine_args_))
+    , external_stream_counter(std::move(external_stream_counter_))
+    , poll_timeout_ms(settings->poll_waittime_ms.value)
+{
+    assert(external_stream_counter);
+
+    const auto & columns = getInMemoryMetadataPtr()->getColumns();
+    const bool has_event_time = columns.has(ProtonConsts::RESERVED_EVENT_TIME);
+    const bool has_message_key = columns.has(ProtonConsts::RESERVED_MESSAGE_KEY);
+    const bool has_message_headers = columns.has(ProtonConsts::RESERVED_MESSAGE_HEADERS);
+
+    if (has_event_time || has_message_key || has_message_headers)
+        settings->set("one_message_per_row", true);
+
+    if (has_message_key && !settings->message_key_schema_name.value.empty())
+    {
+        FormatSettings key_format_settings = getFormatSettings(context);
+        key_format_settings.kafka_schema_registry.subject_name = settings->message_key_schema_name.value;
+        avro_key_schema_registry = KafkaSchemaRegistryForAvro::getOrCreate(key_format_settings);
+    }
+
+    cacheVirtualColumnNamesAndTypes();
+
+    auto conf = createConf(settings->getKafkaSettings());
+    conf.setLogCallback(&Kafka::onLog);
+    conf.setErrorCallback(&Kafka::onError);
+    conf.setThrottleCallback(&Kafka::onThrottle);
+    conf.setDrMsgCallback(&KafkaSink::onMessageDelivery);
+
+    if (settings->log_stats)
+        conf.setStatsCallback(&Kafka::onStats);
+    else
+        conf.setStatsCallback([](struct rd_kafka_s *, char *, size_t, void *) { return 0; });
+
+    if (auto topic_refresh_interval_ms_value = conf.get("topic.metadata.refresh.interval.ms"))
+        topic_refresh_interval_ms = std::stoi(*topic_refresh_interval_ms_value);
+    else
+        topic_refresh_interval_ms = 300'000;
+
+    /// Atomic store paired with the atomic_load_explicit in getClient(): even
+    /// though no other thread can see this Kafka instance during construction,
+    /// keeping store/load symmetric on `client` makes the data race analyzable
+    /// and avoids subtle re-ordering surprises if the constructor is later
+    /// inlined in a way that lets the publication of `this` race the assignment.
+    std::atomic_store_explicit(
+        &client,
+        DB::Kafka::ConnectionFactory::instance().getConnection(std::move(conf)),
+        std::memory_order_release);
+}
+
+DB::Kafka::ConnectionPtr Kafka::getClient() const
+{
+    /// `client` may be reset to nullptr by shutdown() concurrently with reads
+    /// from materialized-view pipelines. Load atomically — std::shared_ptr's
+    /// own copy/assign is not atomic w.r.t. concurrent reset(), so a plain
+    /// `client->...` access is racy and crashes inside getConsumer when
+    /// shutdown has just nulled the member (SIGSEGV at offset 0x50, see
+    /// tests/external_stream/kafka_external_stream.md).
+    auto local_client = std::atomic_load_explicit(&client, std::memory_order_acquire);
+    if (!local_client)
+        throw Exception(ErrorCodes::ABORTED, "Kafka external stream is shutting down");
+    return local_client;
+}
+
+void Kafka::startup()
+{
+    StorageExternalStreamImpl::startup();
+    LOG_INFO(logger, "Starting Kafka External Stream");
+}
+
+void Kafka::shutdown(bool /*dropping*/)
+{
+    LOG_INFO(logger, "Shutting down Kafka External Stream");
+
+    /// Release all resources here rather than relying on the deconstructor.
+    /// Because the `Kafka` instance will not be destroyed immediately when the external stream gets dropped.
+    /// Atomic store paired with atomic_load_explicit in getClient() — without atomic
+    /// publication of the empty pointer, a concurrent reader can observe a torn
+    /// or partially-reset shared_ptr and crash inside Connection::getConsumer.
+    std::atomic_store_explicit(&client, DB::Kafka::ConnectionPtr{}, std::memory_order_release);
+
+    tryRemoveTempDir();
+}
+
+bool Kafka::hasCustomShardingExpr() const
+{
+    if (engine_args.empty())
+        return false;
+
+    if (auto * shard_func = shardingExprAst()->as<ASTFunction>())
+        return !boost::iequals(shard_func->name, "rand");
+
+    return true;
+}
+
+NamesAndTypesList Kafka::getVirtuals() const
+{
+    return virtual_column_names_and_types;
+}
+
+std::optional<String> Kafka::preferredColumn() const
+{
+    return ProtonConsts::RESERVED_EVENT_SEQUENCE_ID;
+}
+
+void Kafka::cacheVirtualColumnNamesAndTypes()
+{
+    virtual_column_names_and_types.push_back(
+        NameAndTypePair(ProtonConsts::RESERVED_APPEND_TIME, std::make_shared<DataTypeDateTime64>(3, "UTC")));
+    virtual_column_names_and_types.push_back(
+        NameAndTypePair(ProtonConsts::RESERVED_EVENT_TIME, std::make_shared<DataTypeDateTime64>(3, "UTC")));
+    virtual_column_names_and_types.push_back(
+        NameAndTypePair(ProtonConsts::RESERVED_PROCESS_TIME, std::make_shared<DataTypeDateTime64>(3, "UTC")));
+    virtual_column_names_and_types.push_back(NameAndTypePair(ProtonConsts::RESERVED_SHARD, std::make_shared<DataTypeInt32>()));
+    virtual_column_names_and_types.push_back(NameAndTypePair(ProtonConsts::RESERVED_EVENT_SEQUENCE_ID, std::make_shared<DataTypeInt64>()));
+    virtual_column_names_and_types.push_back(NameAndTypePair(ProtonConsts::RESERVED_MESSAGE_KEY, std::make_shared<DataTypeString>()));
+
+    DataTypes header_types{/*key_type*/ std::make_shared<DataTypeString>(), /*value_type*/ std::make_shared<DataTypeString>()};
+    virtual_column_names_and_types.push_back(
+        NameAndTypePair(ProtonConsts::RESERVED_MESSAGE_HEADERS, std::make_shared<DataTypeMap>(header_types)));
+}
+
+std::vector<Int64> Kafka::getOffsets(const SeekToInfoPtr & seek_to_info, const std::vector<uint64_t> & shards_to_query) const
+{
+    assert(seek_to_info);
+    seek_to_info->replicateForShards(static_cast<uint32_t>(shards_to_query.size()));
+    if (!seek_to_info->isTimeBased())
+    {
+        return seek_to_info->getSeekPoints();
+    }
+    else
+    {
+        std::vector<DB::Kafka::PartitionTimestamp> partition_timestamps;
+        partition_timestamps.reserve(shards_to_query.size());
+        auto seek_timestamps{seek_to_info->getSeekPoints()};
+        assert(shards_to_query.size() == seek_timestamps.size());
+
+        for (auto [shard, timestamp] : std::ranges::views::zip(shards_to_query, seek_timestamps))
+            partition_timestamps.emplace_back(shard, timestamp);
+
+        return getClient()->getOffsetsForTimestamps(settings->topic.value, partition_timestamps);
+    }
+}
+
+void Kafka::validateSettings(const ExternalStreamSettingsPtr & new_settings, bool /*change_settings*/, const ContextPtr & /*context_*/) const
 {
     chassert(new_settings->type.value == StreamTypes::KAFKA || new_settings->type.value == StreamTypes::REDPANDA);
 
     if (new_settings->topic.value.empty())
     {
         LOG_ERROR(logger, "Setting `topic` is empty");
-        throw Exception(ErrorCodes::INVALID_SETTING_VALUE, "Empty `topic` setting for {} external stream", settings->type.value);
+        throw Exception(ErrorCodes::INVALID_SETTING_VALUE, "Empty `topic` setting for {} external stream", new_settings->type.value);
     }
 
     if (!new_settings->message_key.value.empty())
@@ -311,45 +479,14 @@ void Kafka::verifySettings(const ExternalStreamSettingsPtr & new_settings, bool 
     }
 }
 
-
-DB::Kafka::Conf Kafka::createConf(KafkaExternalStreamSettings settings_)
+void Kafka::validateColumns() const
 {
-    if (const auto & ca_pem = settings_.ssl_ca_pem.value; !ca_pem.empty())
-    {
-        createTempDirIfNotExists();
-        broker_ca_file = tmpdir / "broker_ca.pem";
-        WriteBufferFromFile wb{broker_ca_file};
-        wb.write(ca_pem.data(), ca_pem.size());
-        settings_.ssl_ca_cert_file = broker_ca_file;
-    }
-    return createConfFromSettings(settings_);
-}
-
-Kafka::Kafka(
-    StorageID storage_id,
-    StorageInMemoryMetadata storage_metadata_,
-    std::unique_ptr<ExternalStreamSettings> settings_,
-    ASTs engine_args_,
-    bool attach,
-    ExternalStreamCounterPtr external_stream_counter_,
-    ContextPtr context)
-    : StorageExternalStreamImpl(std::move(storage_id), storage_metadata_, std::move(settings_), context)
-    , engine_args(std::move(engine_args_))
-    , external_stream_counter(std::move(external_stream_counter_))
-    , poll_timeout_ms(settings->poll_waittime_ms.value)
-{
-    assert(external_stream_counter);
-
-    if (!attach)
-        verifySettings(settings, false, context);
-
     const auto & columns = getInMemoryMetadataPtr()->getColumns();
-    const bool has_event_time = columns.has(ProtonConsts::RESERVED_EVENT_TIME);
     const bool has_message_key = columns.has(ProtonConsts::RESERVED_MESSAGE_KEY);
     const bool has_message_headers = columns.has(ProtonConsts::RESERVED_MESSAGE_HEADERS);
 
-    if (has_event_time || has_message_key || has_message_headers)
-        settings->set("one_message_per_row", true);
+    if (has_message_headers)
+        validateMessageHeadersColumnType(columns.getColumn({GetColumnsOptions::Kind::All}, ProtonConsts::RESERVED_MESSAGE_HEADERS).type);
 
     if (has_message_key)
     {
@@ -362,124 +499,15 @@ Kafka::Kafka(
                 ErrorCodes::INVALID_SETTING_VALUE,
                 "`sharding_expr` cannot be set when the `{}` column is defined",
                 ProtonConsts::RESERVED_MESSAGE_KEY);
-
-        if (!settings->message_key_schema_name.value.empty())
-        {
-            FormatSettings key_format_settings = getFormatSettings(context);
-            key_format_settings.kafka_schema_registry.subject_name = settings->message_key_schema_name.value;
-            avro_key_schema_registry = KafkaSchemaRegistryForAvro::getOrCreate(key_format_settings);
-        }
-    }
-
-    if (has_message_headers)
-        validateMessageHeadersColumnType(columns.getColumn({GetColumnsOptions::Kind::All}, ProtonConsts::RESERVED_MESSAGE_HEADERS).type);
-
-    cacheVirtualColumnNamesAndTypes();
-
-    auto conf = createConf(settings->getKafkaSettings());
-    conf.setLogCallback(&Kafka::onLog);
-    conf.setErrorCallback(&Kafka::onError);
-    conf.setThrottleCallback(&Kafka::onThrottle);
-    conf.setDrMsgCallback(&KafkaSink::onMessageDelivery);
-
-    if (settings->log_stats)
-        conf.setStatsCallback(&Kafka::onStats);
-    else
-        conf.setStatsCallback([](struct rd_kafka_s *, char *, size_t, void *) { return 0; });
-
-    if (auto topic_refresh_interval_ms_value = conf.get("topic.metadata.refresh.interval.ms"))
-        topic_refresh_interval_ms = std::stoi(*topic_refresh_interval_ms_value);
-    else
-        topic_refresh_interval_ms = 300'000;
-
-    client = DB::Kafka::ConnectionFactory::instance().getConnection(std::move(conf));
-
-    if (!attach)
-        /// Only validate cluster / topic for external stream creation
-        validate();
-}
-
-void Kafka::startup()
-{
-    StorageExternalStreamImpl::startup();
-    LOG_INFO(logger, "Starting Kafka External Stream");
-}
-
-void Kafka::shutdown(bool /*dropping*/)
-{
-    LOG_INFO(logger, "Shutting down Kafka External Stream");
-
-    /// Release all resources here rather than relying on the deconstructor.
-    /// Because the `Kafka` instance will not be destroyed immediately when the external stream gets dropped.
-    client.reset();
-
-    tryRemoveTempDir();
-}
-
-bool Kafka::hasCustomShardingExpr() const
-{
-    if (engine_args.empty())
-        return false;
-
-    if (auto * shard_func = shardingExprAst()->as<ASTFunction>())
-        return !boost::iequals(shard_func->name, "rand");
-
-    return true;
-}
-
-NamesAndTypesList Kafka::getVirtuals() const
-{
-    return virtual_column_names_and_types;
-}
-
-std::optional<String> Kafka::preferredColumn() const
-{
-    return ProtonConsts::RESERVED_EVENT_SEQUENCE_ID;
-}
-
-void Kafka::cacheVirtualColumnNamesAndTypes()
-{
-    virtual_column_names_and_types.push_back(
-        NameAndTypePair(ProtonConsts::RESERVED_APPEND_TIME, std::make_shared<DataTypeDateTime64>(3, "UTC")));
-    virtual_column_names_and_types.push_back(
-        NameAndTypePair(ProtonConsts::RESERVED_EVENT_TIME, std::make_shared<DataTypeDateTime64>(3, "UTC")));
-    virtual_column_names_and_types.push_back(
-        NameAndTypePair(ProtonConsts::RESERVED_PROCESS_TIME, std::make_shared<DataTypeDateTime64>(3, "UTC")));
-    virtual_column_names_and_types.push_back(NameAndTypePair(ProtonConsts::RESERVED_SHARD, std::make_shared<DataTypeInt32>()));
-    virtual_column_names_and_types.push_back(NameAndTypePair(ProtonConsts::RESERVED_EVENT_SEQUENCE_ID, std::make_shared<DataTypeInt64>()));
-    virtual_column_names_and_types.push_back(NameAndTypePair(ProtonConsts::RESERVED_MESSAGE_KEY, std::make_shared<DataTypeString>()));
-
-    DataTypes header_types{/*key_type*/ std::make_shared<DataTypeString>(), /*value_type*/ std::make_shared<DataTypeString>()};
-    virtual_column_names_and_types.push_back(
-        NameAndTypePair(ProtonConsts::RESERVED_MESSAGE_HEADERS, std::make_shared<DataTypeMap>(header_types)));
-}
-
-std::vector<Int64> Kafka::getOffsets(const SeekToInfoPtr & seek_to_info, const std::vector<uint64_t> & shards_to_query) const
-{
-    assert(seek_to_info);
-    seek_to_info->replicateForShards(static_cast<uint32_t>(shards_to_query.size()));
-    if (!seek_to_info->isTimeBased())
-    {
-        return seek_to_info->getSeekPoints();
-    }
-    else
-    {
-        std::vector<DB::Kafka::PartitionTimestamp> partition_timestamps;
-        partition_timestamps.reserve(shards_to_query.size());
-        auto seek_timestamps{seek_to_info->getSeekPoints()};
-        assert(shards_to_query.size() == seek_timestamps.size());
-
-        for (auto [shard, timestamp] : std::ranges::views::zip(shards_to_query, seek_timestamps))
-            partition_timestamps.emplace_back(shard, timestamp);
-
-        return client->getOffsetsForTimestamps(settings->topic.value, partition_timestamps);
     }
 }
 
-/// Validate the topic still exists, specified partitions are still valid etc
-void Kafka::validate()
+void Kafka::validate(const ContextPtr & context) const
 {
-    if (client->getPartitionCount(topicName(), settings->connection_timeout_ms.value.totalMilliseconds()) < 1)
+    validateSettings(settings, false, context);
+    validateColumns();
+
+    if (getClient()->getPartitionCount(topicName(), settings->connection_timeout_ms.value.totalMilliseconds()) < 1)
         throw Exception(ErrorCodes::INVALID_SETTING_VALUE, "Topic has no partitions, topic={}", topicName());
 }
 
@@ -489,14 +517,20 @@ std::optional<UInt64> Kafka::totalRows(const Settings & settings_ref) const
     if (!settings->one_message_per_row.value)
         return {};
 
+    const auto connection_timeout_ms = settings->connection_timeout_ms.value.totalMilliseconds();
+
+    /// Hoist getClient() out of the per-shard loop: one atomic_load + null-check
+    /// for the whole totalRows() call, and the local `local_client` keeps the
+    /// Connection alive even if shutdown() reset the member mid-loop.
+    auto local_client = getClient();
     auto shards_to_query = parseQueryShards(
-        settings_ref.shards.value, client->getPartitionCount(topicName(), settings->connection_timeout_ms.value.totalMilliseconds()));
+        settings_ref.shards.value, local_client->getPartitionCount(topicName(), connection_timeout_ms));
     LOG_INFO(logger, "Counting number of messages topic={} partitions=[{}]", topicName(), fmt::join(shards_to_query, ","));
 
     UInt64 rows = 0;
     for (auto shard : shards_to_query)
     {
-        auto marks = client->getConsumer(topicName())->queryWatermarkOffsets(static_cast<Int32>(shard));
+        auto marks = local_client->getConsumer(topicName())->queryWatermarkOffsets(static_cast<Int32>(shard), connection_timeout_ms);
         LOG_INFO(logger, "Watermark offsets topic={} partition={} low={} high={}", topicName(), shard, marks.low, marks.high);
         rows += marks.high - marks.low;
     }
@@ -505,14 +539,17 @@ std::optional<UInt64> Kafka::totalRows(const Settings & settings_ref) const
 
 std::vector<int64_t> Kafka::getLastSNs() const
 {
-    auto partitions = client->getPartitionCount(topicName(), settings->connection_timeout_ms.value.totalMilliseconds());
+    /// Hoist getClient() out of the per-partition loop. local_client keeps
+    /// the Connection alive across the whole sweep even if shutdown() races.
+    auto local_client = getClient();
+    auto partitions = local_client->getPartitionCount(topicName(), settings->connection_timeout_ms.value.totalMilliseconds());
 
     std::vector<int64_t> result;
     result.reserve(partitions);
 
     for (int32_t i = 0; i < partitions; ++i)
     {
-        auto offset = client->getWatermarkOffsets(topicName(), i);
+        auto offset = local_client->getWatermarkOffsets(topicName(), i);
         result.push_back(std::max(offset.high - 1, offset.low));
     }
 
@@ -528,13 +565,14 @@ Pipe Kafka::read(
     size_t max_block_size,
     size_t /*num_streams*/)
 {
+    const auto connection_timeout_ms = static_cast<UInt64>(settings->connection_timeout_ms.value.totalMilliseconds());
+
     /// The consumer can be shared between all the sources in the same pipe, because each source reads from a different partition.
-    auto consumer = client->getConsumer(topicName());
+    auto consumer = getClient()->getConsumer(topicName());
 
     /// User can explicitly consume specific kafka partitions by specifying `shards=` setting
     /// `SELECT * FROM kafka_stream SETTINGS shards=0,3`
-    auto shards_to_query = parseQueryShards(
-        context->getSettingsRef().shards.value, consumer->getPartitionCount(settings->connection_timeout_ms.value.totalMilliseconds()));
+    auto shards_to_query = parseQueryShards(context->getSettingsRef().shards.value, consumer->getPartitionCount(connection_timeout_ms));
     chassert(!shards_to_query.empty());
 
     auto streaming = query_info.isStreaming();
@@ -576,7 +614,7 @@ Pipe Kafka::read(
             std::optional<Int64> high_watermark = std::nullopt;
             if (!streaming)
             {
-                auto marks = consumer->queryWatermarkOffsets(static_cast<Int32>(shard));
+                auto marks = consumer->queryWatermarkOffsets(static_cast<Int32>(shard), connection_timeout_ms);
                 LOG_INFO(logger, "Watermarks topic={} partition={} low={} high={}", topicName(), shard, marks.low, marks.high);
                 high_watermark = marks.high;
 
@@ -602,7 +640,10 @@ Pipe Kafka::read(
                 offset,
                 high_watermark,
                 max_block_size,
-                settings->consumer_stall_timeout_ms.totalMilliseconds(),
+                KafkaSource::Timeouts{
+                    .connection_timeout_ms = connection_timeout_ms,
+                    .consumer_stall_timeout_ms = static_cast<UInt64>(settings->consumer_stall_timeout_ms.totalMilliseconds()),
+                },
                 avro_key_schema_registry,
                 external_stream_counter,
                 context,
@@ -641,7 +682,7 @@ SinkToStoragePtr Kafka::write(const ASTPtr & /*query*/, const StorageMetadataPtr
             "`message_key_schema_name` is currently read-only. "
             "To write a plain-text message key, omit `message_key_schema_name` and insert a string into `_tp_message_key` directly.");
 
-    auto producer = client->getProducer(topicName());
+    auto producer = getClient()->getProducer(topicName());
 
     auto sink = std::make_shared<KafkaSink>(
         *this,
