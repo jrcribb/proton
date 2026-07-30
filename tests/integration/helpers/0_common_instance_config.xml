@@ -4,6 +4,24 @@
     <custom_settings_prefixes>custom_</custom_settings_prefixes>
     <path>/var/lib/clickhouse/</path>
     <tmp_path>/var/lib/clickhouse/tmp/</tmp_path>
+    <user_files_path>/var/lib/clickhouse/user_files/</user_files_path>
+    <format_schema_path>/var/lib/clickhouse/format_schemas/</format_schema_path>
+    <user_directories>
+        <users_xml>
+            <path>users.xml</path>
+        </users_xml>
+        <local_directory>
+            <path>/var/lib/clickhouse/access/</path>
+        </local_directory>
+    </user_directories>
+    <query_state_checkpoint>
+        <path>/var/lib/clickhouse/checkpoint/</path>
+    </query_state_checkpoint>
+    <node>
+        <tcp>
+            <port>9000</port>
+        </tcp>
+    </node>
 
     <!-- For tests which check compatibility with older versions. -->
     <users_config>users.xml</users_config>

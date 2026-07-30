@@ -69,6 +69,7 @@ void Iceberg::prepareS3Configuration(const ContextPtr & context)
     configuration.auth_settings.access_key_id = settings->access_key_id;
     configuration.auth_settings.secret_access_key = settings->secret_access_key;
     configuration.auth_settings.session_token = settings->session_token;
+    configuration.auth_settings.region = settings->region;
     configuration.auth_settings.use_environment_credentials = settings->use_environment_credentials;
 
     configuration.auth_settings.http_client = settings->http_client;
@@ -140,14 +141,15 @@ Apache::Iceberg::TableMetadata Iceberg::tryGetTableMetadata() const
     return metadata;
 }
 
-std::list<Apache::Iceberg::ManifestList> Iceberg::fetchManifestList(const Apache::Iceberg::TableMetadata & table_metadata) const
+std::list<Apache::Iceberg::ManifestList> Iceberg::fetchManifestList(
+    const Apache::Iceberg::TableMetadata & table_metadata, const IcebergS3Configuration & s3_configuration, LoggerPtr logger_)
 {
     std::list<Apache::Iceberg::ManifestList> manifest_lists;
 
     const auto & manifest_list_uri = table_metadata.getManifestList();
     if (manifest_list_uri.empty())
     {
-        LOG_INFO(logger, "Table metadata does not have a manifest list.");
+        LOG_INFO(logger_, "Table metadata does not have a manifest list.");
         return manifest_lists;
     }
 
@@ -171,7 +173,7 @@ std::list<Apache::Iceberg::ManifestList> Iceberg::fetchManifestList(const Apache
     Apache::Iceberg::ManifestList manifest_list;
     while (reader.read(manifest_list))
     {
-        LOG_INFO(logger, "Got manifest_list sn = {} sid = {}", manifest_list.sequence_number, manifest_list.added_snapshot_id);
+        LOG_INFO(logger_, "Got manifest_list sn = {} sid = {}", manifest_list.sequence_number, manifest_list.added_snapshot_id);
         manifest_lists.push_back(std::move(manifest_list));
     }
 
@@ -209,7 +211,7 @@ Pipe Iceberg::read(
     size_t num_streams)
 {
     auto table_metadata = getTableMetadata();
-    auto manifest_lists = fetchManifestList(table_metadata);
+    auto manifest_lists = fetchManifestList(table_metadata, s3_configuration, logger);
 
     auto header = storage_snapshot->getSampleBlockForColumns(column_names);
 
@@ -284,7 +286,7 @@ Pipe Iceberg::read(
 SinkToStoragePtr Iceberg::write(const ASTPtr &, const StorageMetadataPtr & metadata_snapshot, ContextPtr local_context)
 {
     auto table_metadata = getTableMetadata();
-    auto manifest_lists = fetchManifestList(table_metadata);
+    auto manifest_lists = fetchManifestList(table_metadata, s3_configuration, logger);
 
     auto min_upload_file_size_ = local_context->getSettingsRef().s3_min_upload_file_size.changed
         ? local_context->getSettingsRef().s3_min_upload_file_size.value
@@ -298,6 +300,14 @@ SinkToStoragePtr Iceberg::write(const ASTPtr &, const StorageMetadataPtr & metad
 
     auto format_settings = getFormatSettings(local_context);
 
+    const auto & settings = local_context->getSettingsRef();
+    IcebergCommitRetryPolicy retry_policy{
+        .num_retries = settings.iceberg_commit_retry_num_retries,
+        .min_wait_ms = settings.iceberg_commit_retry_min_wait_ms,
+        .max_wait_ms = settings.iceberg_commit_retry_max_wait_ms,
+        .total_timeout_ms = settings.iceberg_commit_retry_total_timeout_ms,
+    };
+
     return std::make_shared<IcebergSink>(
         getStorageID(),
         "Parquet",
@@ -309,7 +319,8 @@ SinkToStoragePtr Iceberg::write(const ASTPtr &, const StorageMetadataPtr & metad
         std::move(table_metadata),
         std::move(manifest_lists),
         getCatalog(),
-        local_context);
+        local_context,
+        retry_policy);
 }
 
 FormatSettings Iceberg::getFormatSettings(const ContextPtr & local_context) const

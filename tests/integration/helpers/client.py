@@ -11,7 +11,7 @@ class Client:
         self.port = port
         self.command = [command]
 
-        if os.path.basename(command) == 'clickhouse':
+        if os.path.basename(command) in ('clickhouse', 'proton'):
             self.command.append('client')
 
         self.command += ['--host', self.host, '--port', str(self.port), '--stacktrace']

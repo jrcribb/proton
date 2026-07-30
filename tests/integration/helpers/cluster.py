@@ -69,7 +69,8 @@ def _create_env_file(path, variables):
     logging.debug(f"Env {variables} stored in {path}")
     with open(path, "w") as f:
         for var, value in list(variables.items()):
-            f.write("=".join([var, value]) + "\n")
+            if value is not None:
+                f.write("=".join([var, value]) + "\n")
     return path
 
 
@@ -423,6 +424,11 @@ class ClickHouseCluster:
         self.spark_session = None
 
         self.with_azurite = False
+
+        self.with_iceberg_rest = False
+        self.iceberg_rest_host = "iceberg_rest"
+        self.iceberg_rest_ip = None
+        self.iceberg_rest_port = 8181
 
         # available when with_hdfs == True
         self.hdfs_host = "hdfs1"
@@ -1263,6 +1269,26 @@ class ClickHouseCluster:
         ]
         return self.base_azurite_cmd
 
+    def setup_iceberg_rest_cmd(self, instance, env_variables, docker_compose_yml_dir):
+        self.with_iceberg_rest = True
+        env_variables["ICEBERG_REST_PORT"] = str(self.iceberg_rest_port)
+        self.base_cmd.extend(
+            [
+                "--file",
+                p.join(docker_compose_yml_dir, "docker_compose_iceberg_rest.yml"),
+            ]
+        )
+        self.base_iceberg_rest_cmd = [
+            "docker-compose",
+            "--env-file",
+            instance.env_file,
+            "--project-name",
+            self.project_name,
+            "--file",
+            p.join(docker_compose_yml_dir, "docker_compose_iceberg_rest.yml"),
+        ]
+        return self.base_iceberg_rest_cmd
+
     def setup_cassandra_cmd(self, instance, env_variables, docker_compose_yml_dir):
         self.with_cassandra = True
         env_variables["CASSANDRA_PORT"] = str(self.cassandra_port)
@@ -1362,6 +1388,7 @@ class ClickHouseCluster:
         with_redis=False,
         with_minio=False,
         with_azurite=False,
+        with_iceberg_rest=False,
         with_cassandra=False,
         with_jdbc_bridge=False,
         with_hive=False,
@@ -1447,6 +1474,7 @@ class ClickHouseCluster:
             with_redis=with_redis,
             with_minio=with_minio,
             with_azurite=with_azurite,
+            with_iceberg_rest=with_iceberg_rest,
             with_cassandra=with_cassandra,
             with_jdbc_bridge=with_jdbc_bridge,
             with_hive=with_hive,
@@ -1646,6 +1674,13 @@ class ClickHouseCluster:
                 self.setup_azurite_cmd(instance, env_variables, docker_compose_yml_dir)
             )
 
+        if with_iceberg_rest and not self.with_iceberg_rest:
+            cmds.append(
+                self.setup_iceberg_rest_cmd(
+                    instance, env_variables, docker_compose_yml_dir
+                )
+            )
+
         if minio_certs_dir is not None:
             if self.minio_certs_dir is None:
                 self.minio_certs_dir = minio_certs_dir
@@ -1684,8 +1719,8 @@ class ClickHouseCluster:
         return instance
 
     def get_instance_docker_id(self, instance_name):
-        # According to how docker-compose names containers.
-        return self.project_name + "_" + instance_name + "_1"
+        # Docker Compose v2 uses hyphens; v1 used underscores.
+        return self.project_name + "-" + instance_name + "-1"
 
     def _replace(self, path, what, to):
         with open(path, "r") as p:
@@ -2340,8 +2375,11 @@ class ClickHouseCluster:
                 instance.create_dir()
 
             _create_env_file(os.path.join(self.env_file), self.env_variables)
+            _docker_sock = os.environ.get(
+                "DOCKER_HOST", "unix:///var/run/docker.sock"
+            )
             self.docker_client = docker.DockerClient(
-                base_url="unix:///var/run/docker.sock",
+                base_url=_docker_sock,
                 version=self.docker_api_version,
                 timeout=600,
             )
@@ -2613,6 +2651,21 @@ class ClickHouseCluster:
                 self.up_called = True
                 logging.info("Trying to connect to Azurite")
                 self.wait_azurite_to_start()
+
+            if self.with_iceberg_rest and self.base_iceberg_rest_cmd:
+                iceberg_rest_start_cmd = self.base_iceberg_rest_cmd + common_opts
+                logging.info(
+                    "Trying to create Iceberg REST catalog by command %s",
+                    " ".join(map(str, iceberg_rest_start_cmd)),
+                )
+                run_and_check(iceberg_rest_start_cmd)
+                self.up_called = True
+                self.iceberg_rest_ip = self.get_instance_ip(self.iceberg_rest_host)
+                logging.info(
+                    "Iceberg REST catalog started at %s:%d",
+                    self.iceberg_rest_ip,
+                    self.iceberg_rest_port,
+                )
 
             if self.with_cassandra and self.base_cassandra_cmd:
                 subprocess_check_call(self.base_cassandra_cmd + ["up", "-d"])
@@ -2895,6 +2948,7 @@ class ClickHouseInstance:
         with_redis,
         with_minio,
         with_azurite,
+        with_iceberg_rest,
         with_jdbc_bridge,
         with_hive,
         with_coredns,
@@ -2978,6 +3032,7 @@ class ClickHouseInstance:
         self.with_redis = with_redis
         self.with_minio = with_minio
         self.with_azurite = with_azurite
+        self.with_iceberg_rest = with_iceberg_rest
         self.with_cassandra = with_cassandra
         self.with_jdbc_bridge = with_jdbc_bridge
         self.with_hive = with_hive
@@ -3911,7 +3966,7 @@ class ClickHouseInstance:
         def write_embedded_config(name, dest_dir, fix_log_level=False):
             with open(p.join(HELPERS_DIR, name), "r") as f:
                 data = f.read()
-                data = data.replace("clickhouse", self.config_root_name)
+                data = data.replace("<clickhouse>", f"<{self.config_root_name}>").replace("</clickhouse>", f"</{self.config_root_name}>")
                 if fix_log_level:
                     data = data.replace("<level>test</level>", "<level>trace</level>")
                 with open(p.join(dest_dir, name), "w") as r:

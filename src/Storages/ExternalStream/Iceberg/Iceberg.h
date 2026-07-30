@@ -4,12 +4,12 @@
 
 #if USE_AWS_S3 && USE_AVRO && USE_PARQUET
 
-#include <Storages/Iceberg/ICatalog.h>
-#include <Storages/Iceberg/Manifest.h>
-#include <Storages/Iceberg/ManifestList.h>
 #include <Storages/ExternalStream/Iceberg/IcebergS3Configuration.h>
 #include <Storages/ExternalStream/Iceberg/IcebergSource.h>
 #include <Storages/ExternalStream/StorageExternalStreamImpl.h>
+#include <Storages/Iceberg/ICatalog.h>
+#include <Storages/Iceberg/Manifest.h>
+#include <Storages/Iceberg/ManifestList.h>
 #include <Storages/StorageS3Settings.h>
 
 namespace DB::ExternalStream
@@ -47,6 +47,8 @@ public:
 
     /// FIXME this is a temporary trick.
     void setIcebergSchema(const std::string & schema) { iceberg_schema_json = schema; }
+    static std::list<Apache::Iceberg::ManifestList>
+    fetchManifestList(const Apache::Iceberg::TableMetadata &, const IcebergS3Configuration &, LoggerPtr logger_);
 
 private:
     void prepareS3Configuration(const ContextPtr &);
@@ -55,7 +57,6 @@ private:
     Apache::Iceberg::CatalogPtr getCatalog() const;
     Apache::Iceberg::TableMetadata getTableMetadata() const;
     Apache::Iceberg::TableMetadata tryGetTableMetadata() const;
-    std::list<Apache::Iceberg::ManifestList> fetchManifestList(const Apache::Iceberg::TableMetadata &) const;
 
     FormatSettings getFormatSettings(const ContextPtr & local_context) const;
 

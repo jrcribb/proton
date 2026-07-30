@@ -1,0 +1,2 @@
+minio_access_key = "minio"
+minio_secret_key = "minio123"

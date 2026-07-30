@@ -1,0 +1,10 @@
+<proton>
+  <!-- Remap s3:// URIs to the in-cluster MinIO HTTP endpoint so that
+       the AWS SDK endpoint-override path correctly routes to MinIO
+       instead of AWS S3. -->
+  <url_scheme_mappers>
+    <s3>
+      <to>http://minio1:9001/{bucket}</to>
+    </s3>
+  </url_scheme_mappers>
+</proton>

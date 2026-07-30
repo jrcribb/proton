@@ -20,6 +20,14 @@ namespace DB
 namespace ExternalStream
 {
 
+struct IcebergCommitRetryPolicy
+{
+    UInt64 num_retries{4};
+    UInt64 min_wait_ms{100};
+    UInt64 max_wait_ms{60000};
+    UInt64 total_timeout_ms{1800000};
+};
+
 class IcebergSink final : public SinkToStorage
 {
 public:
@@ -34,7 +42,8 @@ public:
         Apache::Iceberg::TableMetadata metadata_,
         std::list<Apache::Iceberg::ManifestList> current_manifest_lists,
         const Apache::Iceberg::CatalogPtr & catalog_,
-        ContextPtr context_);
+        ContextPtr context_,
+        IcebergCommitRetryPolicy retry_policy_ = {});
 
     ~IcebergSink() override;
 
@@ -51,6 +60,9 @@ private:
 
     void generateManifest(const UUID & commit_uuid);
     void writeManifest() const;
+
+    /// Refresh table metadata and manifest list
+    void refreshTableState();
 
     void commit();
 
@@ -77,6 +89,7 @@ private:
 
     UInt64 min_upload_file_size{0};
     UInt64 max_upload_idle_seconds{0};
+    IcebergCommitRetryPolicy retry_policy;
 
     size_t current_record_count{0};
 

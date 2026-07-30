@@ -406,10 +406,21 @@ void DatabaseApacheIceberg::createTable(ContextPtr /*context*/, const String & n
     if (endpoint_uri.getScheme().starts_with("http"))
     {
         std::vector<String> parts;
-        /// https://Bucket.s3.Region.amazonaws.com
-        parts.reserve(5);
         splitInto<'.'>(parts, endpoint_uri.getHost());
-        endpoint = "s3://" + parts[0] + endpoint_uri.getPath();
+        if (parts.size() > 2 && (parts[1].starts_with("s3") || parts[1] == "storage"))
+        {
+            /// https://Bucket.s3.Region.amazonaws.com or GCS-style virtual-hosted URL
+            endpoint = "s3://" + parts[0] + endpoint_uri.getPath();
+        }
+        else
+        {
+            /// Path-style URL: http://host:port/bucket/path  (e.g. MinIO)
+            /// Strip leading '/' from path, first segment is bucket name
+            auto path = endpoint_uri.getPath();
+            if (!path.empty() && path[0] == '/')
+                path = path.substr(1);
+            endpoint = "s3://" + path;
+        }
     }
 
     /// Set in-memory create query to ensure system.tables queries always use the in-memory metadata

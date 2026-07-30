@@ -36,6 +36,7 @@ extern const int AWS_ERROR;
 extern const int AUTHENTICATION_FAILED;
 extern const int BAD_ARGUMENTS;
 extern const int ICEBERG_CATALOG_ERROR;
+extern const int ICEBERG_CONFLICT_ERROR;
 extern const int LOGICAL_ERROR;
 }
 
@@ -877,8 +878,12 @@ void RestCatalog::commitTable(
         getLogger("IcebergRestCatalog::commitTable"));
 
     if (resp.second >= 300)
+    {
+        if (resp.second == 409)
+            throw DB::Exception(DB::ErrorCodes::ICEBERG_CONFLICT_ERROR, "Failed to commit table, HTTP response code={}, body={}", resp.second, resp.first);
         throw DB::Exception(
             DB::ErrorCodes::ICEBERG_CATALOG_ERROR, "Failed to commit table, HTTP response code={}, body={}", resp.second, resp.first);
+    }
 
     extractTableMetadata(resp.first, table_metadata, log);
 }
